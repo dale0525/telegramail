@@ -141,25 +141,6 @@ def _prepare_media_group(attachments: List[Dict]) -> List[InputMediaDocument]:
     
     return media_group
 
-def _format_file_size(size_in_bytes: int) -> str:
-    """
-    将字节大小格式化为人类可读的格式。
-    
-    Args:
-        size_in_bytes: 字节大小
-        
-    Returns:
-        格式化后的大小字符串
-    """
-    if size_in_bytes < 1024:
-        return f"{size_in_bytes} B"
-    elif size_in_bytes < 1024 * 1024:
-        return f"{size_in_bytes / 1024:.1f} KB"
-    elif size_in_bytes < 1024 * 1024 * 1024:
-        return f"{size_in_bytes / (1024 * 1024):.1f} MB"
-    else:
-        return f"{size_in_bytes / (1024 * 1024 * 1024):.1f} GB"
-
 async def _generate_html_preview(html_content: str, subject: str, body_text: str, inline_images: Dict) -> Optional[Tuple[bytes, str]]:
     """
     生成HTML预览图片。
@@ -270,6 +251,118 @@ async def _send_text_message(
         logger.error(f"发送纯文本消息失败: {e}")
         return None
 
+async def _generate_and_send_preview(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    html_content: str,
+    subject: str,
+    body_text: str,
+    inline_images: Dict,
+    caption_text: str,
+    disable_notification: bool = False,
+    reply_markup = None,
+    reply_to_message_id: Optional[int] = None
+) -> Optional[Any]:
+    """
+    生成并发送HTML预览图片。
+    
+    Args:
+        context: 应用上下文
+        chat_id: 聊天ID
+        html_content: HTML内容
+        subject: 邮件主题
+        body_text: 纯文本内容
+        inline_images: 内联图片
+        caption_text: 标题文本
+        disable_notification: 是否禁用通知
+        reply_markup: 回复标记
+        reply_to_message_id: 回复消息ID
+        
+    Returns:
+        发送的消息或None
+    """
+    # 如果有HTML内容，尝试生成预览图片
+    if html_content:
+        preview_result = await _generate_html_preview(html_content, subject, body_text, inline_images)
+        
+        if preview_result:
+            # 发送预览图片
+            return await _send_document_preview(
+                context,
+                chat_id,
+                preview_result,
+                caption_text,
+                disable_notification=disable_notification,
+                reply_markup=reply_markup,
+                reply_to_message_id=reply_to_message_id
+            )
+    
+    # 如果没有HTML内容或生成预览失败，返回None
+    return None
+
+async def _send_email_content(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    email_data: Dict[str, Any],
+    html_content: str,
+    subject: str,
+    body_text: str,
+    message_text: str,
+    caption_text: str,
+    inline_images: Dict,
+    settings: UserSettings,
+    disable_notification: bool = False,
+    reply_markup = None,
+    reply_to_message_id: Optional[int] = None
+) -> Optional[Any]:
+    """
+    发送邮件内容，无论是否有附件。
+
+    Args:
+        context: 应用上下文
+        chat_id: 聊天ID
+        email_data: 邮件数据
+        html_content: HTML内容
+        subject: 邮件主题
+        body_text: 纯文本内容
+        message_text: 消息文本
+        caption_text: 标题文本
+        inline_images: 内联图片
+        settings: 用户设置
+        disable_notification: 是否禁用通知
+        reply_markup: 回复标记
+        reply_to_message_id: 回复消息ID
+        
+    Returns:
+        发送的消息
+    """
+    # 尝试生成并发送预览图片
+    sent_message = await _generate_and_send_preview(
+        context,
+        chat_id,
+        html_content,
+        subject,
+        body_text,
+        inline_images,
+        caption_text,
+        disable_notification,
+        reply_markup,
+        reply_to_message_id
+    )
+    
+    # 如果发送预览图片失败或不需要预览，发送纯文本消息
+    if not sent_message:
+        sent_message = await _send_text_message(
+            context,
+            chat_id,
+            message_text,
+            disable_notification=disable_notification,
+            reply_markup=reply_markup,
+            reply_to_message_id=reply_to_message_id
+        )
+    
+    return sent_message
+
 async def _send_message_with_attachments(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
@@ -326,49 +419,36 @@ async def _send_message_with_attachments(
         if caption_text:
             caption_text += attachment_notice
     
-    # 检查是否需要生成HTML预览
-    preview_result = None
-    if html_content:
-        preview_result = await _generate_html_preview(html_content, subject, body_text, inline_images)
+    # 尝试发送预览图片或文本消息作为主消息
+    text_message = await _generate_and_send_preview(
+        context,
+        chat_id,
+        html_content,
+        subject,
+        body_text,
+        inline_images,
+        caption_text,
+        disable_notification,
+        reply_markup,
+        reply_to_message_id
+    )
+    
+    if not text_message:
+        # 如果没有预览图片，发送纯文本消息
+        text_message = await _send_text_message(
+            context,
+            chat_id,
+            message_text,
+            disable_notification,
+            reply_markup,
+            reply_to_message_id
+        )
+    
+    if not text_message:
+        logger.error("无法发送消息，跳过附件发送")
+        return None
     
     try:
-        # 如果有预览图片，发送文档
-        if preview_result:
-            text_message = await _send_document_preview(
-                context,
-                chat_id,
-                preview_result,
-                caption_text,
-                disable_notification,
-                reply_markup,
-                reply_to_message_id
-            )
-            
-            if not text_message:
-                # 如果发送预览图片失败，发送纯文本消息
-                text_message = await _send_text_message(
-                    context,
-                    chat_id,
-                    message_text,
-                    disable_notification,
-                    reply_markup,
-                    reply_to_message_id
-                )
-        else:
-            # 没有预览图片，发送纯文本消息
-            text_message = await _send_text_message(
-                context,
-                chat_id,
-                message_text,
-                disable_notification,
-                reply_markup,
-                reply_to_message_id
-            )
-        
-        if not text_message:
-            logger.error("无法发送消息，跳过附件发送")
-            return None
-        
         # 发送附件，回复到正文消息
         sent_attachments = await context.bot.send_media_group(
             chat_id=chat_id,
@@ -465,8 +545,6 @@ def _prepare_email_message_text(
     Returns:
         消息文本和标题文本的元组
     """
-    message_text = ""
-    caption_text = ""
     subject = email_data.get('subject', '无主题')
     body_text = email_data.get('body_text', '')
     html_content = email_data.get('body_html', '')
@@ -477,183 +555,165 @@ def _prepare_email_message_text(
         content_for_message = html_to_markdown(html_content, as_plain_text=True)
         logger.info(f"从HTML内容提取纯文本用于消息显示，长度: {len(content_for_message)}")
     
-    # 根据通知类型生成不同的消息文本
+    # 根据通知类型选择不同的处理函数
     if notification_type == "new":
-        # 处理新收到邮件的情况
-        sender_email = email_data.get('sender_email', '')
-        sender_name = email_data.get('sender_name', '')
-        sender = email_data.get('sender', '未知发件人')
-        
-        # 准备发件人信息
-        sender_display = sender
-        if sender_name and sender_email:
-            sender_display = f"{sender_name} <{sender_email}>"
-        elif sender_email:
-            sender_display = sender_email
-        
-        message_text = (
-            f"📧 <b>{html.escape(subject)}</b>\n\n"
-            f"<b>发件人:</b> {html.escape(sender_display)}\n"
-            f"<b>日期:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-            f"<b>账号:</b> #{html.escape(account_display_name)}\n"
+        return _prepare_new_email_message_text(
+            email_data, settings, account_display_name, content_for_message, subject
         )
-        
-        # 添加邮件正文
-        if content_for_message:
-            preview_length = 1000 if settings.show_full_content else 300
-            truncated_text = extract_meaningful_summary(content_for_message, preview_length)
-            safe_text = html.escape(truncated_text)
-            message_text += f"\n\n<pre>{safe_text}</pre>"
-            
-            # 如果正文被截断，添加提示
-            if len(truncated_text) < len(content_for_message):
-                message_text += "\n<i>邮件内容较长，仅显示部分内容...</i>"
-        else:
-            message_text += "\n\n<i>此邮件没有文本内容。</i>"
-        
-        # 准备标题文本 (用于发送预览图片时)
-        header_lines = message_text.split('\n')
-        # 确保提取的行数足够包含所有头部信息
-        caption_text = '\n'.join(header_lines[:6])
-        
-        # 添加部分正文内容到标题文本
-        if content_for_message:
-            # 计算剩余可用字符数 (Telegram caption限制为1024字符)
-            remaining_chars = 850 - len(caption_text)
-            if remaining_chars > 100:
-                # 提取摘要
-                preview_text = extract_meaningful_summary(content_for_message, remaining_chars)
-                # 确保HTML标签被转义
-                safe_preview = html.escape(preview_text)
-                caption_text += f"\n\n<pre>{safe_preview}</pre>"
-        
-        # 添加指导用户查看完整内容的说明
-        caption_text += "\n\n<i>\U0001F4F8 查看预览图片获取完整内容</i>"
-        
     else:  # notification_type == "sent"
-        # 处理已发送邮件的情况
-        recipients = email_data.get('recipients', [])
-        
-        # 准备发送者信息（邮件的发送者是自己）
-        sender_display = f"➡️ 发自: {account_display_name}"
-        
-        # 准备收件人信息
-        escaped_recipients = [html.escape(r) for r in recipients]
-        recipients_text = "，".join(escaped_recipients)
-        recipients_display = f"📨 发给: {recipients_text}"
-        
-        # 提取摘要
-        summary = ""
-        if content_for_message:
-            preview_length = 1000 if settings.show_full_content else 300
-            summary = extract_meaningful_summary(content_for_message, preview_length)
-        
-        # 构建通知消息文本（不包含附件信息）
-        message_text = (
-            f"<b>{html.escape(subject)}</b>\n"
-            f"{sender_display}\n"
-            f"{recipients_display}\n\n"
+        return _prepare_sent_email_message_text(
+            email_data, settings, account_display_name, content_for_message, subject
         )
+
+def _prepare_new_email_message_text(
+    email_data: Dict[str, Any],
+    settings: UserSettings,
+    account_display_name: str,
+    content_for_message: str,
+    subject: str
+) -> Tuple[str, str]:
+    """
+    准备新收到邮件的消息文本。
+    
+    Args:
+        email_data: 邮件数据
+        settings: 用户设置 
+        account_display_name: 账户显示名称
+        content_for_message: 处理后的邮件正文内容
+        subject: 邮件主题
         
-        # 添加邮件摘要
-        if summary:
-            safe_text = html.escape(summary)
-            message_text += f"<pre>{safe_text}</pre>"
-            
-            # 如果正文被截断，添加提示
-            if len(summary) < len(content_for_message):
-                message_text += "\n<i>邮件内容较长，仅显示部分内容...</i>"
-        else:
-            message_text += "<i>此邮件没有文本内容。</i>"
+    Returns:
+        消息文本和标题文本的元组
+    """
+    # 处理新收到邮件的情况
+    sender_email = email_data.get('sender_email', '')
+    sender_name = email_data.get('sender_name', '')
+    sender = email_data.get('sender', '未知发件人')
+    
+    # 准备发件人信息
+    sender_display = sender
+    if sender_name and sender_email:
+        sender_display = f"{sender_name} <{sender_email}>"
+    elif sender_email:
+        sender_display = sender_email
+    
+    message_text = (
+        f"📧 <b>{html.escape(subject)}</b>\n\n"
+        f"<b>发件人:</b> {html.escape(sender_display)}\n"
+        f"<b>日期:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"<b>账号:</b> #{html.escape(account_display_name)}\n"
+    )
+    
+    # 添加邮件正文
+    if content_for_message:
+        preview_length = 1000 if settings.show_full_content else 300
+        truncated_text = extract_meaningful_summary(content_for_message, preview_length)
+        safe_text = html.escape(truncated_text)
+        message_text += f"\n\n<pre>{safe_text}</pre>"
         
-        # 构建引导命令文本
-        guide_text = "\n\n➡️ 已发送邮件"
-        
-        # 准备标题文本，包含邮件关键信息和引导文本
-        caption_text = message_text + guide_text
-        
-        # 附加引导命令文本到消息文本
-        message_text += guide_text
+        # 如果正文被截断，添加提示
+        if len(truncated_text) < len(content_for_message):
+            message_text += "\n<i>邮件内容较长，仅显示部分内容...</i>"
+    else:
+        message_text += "\n\n<i>此邮件没有文本内容。</i>"
+    
+    # 准备标题文本 (用于发送预览图片时)
+    header_lines = message_text.split('\n')
+    # 确保提取的行数足够包含所有头部信息
+    caption_text = '\n'.join(header_lines[:6])
+    
+    # 添加部分正文内容到标题文本
+    if content_for_message:
+        # 计算剩余可用字符数 (Telegram caption限制为1024字符)
+        remaining_chars = 850 - len(caption_text)
+        if remaining_chars > 100:
+            # 提取摘要
+            preview_text = extract_meaningful_summary(content_for_message, remaining_chars)
+            # 确保HTML标签被转义
+            safe_preview = html.escape(preview_text)
+            caption_text += f"\n\n<pre>{safe_preview}</pre>"
+    
+    # 添加指导用户查看完整内容的说明
+    caption_text += "\n\n<i>\U0001F4F8 查看预览图片获取完整内容</i>"
     
     return message_text, caption_text
 
-async def _send_email_content(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
+def _prepare_sent_email_message_text(
     email_data: Dict[str, Any],
-    html_content: str,
-    subject: str,
-    body_text: str,
-    message_text: str,
-    caption_text: str,
-    inline_images: Dict,
     settings: UserSettings,
-    disable_notification: bool = False,
-    reply_markup = None,
-    reply_to_message_id: Optional[int] = None
-) -> Optional[Any]:
+    account_display_name: str,
+    content_for_message: str,
+    subject: str
+) -> Tuple[str, str]:
     """
-    发送邮件内容，无论是否有附件。
-
+    准备已发送邮件的消息文本。
+    
     Args:
-        context: 应用上下文
-        chat_id: 聊天ID
         email_data: 邮件数据
-        html_content: HTML内容
-        subject: 邮件主题
-        body_text: 纯文本内容
-        message_text: 消息文本
-        caption_text: 标题文本
-        inline_images: 内联图片
         settings: 用户设置
-        disable_notification: 是否禁用通知
-        reply_markup: 回复标记
-        reply_to_message_id: 回复消息ID
+        account_display_name: 账户显示名称
+        content_for_message: 处理后的邮件正文内容
+        subject: 邮件主题
         
     Returns:
-        发送的消息
+        消息文本和标题文本的元组
     """
-    sent_message = None
+    # 处理已发送邮件的情况
+    recipients = email_data.get('recipients', [])
     
-    # 如果有HTML内容，尝试生成预览图片
-    if html_content:
-        preview_result = await _generate_html_preview(html_content, subject, body_text, inline_images)
+    # 准备发送者信息（邮件的发送者是自己）
+    sender_display = f"➡️ 发自: {account_display_name}"
+    
+    # 准备收件人信息
+    escaped_recipients = [html.escape(r) for r in recipients]
+    recipients_text = "，".join(escaped_recipients)
+    recipients_display = f"📨 发给: {recipients_text}"
+    
+    # 提取摘要
+    summary = ""
+    if content_for_message:
+        preview_length = 1000 if settings.show_full_content else 300
+        summary = extract_meaningful_summary(content_for_message, preview_length)
+    
+    # 构建通知消息文本（不包含附件信息）
+    message_text = (
+        f"<b>{html.escape(subject)}</b>\n"
+        f"{sender_display}\n"
+        f"{recipients_display}\n\n"
+    )
+    
+    # 添加邮件摘要
+    if summary:
+        safe_text = html.escape(summary)
+        message_text += f"<pre>{safe_text}</pre>"
         
-        if preview_result:
-            # 发送预览图片
-            sent_message = await _send_document_preview(
-                context,
-                chat_id,
-                preview_result,
-                caption_text,
-                disable_notification=disable_notification,
-                reply_markup=reply_markup,
-                reply_to_message_id=reply_to_message_id
-            )
+        # 如果正文被截断，添加提示
+        if len(summary) < len(content_for_message):
+            message_text += "\n<i>邮件内容较长，仅显示部分内容...</i>"
+    else:
+        message_text += "<i>此邮件没有文本内容。</i>"
     
-    # 如果发送预览图片失败或不需要预览，发送纯文本消息
-    if not sent_message:
-        sent_message = await _send_text_message(
-            context,
-            chat_id,
-            message_text,
-            disable_notification=disable_notification,
-            reply_markup=reply_markup,
-            reply_to_message_id=reply_to_message_id
-        )
+    # 构建引导命令文本
+    guide_text = "\n\n➡️ 已发送邮件"
     
-    return sent_message
+    # 准备标题文本，包含邮件关键信息和引导文本
+    caption_text = message_text + guide_text
+    
+    # 附加引导命令文本到消息文本
+    message_text += guide_text
+    
+    return message_text, caption_text
 
-async def _send_email_notification(
-    context: ContextTypes.DEFAULT_TYPE,
-    account_id: int,
-    email_data: Dict[str, Any],
+async def send_email_notification(
+    context: ContextTypes.DEFAULT_TYPE, 
+    account_id: int, 
+    email_data: Dict[str, Any], 
     email_id: int,
-    notification_type: str = "new",  # "new"或"sent"
+    notification_type: str = "new",
     disable_notification: bool = False,
     include_reply_buttons: bool = True,
     reply_to_message_id: Optional[str] = None
-) -> bool:
+) -> None:
     """
     发送邮件通知的通用函数。
     
@@ -845,31 +905,7 @@ async def _send_email_notification(
         logger.error(traceback.format_exc())
         return False
 
-async def send_email_notification(
-    context: ContextTypes.DEFAULT_TYPE, 
-    account_id: int, 
-    email_data: Dict[str, Any], 
-    email_id: int
-) -> None:
-    """
-    发送邮件通知到Telegram。
-    
-    Args:
-        context: 应用上下文
-        account_id: 邮件账户ID
-        email_data: 邮件数据
-        email_id: 数据库中的邮件ID
-    """
-    await _send_email_notification(
-        context, 
-        account_id, 
-        email_data, 
-        email_id,
-        notification_type="new",
-        disable_notification=False,
-        include_reply_buttons=True
-    )
-
+# 保留这些函数作为便捷方法，但用通用函数实现
 async def send_sent_email_notification(
     context: ContextTypes.DEFAULT_TYPE, 
     account_id: int, 
@@ -887,7 +923,7 @@ async def send_sent_email_notification(
         email_id: 数据库中的邮件ID
         reply_to_message_id: 可选的回复消息ID，如果提供，则回复该消息
     """
-    await _send_email_notification(
+    await send_email_notification(
         context, 
         account_id, 
         email_data, 
@@ -897,135 +933,3 @@ async def send_sent_email_notification(
         include_reply_buttons=True,
         reply_to_message_id=reply_to_message_id
     )
-
-def _should_send_notification(settings: UserSettings, email_data: Dict[str, Any]) -> bool:
-    """
-    根据用户设置判断是否应该发送通知。
-    
-    在简化后的单用户系统中，默认发送所有通知。
-    
-    Args:
-        settings: 用户设置
-        email_data: 邮件数据
-        
-    Returns:
-        是否应该发送通知
-    """
-    # 简化设置，始终发送所有通知
-    return True
-
-async def send_batch_email_notification(
-    context: ContextTypes.DEFAULT_TYPE, 
-    account_id: int, 
-    email_count: int
-) -> None:
-    """
-    发送批量邮件通知。
-    
-    当短时间内收到多封邮件时，可以发送一条合并通知，而不是多条单独通知。
-    
-    Args:
-        context: 应用上下文
-        account_id: 邮件账户ID
-        email_count: 新邮件数量
-    """
-    try:
-        # 获取账户信息
-        account = get_email_account_by_id(account_id)
-        if not account:
-            logger.error(f"找不到ID为{account_id}的邮件账户")
-            return
-        
-        # 获取应该接收通知的聊天ID列表
-        chat_ids = get_chat_ids_for_account(account_id)
-        if not chat_ids:
-            logger.warning(f"账户 {account.email} 没有关联的聊天ID，无法发送通知")
-            return
-        
-        # 为每个聊天ID发送通知
-        for chat_id in chat_ids:
-            # 创建通知消息
-            message_text = (
-                f"📬 <b>收到多封新邮件 | {html.escape(account.email)}</b>\n\n"
-                f"您在短时间内收到了 <b>{email_count}</b> 封新邮件。\n\n"
-                f"新邮件已保存，您可以随时查看。"
-            )
-            
-            # 发送通知
-            await _send_text_message(
-                context,
-                chat_id,
-                message_text,
-                disable_notification=False
-            )
-            logger.info(f"已向聊天ID {chat_id} 发送批量邮件通知")
-    except Exception as e:
-        logger.error(f"发送批量邮件通知时发生错误: {e}") 
-
-async def _send_attachments_separately(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    attachments: List[Dict[str, Any]],
-    reply_to_message_id: int
-) -> int:
-    """
-    单独发送邮件附件。
-    
-    当无法使用媒体组发送附件时，使用此函数单独发送每个附件。
-    
-    Args:
-        context: 应用上下文
-        chat_id: 聊天ID
-        attachments: 附件列表
-        reply_to_message_id: 回复消息ID
-        
-    Returns:
-        成功发送的附件数量
-    """
-    logger.info(f"准备单独发送 {len(attachments)} 个附件")
-    sent_attachments_count = 0
-    total_attachments = len(attachments)
-    
-    # 首先发送一条提示消息，说明即将发送的附件数量
-    if total_attachments > 1:
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"📎 <b>正在发送 {total_attachments} 个邮件附件</b>",
-                parse_mode="HTML",
-                reply_to_message_id=reply_to_message_id,
-                disable_notification=True
-            )
-        except Exception as e:
-            logger.error(f"发送附件数量提示失败: {e}")
-    
-    for idx, attachment in enumerate(attachments):
-        try:
-            filename = attachment.get('filename', f'unnamed_attachment_{idx}')
-            data = attachment.get('data')
-            if data:
-                logger.info(f"发送附件 {idx+1}/{len(attachments)}: {filename}")
-                
-                # 准备附件说明文本（保持简洁）
-                caption = _prepare_attachment_caption(
-                    filename,
-                    attachment.get('size')
-                )
-                
-                await context.bot.send_document(
-                    chat_id=chat_id,
-                    document=data,
-                    filename=filename,
-                    reply_to_message_id=reply_to_message_id,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
-                sent_attachments_count += 1
-            else:
-                logger.warning(f"附件 {filename} 没有数据")
-        except Exception as e:
-            logger.error(f"发送附件 {idx+1}/{len(attachments)} 时发生错误: {e}")
-            logger.error(traceback.format_exc())
-    
-    logger.info(f"成功单独发送 {sent_attachments_count}/{len(attachments)} 个附件")
-    return sent_attachments_count 
