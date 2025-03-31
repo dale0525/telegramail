@@ -814,6 +814,7 @@ async def send_email_notification(
                 keyboard = [
                     [
                         InlineKeyboardButton("🗑️ 删除", callback_data=f"delete_email_{email_id}"),
+                        InlineKeyboardButton("↩️ 回复", callback_data=f"reply_email_{email_id}"),
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
