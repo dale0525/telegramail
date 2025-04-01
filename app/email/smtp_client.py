@@ -2,15 +2,17 @@
 SMTP client for sending emails.
 """
 
+import logging
 import smtplib
 import asyncio
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Dict, List, Optional, Tuple, Union
+import ssl
+import time
 
-from app.database.models import EmailAccount
-from app.utils.config import config
+logger = logging.getLogger(__name__)
 
 
 class SMTPClient:
@@ -28,15 +30,15 @@ class SMTPClient:
         use_ssl=False,
     ):
         """
-        Initialize the SMTP client.
+        初始化SMTP客户端。
 
         Args:
-            account: Email account object (optional)
-            server: SMTP server address (optional, required if account is None)
-            port: SMTP server port (optional, required if account is None)
-            username: Username (optional, required if account is None)
-            password: Password (optional, required if account is None)
-            use_ssl: Whether to use SSL (optional, required if account is None)
+            account: 邮箱账户对象（可选）
+            server: SMTP服务器地址（如果account为None则必需）
+            port: SMTP服务器端口（如果account为None则必需）
+            username: 用户名（如果account为None则必需）
+            password: 密码（如果account为None则必需）
+            use_ssl: 是否使用SSL（如果account为None则必需）
         """
         self.account = account
         self.server = server if account is None else account.smtp_server
@@ -45,118 +47,287 @@ class SMTPClient:
         self.password = password if account is None else account.password
         self.use_ssl = use_ssl if account is None else account.smtp_use_ssl
         self.conn = None
+        self.last_error = None
+        self.connection_method = None
+        self.error_analysis = {}  # 存储分析的错误信息
 
     async def connect(self) -> bool:
         """
-        Connect to the SMTP server.
+        连接到 SMTP 服务器。
+
+        尝试通过多种连接方式（SSL, STARTTLS, 普通连接）连接到SMTP服务器，
+        并自动适应不同的服务器要求。
 
         Returns:
-            True if the connection was successful, False otherwise
+            bool: 连接成功返回 True，否则返回 False
         """
         max_retries = 3
         retry_count = 0
+        backoff_factor = 1.5  # 用于指数退避策略
+        timeout = 30
+
+        # 首先尝试使用指定的端口和SSL设置
+        if self.use_ssl is not None:
+            # 当端口是465但use_ssl被明确设置为False时，调整连接尝试顺序
+            if self.port == 465 and not self.use_ssl:
+                logger.warning("检测到端口465但SSL设置为False，可能存在配置错误")
+                connection_attempts = [
+                    self._try_starttls_connection,
+                    self._try_ssl_connection,
+                ]
+            # 当端口是587/25但use_ssl被明确设置为True时，调整连接尝试顺序
+            elif self.port in [587, 25] and self.use_ssl:
+                logger.warning(
+                    f"检测到端口{self.port}但SSL设置为True，可能存在配置错误"
+                )
+                connection_attempts = [
+                    self._try_ssl_connection,
+                    self._try_starttls_connection,
+                ]
+            else:
+                connection_attempts = [self._try_preferred_connection]
+        else:
+            # 如果未指定连接方式，根据端口号自动选择尝试顺序
+            if self.port == 465:
+                connection_attempts = [
+                    self._try_ssl_connection,
+                    self._try_starttls_connection,
+                ]
+            elif self.port in [587, 25]:
+                connection_attempts = [
+                    self._try_starttls_connection,
+                    self._try_ssl_connection,
+                ]
+            else:
+                # 对于其他端口，尝试所有方法
+                connection_attempts = [
+                    self._try_ssl_connection,
+                    self._try_starttls_connection,
+                    self._try_plain_connection,
+                ]
+
+        # 记录所有尝试中的错误，以便后续分析
+        all_errors = []
 
         while retry_count <= max_retries:
-            try:
-                # 首先尝试根据配置连接
-                if self.use_ssl or self.port == 465:  # 标准SSL/TLS端口
-                    try:
-                        # 添加更多SSL上下文参数，解决版本不兼容问题
-                        import ssl
-
-                        context = ssl.create_default_context()
-                        self.conn = smtplib.SMTP_SSL(
-                            self.server, self.port, context=context
-                        )
-                        # 设置超时
-                        self.conn.timeout = 30
-                        # 确保先进行EHLO
-                        self.conn.ehlo()
-                        self.conn.login(self.username, self.password)
-                        return True
-                    except Exception as e:
-                        print(f"使用SSL连接失败: {e}，尝试非SSL方式...")
-                        # 失败则尝试非SSL方式
-
-                # 尝试使用STARTTLS (端口587/25通常使用这种方式)
+            for connection_method in connection_attempts:
+                method_name = connection_method.__name__.replace("_try_", "").replace(
+                    "_connection", ""
+                )
                 try:
-                    self.conn = smtplib.SMTP(self.server, self.port)
-                    # 设置超时
-                    self.conn.timeout = 30
-                    self.conn.ehlo()
-                    if self.conn.has_extn("STARTTLS"):
-                        try:
-                            import ssl
-
-                            context = ssl.create_default_context()
-                            self.conn.starttls(context=context)
-                            self.conn.ehlo()  # 必须在STARTTLS后再次调用EHLO
-                        except Exception as tls_e:
-                            print(f"STARTTLS失败: {tls_e}，尝试没有TLS的连接...")
-                    self.conn.login(self.username, self.password)
-                    return True
+                    logger.info(
+                        f"尝试使用 {method_name} 连接 {self.server}:{self.port}"
+                    )
+                    if await connection_method(timeout):
+                        logger.info(f"SMTP连接成功，使用方法: {self.connection_method}")
+                        return True
                 except Exception as e:
-                    print(f"使用STARTTLS连接失败: {e}")
+                    error_info = {
+                        "method": method_name,
+                        "error": e,
+                        "error_type": type(e).__name__,
+                        "error_msg": str(e),
+                    }
+                    all_errors.append(error_info)
 
-                    # 如果当前端口连接失败，尝试其他常见端口
-                    if self.port not in [465, 587, 25]:
-                        for port in [465, 587, 25]:
-                            print(f"尝试在端口 {port} 连接...")
-                            try:
-                                if port == 465:
-                                    import ssl
+                    self.last_error = str(e)
+                    logger.info(f"使用 {method_name} 连接失败: {e}")
 
-                                    context = ssl.create_default_context()
-                                    self.conn = smtplib.SMTP_SSL(
-                                        self.server, port, context=context
-                                    )
-                                    self.conn.timeout = 30
-                                    self.conn.ehlo()
-                                else:
-                                    self.conn = smtplib.SMTP(self.server, port)
-                                    self.conn.timeout = 30
-                                    self.conn.ehlo()
-                                    if self.conn.has_extn("STARTTLS"):
-                                        try:
-                                            import ssl
+                    # 特殊处理SSL错误
+                    if isinstance(e, ssl.SSLError) and "wrong version number" in str(e):
+                        logger.warning(
+                            f"检测到SSL版本不匹配错误，服务器可能不支持SSL直连而需要STARTTLS"
+                        )
+                        # 如果是SSL错误并且下一个尝试不是STARTTLS，则立即尝试STARTTLS
+                        if method_name.upper() == "SSL" and "STARTTLS" not in str(
+                            connection_attempts[0]
+                        ):
+                            logger.info("自动调整连接策略，优先尝试STARTTLS")
+                            # 将STARTTLS连接方式移到尝试列表前面
+                            starttls_methods = [
+                                m
+                                for m in connection_attempts
+                                if "starttls" in m.__name__.lower()
+                            ]
+                            if starttls_methods:
+                                connection_attempts.remove(starttls_methods[0])
+                                connection_attempts.insert(0, starttls_methods[0])
 
-                                            context = ssl.create_default_context()
-                                            self.conn.starttls(context=context)
-                                            self.conn.ehlo()  # 必须在STARTTLS后再次调用EHLO
-                                        except Exception as tls_e:
-                                            print(
-                                                f"STARTTLS失败: {tls_e}，尝试没有TLS的连接..."
-                                            )
+            # 所有方法都失败，准备重试
+            retry_count += 1
+            if retry_count <= max_retries:
+                wait_time = backoff_factor**retry_count
+                logger.info(
+                    f"SMTP服务器连接失败，第{retry_count}次重试，等待{wait_time}秒"
+                )
+                await asyncio.sleep(wait_time)  # 使用指数退避策略
 
-                                self.conn.login(self.username, self.password)
-                                # 更新端口和SSL设置
-                                self.port = port
-                                self.use_ssl = port == 465
-                                print(f"成功连接到端口 {port}, SSL: {self.use_ssl}")
-                                return True
-                            except Exception as inner_e:
-                                print(f"在端口 {port} 连接失败: {inner_e}")
+        # 所有尝试都失败，进行错误分析
+        if all_errors:
+            # 分析最后一个错误，通常是最有代表性的
+            last_error = all_errors[-1]["error"]
+            analysis = await self._analyze_connection_error(
+                last_error, self.server, self.port, all_errors[-1]["method"]
+            )
 
-                    return False
+            # 记录分析结果
+            if "problem" in analysis:
+                logger.error(f"SMTP连接问题: {analysis['problem']}")
 
-            except (smtplib.SMTPException, ConnectionRefusedError, OSError) as e:
-                retry_count += 1
-                if retry_count > max_retries:
-                    print(f"SMTP服务器连接失败(达到最大重试次数{max_retries}): {e}")
-                    return False
-                print(f"SMTP服务器连接失败(第{retry_count}次重试): {e}")
-                await asyncio.sleep(1)  # 重试前等待1秒
+            if "suggestions" in analysis and analysis["suggestions"]:
+                logger.info("连接建议:")
+                for suggestion in analysis["suggestions"]:
+                    logger.info(f"  - {suggestion}")
+
+            if "alternative_ports" in analysis and analysis["alternative_ports"]:
+                alt_ports = ", ".join(map(str, analysis["alternative_ports"]))
+                logger.info(f"可尝试的替代端口: {alt_ports}")
+
+            if "service_detected" in analysis:
+                logger.info(f"检测到服务: {analysis['service_detected']}")
+                if "suggested_settings" in analysis:
+                    settings = analysis["suggested_settings"]
+                    port_str = ", ".join(map(str, settings.get("ports", [])))
+                    logger.info(
+                        f"推荐设置: 服务器 {settings.get('server')}, 端口 {port_str}"
+                    )
+                    if "notes" in settings:
+                        logger.info(f"注意: {settings['notes']}")
+
+        logger.error(
+            f"SMTP服务器连接失败(达到最大重试次数{max_retries})，最后错误: {self.last_error}"
+        )
+        return False
+
+    async def _try_preferred_connection(self, timeout: int) -> bool:
+        """根据预先配置的设置尝试连接"""
+        if self.use_ssl:
+            return await self._try_ssl_connection(timeout)
+        else:
+            return await self._try_starttls_connection(timeout)
+
+    async def _try_ssl_connection(self, timeout: int) -> bool:
+        """尝试使用SSL连接SMTP服务器"""
+        loop = asyncio.get_event_loop()
+        try:
+            # 在异步环境中运行同步的SMTP连接代码
+            self.conn = await loop.run_in_executor(
+                None, lambda: self._create_ssl_connection(timeout)
+            )
+            await loop.run_in_executor(None, self.conn.ehlo)
+            await loop.run_in_executor(
+                None, lambda: self.conn.login(self.username, self.password)
+            )
+            self.connection_method = "SSL"
+            return True
+        except Exception as e:
+            logger.info(f"使用SSL连接失败: {e}")
+            self.disconnect()  # 确保失败后断开连接
+            return False
+
+    def _create_ssl_connection(self, timeout: int) -> smtplib.SMTP_SSL:
+        """创建SSL连接"""
+        # 创建自定义SSL上下文，支持多种协议版本
+        context = ssl.create_default_context()
+
+        # 尝试支持更多的SSL协议版本
+        try:
+            # 允许旧版本SSL/TLS协议，以提高兼容性
+            context.options &= ~ssl.OP_NO_TLSv1
+            context.options &= ~ssl.OP_NO_TLSv1_1
+            # 禁用证书验证，用于一些使用自签名证书的服务器
+            # context.check_hostname = False
+            # context.verify_mode = ssl.CERT_NONE
+        except AttributeError:
+            # 某些Python版本可能不支持特定的SSL选项
+            logger.info("当前Python环境不支持自定义SSL选项设置")
+
+        try:
+            # 尝试使用自定义SSL上下文创建连接
+            conn = smtplib.SMTP_SSL(
+                self.server, self.port, timeout=timeout, context=context
+            )
+            return conn
+        except ssl.SSLError as e:
+            # 特殊处理SSL版本错误
+            if "wrong version number" in str(e):
+                logger.warning("SSL版本不匹配，服务器可能不支持SSL直接连接")
+                raise ssl.SSLError(f"SSL版本不匹配，尝试使用STARTTLS替代: {e}")
+            raise
+
+    async def _try_starttls_connection(self, timeout: int) -> bool:
+        """尝试使用STARTTLS连接SMTP服务器"""
+        loop = asyncio.get_event_loop()
+        try:
+            # 创建连接
+            self.conn = await loop.run_in_executor(
+                None, lambda: self._create_plain_connection(timeout)
+            )
+            # EHLO
+            await loop.run_in_executor(None, self.conn.ehlo)
+
+            # 检查STARTTLS支持
+            if self.conn.has_extn("STARTTLS"):
+                context = ssl.create_default_context()
+                await loop.run_in_executor(
+                    None, lambda: self.conn.starttls(context=context)
+                )
+                await loop.run_in_executor(
+                    None, self.conn.ehlo
+                )  # STARTTLS后需要再次EHLO
+
+            # 登录
+            await loop.run_in_executor(
+                None, lambda: self.conn.login(self.username, self.password)
+            )
+            self.connection_method = "STARTTLS"
+            return True
+        except Exception as e:
+            logger.info(f"使用STARTTLS连接失败: {e}")
+            self.disconnect()  # 确保失败后断开连接
+            return False
+
+    async def _try_plain_connection(self, timeout: int) -> bool:
+        """尝试使用普通非加密连接SMTP服务器"""
+        loop = asyncio.get_event_loop()
+        try:
+            # 创建连接
+            self.conn = await loop.run_in_executor(
+                None, lambda: self._create_plain_connection(timeout)
+            )
+            # EHLO
+            await loop.run_in_executor(None, self.conn.ehlo)
+            # 登录
+            await loop.run_in_executor(
+                None, lambda: self.conn.login(self.username, self.password)
+            )
+            self.connection_method = "PLAIN"
+            logger.warning("使用非加密连接到SMTP服务器，不推荐用于生产环境")
+            return True
+        except Exception as e:
+            logger.info(f"使用普通连接失败: {e}")
+            self.disconnect()  # 确保失败后断开连接
+            return False
+
+    def _create_plain_connection(self, timeout: int) -> smtplib.SMTP:
+        """创建普通SMTP连接"""
+        conn = smtplib.SMTP(self.server, self.port, timeout=timeout)
+        return conn
 
     def disconnect(self):
         """
-        Disconnect from the SMTP server.
+        断开与SMTP服务器的连接。
         """
         if self.conn:
             try:
                 self.conn.quit()
-            except smtplib.SMTPException:
-                pass
+            except (smtplib.SMTPException, OSError, IOError):
+                try:
+                    self.conn.close()
+                except:
+                    pass
             self.conn = None
+            self.connection_method = None
 
     async def test_connection(self) -> bool:
         """
@@ -165,31 +336,17 @@ class SMTPClient:
         Returns:
             连接是否成功
         """
-        loop = asyncio.get_event_loop()
         try:
-            # 在异步环境中运行同步代码
-            return await loop.run_in_executor(None, self._test_connection_sync)
-        except Exception as e:
-            print(f"测试SMTP连接时出错: {e}")
-            return False
-
-    def _test_connection_sync(self) -> bool:
-        """同步测试SMTP连接，尝试多种连接方式"""
-        # 先尝试根据端口使用推荐的连接方式
-        if self._try_connection(self.port):
-            return True
-
-        # 如果失败，尝试其他常见端口
-        alternative_ports = [465, 587, 25]
-        for port in alternative_ports:
-            if port != self.port and self._try_connection(port):
-                # 更新实例的端口和SSL设置
-                self.port = port
-                self.use_ssl = port == 465
-                print(f"找到可用的SMTP配置: 端口 {port}, SSL: {self.use_ssl}")
+            # 先尝试连接
+            if await self.connect():
+                # 连接成功后立即断开
+                self.disconnect()
                 return True
-
-        return False
+            return False
+        except Exception as e:
+            logger.info(f"测试SMTP连接时出错: {e}")
+            self.disconnect()  # 确保失败后断开连接
+            return False
 
     def _try_connection(self, port: int) -> bool:
         """尝试使用指定端口连接SMTP服务器"""
@@ -217,10 +374,10 @@ class SMTPClient:
                     conn.quit()
                     return True
                 except Exception as e:
-                    print(f"尝试在端口 {port} 使用STARTTLS连接失败: {e}")
+                    logger.info(f"尝试在端口 {port} 使用STARTTLS连接失败: {e}")
                     return False
         except Exception as e:
-            print(f"尝试在端口 {port} 连接SMTP服务器失败: {e}")
+            logger.info(f"尝试在端口 {port} 连接SMTP服务器失败: {e}")
             return False
 
     async def send_email(
@@ -273,7 +430,7 @@ class SMTPClient:
                 ),
             )
         except Exception as e:
-            print(f"发送邮件时发生错误: {e}")
+            logger.info(f"发送邮件时发生错误: {e}")
             return False
 
     def _send_email_sync(
@@ -368,26 +525,18 @@ class SMTPClient:
 
                 # 使用已有连接或建立新连接
                 if not self.conn:
-                    # 连接方式取决于之前成功连接的方式
-                    if self.use_ssl:
-                        import ssl
-
-                        context = ssl.create_default_context()
-                        self.conn = smtplib.SMTP_SSL(
-                            self.server, self.port, context=context
-                        )
-                        self.conn.ehlo()  # 确保先执行EHLO
-                    else:
-                        self.conn = smtplib.SMTP(self.server, self.port)
-                        self.conn.ehlo()
-                        if self.conn.has_extn("STARTTLS"):
-                            import ssl
-
-                            context = ssl.create_default_context()
-                            self.conn.starttls(context=context)
-                            self.conn.ehlo()  # STARTTLS后再次EHLO
-
-                    self.conn.login(self.username, self.password)
+                    # 尝试连接
+                    if not self._try_reconnect():
+                        logger.error("无法建立SMTP连接，邮件发送失败")
+                        # 尝试下一次重试
+                        retry_count += 1
+                        wait_time = 1.5**retry_count  # 指数退避
+                        if retry_count <= max_retries:
+                            logger.info(
+                                f"将在 {wait_time:.1f} 秒后重试连接 ({retry_count}/{max_retries})"
+                            )
+                            time.sleep(wait_time)  # 使用同步sleep而不是异步sleep
+                        continue
 
                 # 发送邮件前确保连接仍然活跃
                 try:
@@ -395,117 +544,77 @@ class SMTPClient:
                 except (smtplib.SMTPServerDisconnected, smtplib.SMTPException):
                     # 如果连接已断开，重新连接
                     self.disconnect()
-                    if self.use_ssl:
-                        import ssl
-
-                        context = ssl.create_default_context()
-                        self.conn = smtplib.SMTP_SSL(
-                            self.server, self.port, context=context
-                        )
-                        self.conn.ehlo()
-                    else:
-                        self.conn = smtplib.SMTP(self.server, self.port)
-                        self.conn.ehlo()
-                        if self.conn.has_extn("STARTTLS"):
-                            import ssl
-
-                            context = ssl.create_default_context()
-                            self.conn.starttls(context=context)
-                            self.conn.ehlo()
-
-                    self.conn.login(self.username, self.password)
+                    if not self._try_reconnect():
+                        logger.error("尝试重新连接SMTP服务器失败，邮件发送失败")
+                        # 尝试下一次重试
+                        retry_count += 1
+                        wait_time = 1.5**retry_count  # 指数退避
+                        if retry_count <= max_retries:
+                            logger.info(
+                                f"将在 {wait_time:.1f} 秒后重试连接 ({retry_count}/{max_retries})"
+                            )
+                            time.sleep(wait_time)  # 使用同步sleep而不是异步sleep
+                        continue
 
                 # 发送邮件
                 try:
                     # 使用显式的命令顺序，而不是直接使用sendmail
                     from_ok = self.conn.mail(from_addr)
                     if from_ok[0] != 250:
-                        print(f"MAIL FROM 命令失败: {from_ok}")
+                        logger.error(f"MAIL FROM 命令失败: {from_ok}")
                         raise smtplib.SMTPException(f"MAIL FROM 失败: {from_ok}")
 
                     # 对每个收件人执行RCPT TO
                     for recipient in all_recipients:
                         rcpt_ok = self.conn.rcpt(recipient)
                         if rcpt_ok[0] != 250 and rcpt_ok[0] != 251:
-                            print(f"RCPT TO {recipient} 命令失败: {rcpt_ok}")
+                            logger.error(f"RCPT TO {recipient} 命令失败: {rcpt_ok}")
                             raise smtplib.SMTPException(f"RCPT TO 失败: {rcpt_ok}")
 
                     # 发送邮件数据
                     data_ok = self.conn.data(msg.as_string())
                     if data_ok[0] != 250:
-                        print(f"DATA 命令失败: {data_ok}")
+                        logger.error(f"DATA 命令失败: {data_ok}")
                         raise smtplib.SMTPException(f"DATA 失败: {data_ok}")
 
+                    logger.info(f"邮件成功发送至 {len(all_recipients)} 个收件人")
                     return True
-                except (smtplib.SMTPServerDisconnected, smtplib.SMTPException) as e:
-                    # 如果发送失败，尝试重新连接并再次发送
-                    retry_count += 1
-                    print(
-                        f"发送邮件失败，第 {retry_count} 次重试 (最大 {max_retries} 次): {e}"
-                    )
 
-                    # 如果已经到达最大重试次数，返回失败
-                    if retry_count > max_retries:
-                        print(f"达到最大重试次数 ({max_retries})，发送失败")
+                except (smtplib.SMTPServerDisconnected, smtplib.SMTPException) as e:
+                    # 连接或发送过程中出现错误
+                    logger.error(f"发送邮件过程中出错: {e}")
+                    self.disconnect()  # 确保断开有问题的连接
+
+                    # 尝试下一次重试
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        wait_time = 1.5**retry_count  # 指数退避
+                        logger.info(
+                            f"发送邮件失败，将在 {wait_time:.1f} 秒后第 {retry_count}/{max_retries} 次重试"
+                        )
+                        time.sleep(wait_time)  # 使用同步sleep而不是异步sleep
+                    else:
+                        logger.error(f"达到最大重试次数 ({max_retries})，邮件发送失败")
                         return False
 
-                    # 重试前断开连接
-                    self.disconnect()
-
-                    # 尝试不同的连接方法
-                    connected = False
-
-                    # 尝试SSL连接
-                    try:
-                        if self.port == 465 or self.use_ssl:
-                            import ssl
-
-                            context = ssl.create_default_context()
-                            self.conn = smtplib.SMTP_SSL(
-                                self.server, self.port, context=context
-                            )
-                            self.conn.ehlo()
-                            self.conn.login(self.username, self.password)
-                            connected = True
-                    except Exception as ssl_e:
-                        print(f"SSL连接失败: {ssl_e}")
-
-                    # 如果SSL失败，尝试STARTTLS
-                    if not connected:
-                        try:
-                            self.conn = smtplib.SMTP(self.server, self.port)
-                            self.conn.ehlo()
-                            if self.conn.has_extn("STARTTLS"):
-                                import ssl
-
-                                context = ssl.create_default_context()
-                                self.conn.starttls(context=context)
-                                self.conn.ehlo()
-                            self.conn.login(self.username, self.password)
-                            connected = True
-                        except Exception as tls_e:
-                            print(f"STARTTLS连接失败: {tls_e}")
-
-                    # 如果重新连接失败，继续下一次重试
-                    if not connected:
-                        print(f"第 {retry_count} 次重试连接失败")
-                        continue
-
             except Exception as e:
-                retry_count += 1
-                print(
-                    f"发送邮件时发生错误，第 {retry_count} 次重试 (最大 {max_retries} 次): {e}"
-                )
+                # 捕获所有其他异常
+                logger.error(f"发送邮件时发生未预期错误: {e}")
+                self.disconnect()  # 确保断开连接
 
-                # 如果已经到达最大重试次数，返回失败
-                if retry_count > max_retries:
-                    print(f"达到最大重试次数 ({max_retries})，发送失败")
+                # 尝试下一次重试
+                retry_count += 1
+                if retry_count <= max_retries:
+                    wait_time = 1.5**retry_count  # 指数退避
+                    logger.info(
+                        f"发送邮件失败，将在 {wait_time:.1f} 秒后第 {retry_count}/{max_retries} 次重试"
+                    )
+                    time.sleep(wait_time)  # 使用同步sleep而不是异步sleep
+                else:
+                    logger.error(f"达到最大重试次数 ({max_retries})，邮件发送失败")
                     return False
 
-                # 重试前断开连接
-                self.disconnect()
-
-        # 如果所有尝试都失败，返回失败
+        # 所有重试都失败
         return False
 
     def send_reply(
@@ -591,3 +700,263 @@ class SMTPClient:
             bcc_addrs=bcc,
             attachments=attachments,
         )
+
+    def _try_reconnect(self) -> bool:
+        """尝试重新连接到SMTP服务器（同步方法）"""
+        try:
+            # 创建一个新的事件循环用于同步环境中执行异步代码
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                # 执行异步连接方法并获取结果
+                return loop.run_until_complete(self._reconnect_async())
+            finally:
+                # 确保清理事件循环
+                loop.close()
+                asyncio.set_event_loop(None)
+        except Exception as e:
+            logger.error(f"_try_reconnect 执行异步连接时出错: {e}")
+            # 出现异常时回退到旧方法
+            return self._try_reconnect_fallback()
+            
+    async def _reconnect_async(self) -> bool:
+        """异步重连方法，重用connect方法的逻辑"""
+        # 记录上一次成功的连接方法
+        previous_method = self.connection_method
+        
+        # 基于上一次成功的连接方法设置连接尝试顺序
+        if previous_method:
+            logger.info(f"尝试使用上次成功的连接方法 {previous_method} 重连")
+            
+            # 根据已知连接方法构建优先级顺序
+            if previous_method == "SSL":
+                connection_attempts = [self._try_ssl_connection, self._try_starttls_connection]
+            elif previous_method == "STARTTLS":
+                connection_attempts = [self._try_starttls_connection, self._try_ssl_connection]
+            elif previous_method == "PLAIN":
+                connection_attempts = [self._try_plain_connection, self._try_starttls_connection, self._try_ssl_connection]
+        else:
+            # 如果没有已知方法，使用标准的基于端口的策略
+            if self.port == 465:
+                connection_attempts = [self._try_ssl_connection, self._try_starttls_connection]
+            elif self.port in [587, 25]:
+                connection_attempts = [self._try_starttls_connection, self._try_ssl_connection]
+            else:
+                connection_attempts = [
+                    self._try_ssl_connection, 
+                    self._try_starttls_connection,
+                    self._try_plain_connection
+                ]
+        
+        # 无需重试，只尝试一次连接
+        timeout = 30
+        
+        # 尝试每种连接方法
+        for connection_method in connection_attempts:
+            method_name = connection_method.__name__.replace("_try_", "").replace("_connection", "")
+            try:
+                logger.info(f"重连: 尝试使用 {method_name} 连接 {self.server}:{self.port}")
+                if await connection_method(timeout):
+                    logger.info(f"重连成功，使用方法: {self.connection_method}")
+                    return True
+            except Exception as e:
+                self.last_error = str(e)
+                logger.info(f"重连: 使用 {method_name} 连接失败: {e}")
+                # 特殊处理SSL错误
+                if isinstance(e, ssl.SSLError) and "wrong version number" in str(e):
+                    logger.warning("重连: 检测到SSL版本不匹配错误，尝试切换到STARTTLS")
+                    # 如果是SSL错误并且下一个尝试不是STARTTLS，则立即尝试STARTTLS
+                    if method_name.upper() == "SSL":
+                        starttls_methods = [m for m in connection_attempts if "starttls" in m.__name__.lower()]
+                        if starttls_methods:
+                            try:
+                                if await starttls_methods[0](timeout):
+                                    return True
+                            except Exception as e2:
+                                logger.info(f"重连: 紧急切换到STARTTLS失败: {e2}")
+        
+        # 所有方法都失败
+        logger.error(f"SMTP重连失败，错误: {self.last_error}")
+        return False
+    
+    def _try_reconnect_fallback(self) -> bool:
+        """在无法使用异步方法时的后备重连方案"""
+        logger.info("使用后备重连方法")
+        
+        # 优先尝试上次成功的连接方法
+        if self.connection_method == "SSL":
+            if self._try_reconnect_ssl():
+                return True
+        elif self.connection_method == "STARTTLS":
+            if self._try_reconnect_starttls():
+                return True
+        elif self.connection_method == "PLAIN":
+            if self._try_reconnect_plain():
+                return True
+            
+        # 根据端口尝试合适的方法
+        if self.port == 465:
+            return self._try_reconnect_ssl() or self._try_reconnect_starttls()
+        elif self.port in [587, 25]:
+            return self._try_reconnect_starttls() or self._try_reconnect_ssl()
+        
+        # 最后尝试所有方法
+        return (self._try_reconnect_ssl() or 
+                self._try_reconnect_starttls() or 
+                self._try_reconnect_plain())
+
+    def _try_reconnect_ssl(self) -> bool:
+        """尝试使用SSL方式重连"""
+        try:
+            context = ssl.create_default_context()
+            # 尝试更兼容的SSL设置
+            try:
+                context.options &= ~ssl.OP_NO_TLSv1
+                context.options &= ~ssl.OP_NO_TLSv1_1
+            except AttributeError:
+                pass
+                
+            self.conn = smtplib.SMTP_SSL(
+                self.server, self.port, timeout=30, context=context
+            )
+            self.conn.ehlo()
+            self.conn.login(self.username, self.password)
+            self.connection_method = "SSL"
+            logger.info("成功使用SSL方式连接")
+            return True
+        except ssl.SSLError as e:
+            if "wrong version number" in str(e):
+                logger.warning(f"SSL版本不匹配错误: {e}，自动切换到STARTTLS")
+                return self._try_reconnect_starttls()
+            logger.info(f"使用SSL方法重连失败: {e}")
+            return False
+        except Exception as e:
+            logger.info(f"使用SSL方法重连失败: {e}")
+            return False
+    
+    def _try_reconnect_starttls(self) -> bool:
+        """尝试使用STARTTLS方式重连"""
+        try:
+            self.conn = smtplib.SMTP(self.server, self.port, timeout=30)
+            self.conn.ehlo()
+            if self.conn.has_extn("STARTTLS"):
+                context = ssl.create_default_context()
+                self.conn.starttls(context=context)
+                self.conn.ehlo()
+            self.conn.login(self.username, self.password)
+            self.connection_method = "STARTTLS"
+            logger.info("成功使用STARTTLS方式连接")
+            return True
+        except Exception as e:
+            logger.info(f"使用STARTTLS方法重连失败: {e}")
+            return False
+    
+    def _try_reconnect_plain(self) -> bool:
+        """尝试使用无加密方式重连"""
+        try:
+            self.conn = smtplib.SMTP(self.server, self.port, timeout=30)
+            self.conn.ehlo()
+            self.conn.login(self.username, self.password)
+            self.connection_method = "PLAIN"
+            logger.warning("使用非加密连接到SMTP服务器，不推荐用于生产环境")
+            return True
+        except Exception as e:
+            logger.info(f"使用PLAIN方法重连失败: {e}")
+            return False
+
+    async def _analyze_connection_error(self, error, server, port, method):
+        """
+        分析连接错误，并提供解决建议
+
+        Args:
+            error: 错误对象
+            server: 服务器地址
+            port: 尝试的端口
+            method: 尝试的连接方法
+
+        Returns:
+            dict: 包含错误分析和建议的字典
+        """
+        analysis = {
+            "server": server,
+            "port": port,
+            "method": method,
+            "error_type": type(error).__name__,
+            "error_message": str(error),
+            "suggestions": [],
+            "alternative_ports": [],
+        }
+
+        error_str = str(error).lower()
+
+        # SSL版本错误
+        if "wrong version number" in error_str and "ssl" in method.lower():
+            analysis["problem"] = "SSL版本不匹配"
+            analysis["suggestions"].append(
+                "服务器可能不支持直接SSL连接，尝试使用STARTTLS"
+            )
+            if port == 465:
+                analysis["alternative_ports"] = [587, 25]
+                analysis["suggestions"].append(f"尝试使用端口587或25，配合STARTTLS")
+
+        # 连接被拒绝
+        elif "connection refused" in error_str:
+            analysis["problem"] = "连接被拒绝"
+            analysis["suggestions"].append("检查服务器地址和端口是否正确")
+            analysis["suggestions"].append("检查服务器防火墙设置")
+            if port == 465:
+                analysis["alternative_ports"] = [587, 25]
+            elif port == 587:
+                analysis["alternative_ports"] = [465, 25]
+            elif port == 25:
+                analysis["alternative_ports"] = [465, 587]
+
+        # 超时错误
+        elif "timeout" in error_str:
+            analysis["problem"] = "连接超时"
+            analysis["suggestions"].append("检查网络连接和服务器状态")
+            analysis["suggestions"].append("服务器可能阻止了连接请求")
+
+        # 认证错误
+        elif "authentication" in error_str or "auth" in error_str:
+            analysis["problem"] = "认证失败"
+            analysis["suggestions"].append("检查用户名和密码是否正确")
+            analysis["suggestions"].append("确认账户是否启用了SMTP访问权限")
+            analysis["suggestions"].append("检查是否需要应用专用密码")
+
+        # 通用错误
+        else:
+            analysis["problem"] = "未知错误"
+            analysis["suggestions"].append("查看服务器文档了解支持的连接方式")
+            analysis["suggestions"].append("联系邮件服务提供商获取正确的SMTP设置")
+
+        # 尝试自动检测常见邮件服务器设置
+        if server:
+            domain = server.lower()
+            if "gmail" in domain:
+                analysis["service_detected"] = "Gmail"
+                analysis["suggested_settings"] = {
+                    "server": "smtp.gmail.com",
+                    "ports": [587, 465],
+                    "requires_auth": True,
+                    "notes": "Gmail需要启用安全性较低的应用访问或使用应用专用密码",
+                }
+            elif "outlook" in domain or "hotmail" in domain:
+                analysis["service_detected"] = "Outlook/Hotmail"
+                analysis["suggested_settings"] = {
+                    "server": "smtp.office365.com",
+                    "ports": [587],
+                    "requires_auth": True,
+                }
+            elif "yahoo" in domain:
+                analysis["service_detected"] = "Yahoo"
+                analysis["suggested_settings"] = {
+                    "server": "smtp.mail.yahoo.com",
+                    "ports": [587, 465],
+                    "requires_auth": True,
+                    "notes": "Yahoo可能需要应用专用密码",
+                }
+
+        # 保存分析结果
+        self.error_analysis = analysis
+        return analysis

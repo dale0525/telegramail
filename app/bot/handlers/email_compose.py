@@ -8,7 +8,11 @@ from telegram import Update
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
-    filters,
+)
+from app.bot.utils.common_steps import (
+    attachment_step,
+    get_cancel_keyboard,
+    email_body_step,
 )
 from app.database.operations import AccountOperations
 from app.bot.utils.conversation_chain import ConversationChain
@@ -240,6 +244,7 @@ def get_compose_handler():
     compose_chain.add_step(
         name="邮件主题",
         handler_func=handle_subject,
+        keyboard_func=get_cancel_keyboard,
         prompt_func=get_subject_prompt,
         filter_type="TEXT",
         data_key="subject",
@@ -249,6 +254,7 @@ def get_compose_handler():
         name="收件人",
         handler_func=handle_recipients,
         validator=validate_recipients,
+        keyboard_func=get_cancel_keyboard,
         prompt_func=get_recipients_prompt,
         filter_type="TEXT",
         data_key="recipients",
@@ -258,6 +264,7 @@ def get_compose_handler():
         name="抄送",
         handler_func=handle_cc,
         validator=validate_cc,
+        keyboard_func=get_cancel_keyboard,
         prompt_func=get_cc_prompt,
         filter_type="TEXT",
         data_key="cc",
@@ -267,31 +274,12 @@ def get_compose_handler():
         name="密送",
         handler_func=handle_bcc,
         validator=validate_bcc,
+        keyboard_func=get_cancel_keyboard,
         prompt_func=get_bcc_prompt,
         filter_type="TEXT",
         data_key="bcc",
     )
 
-    compose_chain.add_step(
-        name="邮件正文",
-        handler_func=email_utils.handle_body,
-        keyboard_func=email_utils.get_body_keyboard,
-        prompt_func=email_utils.get_body_prompt,
-        filter_type="TEXT",
-        data_key="body",
-    )
-
-    compose_chain.add_step(
-        name="附件",
-        handler_func=email_utils.handle_attachments,
-        keyboard_func=email_utils.get_attachment_keyboard,
-        prompt_func=email_utils.get_attachment_prompt,
-        data_key="attachments",
-        filter_type="CUSTOM",
-        filter_handlers=[
-            (filters.TEXT & ~filters.COMMAND, email_utils.handle_attachments),
-            (filters.Document.ALL, email_utils.handle_attachments),
-            (filters.PHOTO, email_utils.handle_attachments),
-        ],
-    )
+    compose_chain.add_step_from_template(email_body_step(compose_chain))
+    compose_chain.add_step_from_template(attachment_step(compose_chain))
     return compose_chain.build()

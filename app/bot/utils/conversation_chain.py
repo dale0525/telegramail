@@ -21,7 +21,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
-from datetime import datetime
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -349,6 +348,15 @@ class ConversationChain:
         await asyncio.sleep(delay)
         await self._clean_messages(context, chat_id)
 
+    async def _ensure_message_cleanup(
+        self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, next_state: int
+    ) -> int:
+        """确保在返回 ConversationHandler.END 时触发消息清理"""
+        if next_state == ConversationHandler.END:
+            # 设置延迟清理任务
+            asyncio.create_task(self._delayed_clean_messages(context, chat_id))
+        return next_state
+
     async def _record_message(
         self, context: ContextTypes.DEFAULT_TYPE, message: Message
     ):
@@ -375,12 +383,14 @@ class ConversationChain:
         if self.entry_handler:
             next_state = await self.entry_handler(update, context)
             if next_state is not None:
-                return next_state
+                chat_id = update.effective_chat.id
+                return await self._ensure_message_cleanup(context, chat_id, next_state)
 
         # 使用默认行为 - 进入第一个步骤
         if not self.steps:
             logger.error(f"会话链条 '{self.name}' 没有定义任何步骤!")
-            return ConversationHandler.END
+            # 使用end_conversation结束会话
+            return await self.end_conversation(update, context)
 
         first_step = self.steps[0]
 
@@ -404,20 +414,8 @@ class ConversationChain:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> int:
         """取消对话的处理函数"""
-        chat_id = update.effective_chat.id
-
         # 记录用户的取消命令消息
         await self._record_message(context, update.message)
-
-        # 发送取消确认消息
-        cancel_msg = await update.message.reply_text(
-            f"❌ 已取消{self.description or '操作'}。",
-            reply_markup=ReplyKeyboardRemove(),
-            disable_notification=True,
-        )
-
-        # 记录取消确认消息
-        await self._record_message(context, cancel_msg)
 
         # 清理会话数据(保留消息ID列表)
         for step in self.steps:
@@ -425,10 +423,10 @@ class ConversationChain:
             if data_key in context.user_data:
                 del context.user_data[data_key]
 
-        # 设置延迟清理任务
-        asyncio.create_task(self._delayed_clean_messages(context, chat_id))
-
-        return ConversationHandler.END
+        # 使用end_conversation结束会话并发送取消消息
+        return await self.end_conversation(
+            update, context, message=f"❌ 已取消{self.description or '操作'}。"
+        )
 
     async def _step_handler(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, step_index: int
@@ -472,13 +470,12 @@ class ConversationChain:
         # 如果有自定义处理函数，调用它
         next_state = await current_step.handle(update, context, user_input)
         if next_state is not None:
-            return next_state
+            return await self._ensure_message_cleanup(context, chat_id, next_state)
 
         # 检查是否还有下一步
         if next_step_index >= len(self.steps):
             # 如果没有下一步，结束对话
-            # 通常应该有专门的完成处理函数，这里只是简单地结束
-            return ConversationHandler.END
+            return await self.end_conversation(update, context)
 
         # 准备下一步
         next_step = self.steps[next_step_index]
@@ -515,7 +512,13 @@ class ConversationChain:
 
             # 从回调查询中获取按钮ID
             button_id = update.callback_query.data
-            return await handler_func(update, context, button_id)
+
+            # 调用原始处理函数
+            next_state = await handler_func(update, context, button_id)
+
+            # 确保在返回 ConversationHandler.END 时触发消息清理
+            chat_id = update.effective_chat.id
+            return await self._ensure_message_cleanup(context, chat_id, next_state)
 
         # 将按钮处理函数和模式添加到入口点列表
         self.button_entry_points.append((button_handler, pattern))
@@ -649,3 +652,40 @@ class ConversationChain:
                 fallback.callback = check_owner_func(fallback.callback)
 
         return handler
+
+    async def end_conversation(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        message=None,
+        reply_markup=None,
+    ) -> int:
+        """结束会话并自动清理消息
+
+        Args:
+            update: Telegram更新对象
+            context: 上下文对象
+            message: 结束消息，如果提供则发送
+            reply_markup: 消息的回复标记，默认为移除键盘
+
+        Returns:
+            ConversationHandler.END
+        """
+        chat_id = update.effective_chat.id
+
+        # 如果提供了结束消息，发送它
+        if message:
+            if reply_markup is None:
+                reply_markup = ReplyKeyboardRemove()
+
+            end_msg = await update.message.reply_text(
+                message,
+                reply_markup=reply_markup,
+                disable_notification=True,
+            )
+            await self._record_message(context, end_msg)
+
+        # 设置延迟清理任务
+        asyncio.create_task(self._delayed_clean_messages(context, chat_id))
+
+        return ConversationHandler.END

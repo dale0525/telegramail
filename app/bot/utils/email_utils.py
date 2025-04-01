@@ -16,21 +16,14 @@ from telegram import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
 )
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
-    CommandHandler,
-    MessageHandler,
-    filters,
 )
 
 from app.database.operations import (
     AccountOperations,
-    get_email_by_id,
     get_email_account_by_id,
     add_reply_to_email,
     save_email_metadata,
@@ -108,12 +101,6 @@ class EmailUtils:
     \\`\\`\\`
 
     使用 /cancel 取消操作"""
-
-    def get_body_keyboard(self, context):
-        keyboard = [["❌ 取消"]]
-        return ReplyKeyboardMarkup(
-            keyboard, one_time_keyboard=True, resize_keyboard=True
-        )
 
     async def handle_body(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input
@@ -433,8 +420,8 @@ class EmailUtils:
                 reply_markup=ReplyKeyboardRemove(),
                 disable_notification=True,
             )
-            # 清理所有消息
-            await self.chain._delayed_clean_messages(context, chat_id)
+            # 结束会话并清理消息
+            await self.chain.end_conversation(update, context)
             return
 
         # 获取邮件信息
@@ -453,8 +440,8 @@ class EmailUtils:
                 reply_markup=ReplyKeyboardRemove(),
                 disable_notification=True,
             )
-            # 清理所有消息
-            await self.chain._delayed_clean_messages(context, chat_id)
+            # 结束会话并清理消息
+            await self.chain.end_conversation(update, context)
             return
 
         # 确保收件人列表中的每个地址都是单个有效邮箱
@@ -475,8 +462,8 @@ class EmailUtils:
                 reply_markup=ReplyKeyboardRemove(),
                 disable_notification=True,
             )
-            # 清理所有消息
-            await self.chain._delayed_clean_messages(context, chat_id)
+            # 结束会话并清理消息
+            await self.chain.end_conversation(update, context)
             return
 
         # 验证抄送和密送列表
@@ -513,8 +500,8 @@ class EmailUtils:
                         reply_markup=ReplyKeyboardRemove(),
                         disable_notification=True,
                     )
-                    # 清理所有消息
-                    await self.chain._delayed_clean_messages(context, chat_id)
+                    # 结束会话并清理消息
+                    await self.chain.end_conversation(update, context)
                     return
 
         if bcc_list:
@@ -550,8 +537,8 @@ class EmailUtils:
                         reply_markup=ReplyKeyboardRemove(),
                         disable_notification=True,
                     )
-                    # 清理所有消息
-                    await self.chain._delayed_clean_messages(context, chat_id)
+                    # 结束会话并清理消息
+                    await self.chain.end_conversation(update, context)
                     return
 
         # 显示发送状态
@@ -608,7 +595,7 @@ class EmailUtils:
                 await self.chain._record_message(context, final_msg)
 
                 # 设置延迟清理任务
-                await self.chain._delayed_clean_messages(context, chat_id)
+                await self.chain.end_conversation(update, context)
                 return
 
             # 尝试发送邮件
@@ -767,7 +754,7 @@ class EmailUtils:
                     )
 
                 # 延迟清理消息
-                await self.chain._delayed_clean_messages(context, chat_id)
+                await self.chain.end_conversation(update, context)
             else:
                 # 发送失败
                 error_msg = await update.message.reply_text(
@@ -780,7 +767,7 @@ class EmailUtils:
                     disable_notification=True,
                 )
                 await self.chain._record_message(context, error_msg)
-                await self.chain._delayed_clean_messages(context, chat_id)
+                await self.chain.end_conversation(update, context)
 
         except ssl.SSLError as e:
             logger.error(f"SSL错误: {e}")
@@ -793,6 +780,7 @@ class EmailUtils:
                 disable_notification=True,
             )
             await self.chain._record_message(context, error_msg)
+            await self.chain.end_conversation(update, context)
 
         except Exception as e:
             logger.error(f"发送邮件时出错: {e}")
@@ -803,6 +791,7 @@ class EmailUtils:
                 disable_notification=True,
             )
             await self.chain._record_message(context, error_msg)
+            await self.chain.end_conversation(update, context)
 
         # 清理会话数据
         for key in [

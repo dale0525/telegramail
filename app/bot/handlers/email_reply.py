@@ -5,15 +5,12 @@ Email reply handlers for TelegramMail Bot using ConversationChain.
 
 import logging
 import html
-from typing import List, Dict
-from telegram import Update
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
+from typing import List, Dict, Tuple, Any, Optional
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, ForceReply
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
-    CommandHandler,
     filters,
-    CallbackQueryHandler,
 )
 
 from app.database.operations import get_email_by_id, get_email_account_by_id
@@ -35,9 +32,16 @@ reply_chain = ConversationChain(
 # 创建邮件工具类实例
 email_utils = EmailUtils(chain=reply_chain)
 
+# 状态常量
+REPLY_OPTIONS = 0
+ENTER_BODY = 1
+MANAGE_RECIPIENTS = 2
+MANAGE_CC = 3
+MANAGE_BCC = 4
+HANDLE_ATTACHMENTS = 5
+
+
 # 辅助函数
-
-
 def get_recipients_keyboard(candidates: Dict[str, List[str]]):
     """获取收件人选择键盘"""
     keyboard = []
@@ -120,14 +124,122 @@ def validate_reply_recipients(user_input, context):
     return True, None
 
 
+# 提示信息函数
+def get_reply_options_prompt(context):
+    """获取回复选项提示消息"""
+    email_id = context.user_data.get("reply_email_id")
+    if not email_id:
+        return "⚠️ 无法获取邮件信息，请重试。"
+    
+    # 获取邮件和账户信息
+    email = get_email_by_id(email_id)
+    account = get_email_account_by_id(email.account_id)
+    subject = context.user_data.get("reply_subject", "")
+    
+    return (
+        f"📤 <b>回复邮件</b>\n\n"
+        f"<b>账号:</b> {html.escape(account.email)}\n"
+        f"<b>主题:</b> {html.escape(subject)}\n"
+        f"<b>收件人:</b> {html.escape(email.sender)}\n\n"
+        f"请选择操作以继续邮件回复流程：\n"
+        f"• 使用默认收件人 - 直接回复给原邮件发件人\n"
+        f"• 管理收件人/抄送/密送列表 - 自定义接收者\n"
+        f"• 继续编写正文 - 进入邮件正文编写\n"
+        f"• 取消 - 放弃当前回复操作"
+    )
+
+
+def get_reply_options_keyboard(context):
+    """获取回复选项键盘"""
+    keyboard = [
+        ["📤 使用默认收件人（原发件人）"],
+        ["👥 管理收件人列表"],
+        ["📋 管理抄送列表"],
+        ["🕶 管理密送列表"],
+        ["✅ 继续编写正文", "❌ 取消"],
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        one_time_keyboard=True,
+        resize_keyboard=True,
+        input_field_placeholder="选择操作或输入回复内容",
+    )
+
+
+def get_body_prompt(context):
+    """获取正文输入提示"""
+    return "📝 请输入回复邮件正文：\n\n支持Markdown格式，使用 /cancel 取消操作"
+
+
+def get_body_keyboard(context):
+    """获取正文输入键盘"""
+    keyboard = [["❌ 取消"]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def get_manage_recipients_prompt(context):
+    """获取管理收件人提示"""
+    current_recipients = context.user_data.get("reply_recipients", [])
+    recipients_text = ", ".join(current_recipients) if current_recipients else "暂无"
+    
+    return (
+        f"👥 <b>管理收件人列表</b>\n\n"
+        f"当前收件人: {html.escape(recipients_text)}\n\n"
+        f"您可以:\n"
+        f"• 从下方候选列表中选择收件人\n"
+        f"• 直接输入新的收件人邮箱\n"
+        f"• 输入多个收件人时用逗号分隔\n"
+        f'• 选择完成后点击"确认收件人"'
+    )
+
+
+def get_manage_cc_prompt(context):
+    """获取管理抄送提示"""
+    current_cc = context.user_data.get("reply_cc", [])
+    cc_text = ", ".join(current_cc) if current_cc else "暂无"
+    
+    return (
+        f"📋 <b>管理抄送列表</b>\n\n"
+        f"当前抄送: {html.escape(cc_text)}\n\n"
+        f"您可以:\n"
+        f"• 从下方候选列表中选择抄送人\n"
+        f"• 直接输入新的抄送邮箱\n"
+        f"• 输入多个抄送时用逗号分隔\n"
+        f'• 选择完成后点击"确认收件人"'
+    )
+
+
+def get_manage_bcc_prompt(context):
+    """获取管理密送提示"""
+    current_bcc = context.user_data.get("reply_bcc", [])
+    bcc_text = ", ".join(current_bcc) if current_bcc else "暂无"
+    
+    return (
+        f"🕶 <b>管理密送列表</b>\n\n"
+        f"当前密送: {html.escape(bcc_text)}\n\n"
+        f"您可以:\n"
+        f"• 从下方候选列表中选择密送人\n"
+        f"• 直接输入新的密送邮箱\n"
+        f"• 输入多个密送时用逗号分隔\n"
+        f'• 选择完成后点击"确认收件人"'
+    )
+
+
+def get_recipients_keyboard_func(context):
+    """获取候选收件人键盘的函数"""
+    candidates = context.user_data.get("reply_candidates", {})
+    return get_recipients_keyboard(candidates)
+
+
 async def start_reply(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     button_id: str,
 ):
     """处理回复邮件的入口函数"""
-    logger.info(button_id)
+    logger.info(f"开始回复邮件: {button_id}")
     email_id = int(button_id.split("_")[2])
+    
     # 从数据库获取邮件
     email = get_email_by_id(email_id)
     if not email:
@@ -202,44 +314,9 @@ async def start_reply(
 
     # 回复消息
     await update.callback_query.answer()
-
-    # 创建键盘布局
-    keyboard = [
-        ["📤 使用默认收件人（原发件人）"],
-        ["👥 管理收件人列表"],
-        ["📋 管理抄送列表"],
-        ["🕶 管理密送列表"],
-        ["✅ 继续编写正文", "❌ 取消"],
-    ]
-
-    reply_markup = ReplyKeyboardMarkup(
-        keyboard,
-        one_time_keyboard=True,
-        resize_keyboard=True,
-        input_field_placeholder="选择操作或输入回复内容",
-    )
-
-    # 发送初始提示
-    message = await update.callback_query.message.reply_text(
-        f"📤 <b>回复邮件</b>\n\n"
-        f"<b>账号:</b> {html.escape(account.email)}\n"
-        f"<b>主题:</b> {html.escape(subject)}\n"
-        f"<b>收件人:</b> {html.escape(email.sender)}\n\n"
-        f"请选择操作以继续邮件回复流程：\n"
-        f"• 使用默认收件人 - 直接回复给原邮件发件人\n"
-        f"• 管理收件人/抄送/密送列表 - 自定义接收者\n"
-        f"• 继续编写正文 - 进入邮件正文编写\n"
-        f"• 取消 - 放弃当前回复操作",
-        parse_mode="HTML",
-        reply_markup=reply_markup,
-        disable_notification=True,
-    )
-
-    # 记录消息ID
-    await reply_chain._record_message(context, message)
-
-    # 返回收件人设置状态
-    return 0  # 返回options状态的ID
+    
+    # 返回选项菜单状态
+    return REPLY_OPTIONS
 
 
 async def handle_reply_options(
@@ -248,9 +325,6 @@ async def handle_reply_options(
     """处理用户选择的回复选项"""
     chat_id = update.effective_chat.id
     message = update.message
-
-    # 记录消息
-    await reply_chain._record_message(context, message)
 
     if user_input == "📤 使用默认收件人（原发件人）":
         # 直接使用默认收件人（原邮件的发件人）
@@ -263,23 +337,9 @@ async def handle_reply_options(
 
             # 记录使用了默认收件人的状态
             logger.info(f"用户选择了默认收件人: {default_recipient}")
-
-            # 显示正文编辑提示
-            keyboard = [["❌ 取消"]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-            body_prompt = await message.reply_text(
-                "📝 请输入回复邮件正文：\n\n" "支持Markdown格式，使用 /cancel 取消操作",
-                reply_markup=reply_markup,
-                disable_notification=True,
-            )
-
-            # 记录消息
-            await reply_chain._record_message(context, body_prompt)
-
-            # 设置状态为输入正文
-            context.user_data["reply_state"] = "ENTER_BODY"
-            return 1  # 进入正文输入状态
+            
+            # 进入正文编辑状态
+            return ENTER_BODY
         else:
             # 默认收件人不存在，提示用户手动选择
             error_msg = await message.reply_text(
@@ -287,102 +347,22 @@ async def handle_reply_options(
                 disable_notification=True,
             )
             await reply_chain._record_message(context, error_msg)
-            return 0  # 保持在当前状态
+            return REPLY_OPTIONS
 
     elif user_input == "👥 管理收件人列表":
-        # 获取候选收件人列表
-        candidates = context.user_data.get("reply_candidates", {})
-
-        # 显示当前已选收件人
-        current_recipients = context.user_data.get("reply_recipients", [])
-        recipients_text = (
-            ", ".join(current_recipients) if current_recipients else "暂无"
-        )
-
-        # 创建键盘
-        keyboard = get_recipients_keyboard(candidates)
-
-        recipients_msg = await message.reply_text(
-            f"👥 <b>管理收件人列表</b>\n\n"
-            f"当前收件人: {html.escape(recipients_text)}\n\n"
-            f"您可以:\n"
-            f"• 从下方候选列表中选择收件人\n"
-            f"• 直接输入新的收件人邮箱\n"
-            f"• 输入多个收件人时用逗号分隔\n"
-            f'• 选择完成后点击"确认收件人"',
-            parse_mode="HTML",
-            reply_markup=keyboard,
-            disable_notification=True,
-        )
-
-        # 记录消息
-        await reply_chain._record_message(context, recipients_msg)
-
         # 设置状态
         context.user_data["reply_state"] = "MANAGE_RECIPIENTS"
-        return 2  # 进入管理收件人状态
+        return MANAGE_RECIPIENTS
 
     elif user_input == "📋 管理抄送列表":
-        # 获取候选收件人列表
-        candidates = context.user_data.get("reply_candidates", {})
-
-        # 显示当前已选抄送
-        current_cc = context.user_data.get("reply_cc", [])
-        cc_text = ", ".join(current_cc) if current_cc else "暂无"
-
-        # 创建键盘
-        keyboard = get_recipients_keyboard(candidates)
-
-        cc_msg = await message.reply_text(
-            f"📋 <b>管理抄送列表</b>\n\n"
-            f"当前抄送: {html.escape(cc_text)}\n\n"
-            f"您可以:\n"
-            f"• 从下方候选列表中选择抄送人\n"
-            f"• 直接输入新的抄送邮箱\n"
-            f"• 输入多个抄送时用逗号分隔\n"
-            f'• 选择完成后点击"确认收件人"',
-            parse_mode="HTML",
-            reply_markup=keyboard,
-            disable_notification=True,
-        )
-
-        # 记录消息
-        await reply_chain._record_message(context, cc_msg)
-
         # 设置状态
         context.user_data["reply_state"] = "MANAGE_CC"
-        return 3  # 进入管理抄送状态
+        return MANAGE_CC
 
     elif user_input == "🕶 管理密送列表":
-        # 获取候选收件人列表
-        candidates = context.user_data.get("reply_candidates", {})
-
-        # 显示当前已选密送
-        current_bcc = context.user_data.get("reply_bcc", [])
-        bcc_text = ", ".join(current_bcc) if current_bcc else "暂无"
-
-        # 创建键盘
-        keyboard = get_recipients_keyboard(candidates)
-
-        bcc_msg = await message.reply_text(
-            f"🕶 <b>管理密送列表</b>\n\n"
-            f"当前密送: {html.escape(bcc_text)}\n\n"
-            f"您可以:\n"
-            f"• 从下方候选列表中选择密送人\n"
-            f"• 直接输入新的密送邮箱\n"
-            f"• 输入多个密送时用逗号分隔\n"
-            f'• 选择完成后点击"确认收件人"',
-            parse_mode="HTML",
-            reply_markup=keyboard,
-            disable_notification=True,
-        )
-
-        # 记录消息
-        await reply_chain._record_message(context, bcc_msg)
-
         # 设置状态
         context.user_data["reply_state"] = "MANAGE_BCC"
-        return 4  # 进入管理密送状态
+        return MANAGE_BCC
 
     elif user_input == "✅ 继续编写正文":
         # 检查是否有收件人
@@ -392,24 +372,11 @@ async def handle_reply_options(
                 "⚠️ 请至少添加一个收件人后继续。", disable_notification=True
             )
             await reply_chain._record_message(context, error_msg)
-            return 0  # 保持在当前状态
-
-        # 显示正文编辑提示
-        keyboard = [["❌ 取消"]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-        body_prompt = await message.reply_text(
-            "📝 请输入回复邮件正文：\n\n" "支持Markdown格式，使用 /cancel 取消操作",
-            reply_markup=reply_markup,
-            disable_notification=True,
-        )
-
-        # 记录消息
-        await reply_chain._record_message(context, body_prompt)
+            return REPLY_OPTIONS
 
         # 设置状态为输入正文
         context.user_data["reply_state"] = "ENTER_BODY"
-        return 1  # 进入正文输入状态
+        return ENTER_BODY
 
     elif user_input == "❌ 取消":
         # 取消回复
@@ -422,97 +389,11 @@ async def handle_reply_options(
         # 记录消息
         await reply_chain._record_message(context, cancel_msg)
 
-        # 设置延迟清理任务
-        await reply_chain._delayed_clean_messages(context, chat_id)
-
-        return ConversationHandler.END
+        # 返回 ConversationHandler.END 并自动触发消息清理
+        return await reply_chain.end_conversation(update, context)
 
     # 默认保持当前状态
-    return 0
-
-
-async def handle_manage_recipients(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, user_input
-):
-    """处理管理收件人列表"""
-    chat_id = update.effective_chat.id
-    message = update.message
-
-    # 记录消息
-    await reply_chain._record_message(context, message)
-
-    # 如果用户选择取消
-    if user_input == "❌ 取消":
-        cancel_msg = await message.reply_text(
-            "❌ 已取消回复邮件。",
-            reply_markup=ReplyKeyboardRemove(),
-            disable_notification=True,
-        )
-        await reply_chain._record_message(context, cancel_msg)
-        await reply_chain._delayed_clean_messages(context, chat_id)
-        return ConversationHandler.END
-
-    # 如果用户确认收件人
-    if user_input == "✅ 确认收件人":
-        # 获取当前收件人列表
-        recipients = context.user_data.get("reply_recipients", [])
-        recipients_text = ", ".join(recipients) if recipients else "暂无"
-
-        # 创建主菜单键盘
-        keyboard = [
-            ["📤 使用默认收件人（原发件人）"],
-            ["👥 管理收件人列表"],
-            ["📋 管理抄送列表"],
-            ["🕶 管理密送列表"],
-            ["✅ 继续编写正文", "❌ 取消"],
-        ]
-
-        reply_markup = ReplyKeyboardMarkup(
-            keyboard, one_time_keyboard=True, resize_keyboard=True
-        )
-
-        # 发送确认消息
-        confirm_msg = await message.reply_text(
-            f"✅ 已确认收件人: {html.escape(recipients_text)}\n\n"
-            f'请继续选择操作或点击"继续编写正文"进入正文编辑。',
-            parse_mode="HTML",
-            reply_markup=reply_markup,
-            disable_notification=True,
-        )
-
-        # 记录消息
-        await reply_chain._record_message(context, confirm_msg)
-
-        # 返回主菜单状态
-        return 0
-
-    # 尝试添加用户输入的收件人
-    # 验证邮箱格式
-    is_valid, error_msg = validate_reply_recipients(user_input, context)
-
-    if not is_valid:
-        # 显示错误消息
-        error_message = await message.reply_text(error_msg, disable_notification=True)
-        await reply_chain._record_message(context, error_message)
-        return 2  # 保持在管理收件人状态
-
-    # 成功添加收件人
-    # 获取更新后的收件人列表
-    recipients = context.user_data.get("reply_recipients", [])
-    recipients_text = ", ".join(recipients)
-
-    # 显示当前收件人列表
-    status_message = await message.reply_text(
-        f"✅ 当前收件人: {html.escape(recipients_text)}\n\n"
-        f'您可以继续添加更多收件人，或点击"确认收件人"完成。',
-        parse_mode="HTML",
-        disable_notification=True,
-    )
-
-    await reply_chain._record_message(context, status_message)
-
-    # 保持在管理收件人状态
-    return 2
+    return REPLY_OPTIONS
 
 
 async def handle_body_input(
@@ -522,9 +403,6 @@ async def handle_body_input(
     chat_id = update.effective_chat.id
     message = update.message
 
-    # 记录消息
-    await reply_chain._record_message(context, message)
-
     if user_input == "❌ 取消":
         # 取消回复
         cancel_msg = await message.reply_text(
@@ -533,36 +411,188 @@ async def handle_body_input(
             disable_notification=True,
         )
         await reply_chain._record_message(context, cancel_msg)
-        await reply_chain._delayed_clean_messages(context, chat_id)
-        return ConversationHandler.END
+        return await reply_chain.end_conversation(update, context)
 
     # 存储邮件正文
     context.user_data["reply_body"] = user_input
-
-    # 创建键盘布局 - 询问是否添加附件
-    keyboard = [["✅ 发送邮件（无附件）"], ["📎 添加附件"], ["❌ 取消"]]
-
-    reply_markup = ReplyKeyboardMarkup(
-        keyboard, one_time_keyboard=True, resize_keyboard=True
-    )
-
-    # 发送询问附件的消息
-    attachment_msg = await message.reply_text(
-        "📩 您的邮件已准备就绪！\n\n"
-        "您可以选择直接发送邮件，或者添加附件后发送。\n\n"
-        '📎 若要添加附件，请点击"添加附件"按钮，然后上传文件。\n'
-        '✅ 若不需要附件，请点击"发送邮件(无附件)"按钮。\n'
-        '❌ 若要取消发送，请点击"取消"按钮。',
-        reply_markup=reply_markup,
-        disable_notification=True,
-    )
-
-    # 记录消息
-    await reply_chain._record_message(context, attachment_msg)
-
-    # 设置状态为添加附件
+    
+    # 自动进入附件状态
     context.user_data["reply_state"] = "ADD_ATTACHMENTS"
-    return 5  # 进入添加附件状态
+    return HANDLE_ATTACHMENTS
+
+
+async def handle_manage_recipients(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_input
+):
+    """处理管理收件人列表"""
+    chat_id = update.effective_chat.id
+    message = update.message
+    current_state = context.user_data.get("reply_state", "MANAGE_RECIPIENTS")
+
+    # 如果用户选择取消
+    if user_input == "❌ 取消":
+        cancel_msg = await message.reply_text(
+            "❌ 已取消回复邮件。",
+            reply_markup=ReplyKeyboardRemove(),
+            disable_notification=True,
+        )
+        await reply_chain._record_message(context, cancel_msg)
+        return await reply_chain.end_conversation(update, context)
+
+    # 如果用户确认收件人
+    if user_input == "✅ 确认收件人":
+        # 获取当前管理类型
+        if current_state == "MANAGE_RECIPIENTS":
+            recipients = context.user_data.get("reply_recipients", [])
+            recipients_text = ", ".join(recipients) if recipients else "暂无"
+            confirm_text = f"✅ 已确认收件人: {html.escape(recipients_text)}"
+        elif current_state == "MANAGE_CC":
+            cc_list = context.user_data.get("reply_cc", [])
+            cc_text = ", ".join(cc_list) if cc_list else "暂无"
+            confirm_text = f"✅ 已确认抄送: {html.escape(cc_text)}"
+        elif current_state == "MANAGE_BCC":
+            bcc_list = context.user_data.get("reply_bcc", [])
+            bcc_text = ", ".join(bcc_list) if bcc_list else "暂无"
+            confirm_text = f"✅ 已确认密送: {html.escape(bcc_text)}"
+        else:
+            confirm_text = "✅ 已确认收件人设置"
+
+        # 创建主菜单键盘
+        keyboard = get_reply_options_keyboard(context)
+
+        # 发送确认消息
+        confirm_msg = await message.reply_text(
+            f"{confirm_text}\n\n"
+            f'请继续选择操作或点击"继续编写正文"进入正文编辑。',
+            parse_mode="HTML",
+            reply_markup=keyboard,
+            disable_notification=True,
+        )
+
+        # 记录消息
+        await reply_chain._record_message(context, confirm_msg)
+
+        # 返回主菜单状态
+        return REPLY_OPTIONS
+
+    # 根据当前状态判断处理逻辑
+    if current_state == "MANAGE_RECIPIENTS":
+        # 验证邮箱格式
+        is_valid, error_msg = validate_reply_recipients(user_input, context)
+        
+        if not is_valid:
+            # 显示错误消息
+            error_message = await message.reply_text(error_msg, disable_notification=True)
+            await reply_chain._record_message(context, error_message)
+            return MANAGE_RECIPIENTS
+        
+        # 获取更新后的收件人列表
+        recipients = context.user_data.get("reply_recipients", [])
+        recipients_text = ", ".join(recipients)
+        
+        # 显示当前收件人列表
+        status_message = await message.reply_text(
+            f"✅ 当前收件人: {html.escape(recipients_text)}\n\n"
+            f'您可以继续添加更多收件人，或点击"确认收件人"完成。',
+            parse_mode="HTML",
+            disable_notification=True,
+        )
+        
+        await reply_chain._record_message(context, status_message)
+        return MANAGE_RECIPIENTS
+        
+    elif current_state == "MANAGE_CC":
+        # 处理抄送收件人
+        # 如果用户选择了已有候选人
+        is_valid = True
+        current_cc = context.user_data.get("reply_cc", [])
+        
+        # 分割邮箱(可能包含多个用逗号分隔的邮箱)
+        if "," in user_input:
+            emails = [email.strip() for email in user_input.split(",") if email.strip()]
+        else:
+            emails = [user_input.strip()]
+        
+        # 验证每个邮箱
+        invalid_emails = []
+        for email in emails:
+            if "@" not in email or "." not in email.split("@")[1]:
+                invalid_emails.append(email)
+        
+        if invalid_emails:
+            is_valid = False
+            error_msg = f"⚠️ 以下邮箱格式无效：\n{', '.join(invalid_emails)}"
+            error_message = await message.reply_text(error_msg, disable_notification=True)
+            await reply_chain._record_message(context, error_message)
+            return MANAGE_CC
+            
+        # 添加新的抄送地址
+        for email in emails:
+            if email not in current_cc:
+                current_cc.append(email)
+        
+        # 更新抄送列表
+        context.user_data["reply_cc"] = current_cc
+        cc_text = ", ".join(current_cc)
+        
+        # 显示当前抄送列表
+        status_message = await message.reply_text(
+            f"✅ 当前抄送: {html.escape(cc_text)}\n\n"
+            f'您可以继续添加更多抄送，或点击"确认收件人"完成。',
+            parse_mode="HTML",
+            disable_notification=True,
+        )
+        
+        await reply_chain._record_message(context, status_message)
+        return MANAGE_CC
+        
+    elif current_state == "MANAGE_BCC":
+        # 处理密送收件人
+        # 如果用户选择了已有候选人
+        is_valid = True
+        current_bcc = context.user_data.get("reply_bcc", [])
+        
+        # 分割邮箱(可能包含多个用逗号分隔的邮箱)
+        if "," in user_input:
+            emails = [email.strip() for email in user_input.split(",") if email.strip()]
+        else:
+            emails = [user_input.strip()]
+        
+        # 验证每个邮箱
+        invalid_emails = []
+        for email in emails:
+            if "@" not in email or "." not in email.split("@")[1]:
+                invalid_emails.append(email)
+        
+        if invalid_emails:
+            is_valid = False
+            error_msg = f"⚠️ 以下邮箱格式无效：\n{', '.join(invalid_emails)}"
+            error_message = await message.reply_text(error_msg, disable_notification=True)
+            await reply_chain._record_message(context, error_message)
+            return MANAGE_BCC
+            
+        # 添加新的密送地址
+        for email in emails:
+            if email not in current_bcc:
+                current_bcc.append(email)
+        
+        # 更新密送列表
+        context.user_data["reply_bcc"] = current_bcc
+        bcc_text = ", ".join(current_bcc)
+        
+        # 显示当前密送列表
+        status_message = await message.reply_text(
+            f"✅ 当前密送: {html.escape(bcc_text)}\n\n"
+            f'您可以继续添加更多密送，或点击"确认收件人"完成。',
+            parse_mode="HTML",
+            disable_notification=True,
+        )
+        
+        await reply_chain._record_message(context, status_message)
+        return MANAGE_BCC
+    
+    # 默认保持当前状态
+    return MANAGE_RECIPIENTS
 
 
 async def handle_attachment_selection(
@@ -571,9 +601,6 @@ async def handle_attachment_selection(
     """处理附件选择"""
     chat_id = update.effective_chat.id
     message = update.message
-
-    # 记录消息
-    await reply_chain._record_message(context, message)
 
     # 处理文本输入
     if isinstance(user_input, str):
@@ -594,7 +621,7 @@ async def handle_attachment_selection(
                 disable_notification=True,
             )
             await reply_chain._record_message(context, prompt_msg)
-            return 5  # 保持在附件状态
+            return HANDLE_ATTACHMENTS
 
         elif user_input == "❌ 取消":
             # 取消回复
@@ -604,19 +631,95 @@ async def handle_attachment_selection(
                 disable_notification=True,
             )
             await reply_chain._record_message(context, cancel_msg)
-            await reply_chain._delayed_clean_messages(context, chat_id)
-            return ConversationHandler.END
+            return await reply_chain.end_conversation(update, context)
 
     # 处理附件（文档、照片等）
     elif hasattr(update.message, "document") or hasattr(update.message, "photo"):
         # 处理附件上传
-        from app.bot.handlers.email_compose import process_attachment
-
         await process_attachment(update, context)
-        return 5  # 保持在附件状态
+        return HANDLE_ATTACHMENTS
 
     # 其他情况，保持在当前状态
-    return 5
+    return HANDLE_ATTACHMENTS
+
+
+async def process_attachment(update, context):
+    """处理上传的附件"""
+    # 检查是否已初始化附件列表
+    if "reply_attachments" not in context.user_data:
+        context.user_data["reply_attachments"] = []
+    
+    # 检查是否是媒体组的一部分
+    media_group_id = update.message.media_group_id if hasattr(update.message, "media_group_id") else None
+    
+    # 如果是媒体组的一部分，使用专门的处理函数
+    if media_group_id:
+        processing_msg = await update.message.reply_text(
+            "📤 正在处理媒体组...", disable_notification=True
+        )
+        
+        # 记录处理消息
+        await reply_chain._record_message(context, processing_msg)
+        
+        # 添加媒体组ID和消息到上下文
+        chain_key = reply_chain.media_group_key
+        if chain_key not in context.user_data:
+            context.user_data[chain_key] = {}
+        
+        if media_group_id not in context.user_data[chain_key]:
+            context.user_data[chain_key][media_group_id] = {
+                "messages": [],
+                "processing_msg": processing_msg,
+            }
+        
+        # 记录媒体组消息
+        context.user_data[chain_key][media_group_id]["messages"].append(update.message)
+        
+        # 使用EmailUtils中的附件处理函数
+        await email_utils.check_media_group_completion(
+            update, context, media_group_id, processing_msg, reply_chain
+        )
+        return
+    
+    # 处理单个文件
+    # 使用EmailUtils.process_attachment静态方法
+    if hasattr(update.message, "document"):
+        document = update.message.document
+        file_id = document.file_id
+        filename = document.file_name or f"attachment_{file_id}.file"
+        mime_type = document.mime_type or "application/octet-stream"
+        
+        # 处理文件
+        status_msg = await update.message.reply_text(
+            f"📥 正在下载文件: {filename}...", disable_notification=True
+        )
+        await reply_chain._record_message(context, status_msg)
+        
+        # 使用EmailUtils的方法处理单个附件
+        await email_utils.process_single_attachment(
+            update, context, file_id, filename, mime_type, status_msg, 
+            "reply_attachments"
+        )
+    
+    elif hasattr(update.message, "photo"):
+        # 处理照片 - 使用最高质量的版本
+        photos = update.message.photo
+        photo = photos[-1]  # 最高分辨率的照片
+        file_id = photo.file_id
+        filename = f"photo_{file_id}.jpg"
+        mime_type = "image/jpeg"
+        
+        # 处理文件
+        status_msg = await update.message.reply_text(
+            f"📥 正在下载照片...", disable_notification=True
+        )
+        await reply_chain._record_message(context, status_msg)
+        
+        # 使用EmailUtils的方法处理单个附件
+        await email_utils.process_single_attachment(
+            update, context, file_id, filename, mime_type, status_msg,
+            "reply_attachments"
+        )
 
 
 async def send_reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -653,7 +756,7 @@ async def send_reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_notification=True,
         )
         await reply_chain._record_message(context, error_msg)
-        return 0  # 返回主菜单状态
+        return await reply_chain.end_conversation(update, context)
 
     # 获取回复的原始邮件
     original_email = get_email_by_id(email_id)
@@ -664,8 +767,7 @@ async def send_reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_notification=True,
         )
         await reply_chain._record_message(context, error_msg)
-        await reply_chain._delayed_clean_messages(context, chat_id)
-        return ConversationHandler.END
+        return await reply_chain.end_conversation(update, context)
 
     # 获取账户信息
     account = get_email_account_by_id(account_id)
@@ -676,8 +778,7 @@ async def send_reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_notification=True,
         )
         await reply_chain._record_message(context, error_msg)
-        await reply_chain._delayed_clean_messages(context, chat_id)
-        return ConversationHandler.END
+        return await reply_chain.end_conversation(update, context)
 
     # 获取原始消息ID（用于回复引用）
     reply_to_message_id = context.user_data.get("reply_original_message_id")
@@ -699,9 +800,6 @@ async def send_reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 根据发送结果处理后续操作
     if success:
-        # 延迟清理消息
-        await reply_chain._delayed_clean_messages(context, chat_id)
-
         # 清理上下文数据
         cleanup_keys = [
             "reply_email_id",
@@ -723,7 +821,7 @@ async def send_reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if key in context.user_data:
                 del context.user_data[key]
 
-        return ConversationHandler.END
+        return await reply_chain.end_conversation(update, context)
     else:
         # 显示重试选项
         retry_msg = await update.message.reply_text(
@@ -734,7 +832,7 @@ async def send_reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_notification=True,
         )
         await reply_chain._record_message(context, retry_msg)
-        return 5  # 保持在附件状态，允许重试
+        return HANDLE_ATTACHMENTS  # 保持在附件状态，允许重试
 
 
 def get_reply_handler():
@@ -744,34 +842,50 @@ def get_reply_handler():
     
     # 配置步骤
     reply_chain.add_step(
-        name="options", handler_func=handle_reply_options, filter_type="TEXT"
+        name="options", 
+        handler_func=handle_reply_options, 
+        prompt_func=get_reply_options_prompt,
+        keyboard_func=get_reply_options_keyboard,
+        filter_type="TEXT"
     )
 
     reply_chain.add_step(
-        name="body", handler_func=handle_body_input, filter_type="TEXT"
+        name="body", 
+        handler_func=handle_body_input, 
+        prompt_func=get_body_prompt,
+        keyboard_func=get_body_keyboard,
+        filter_type="TEXT"
     )
 
     reply_chain.add_step(
         name="manage_recipients",
-        handler_func=handle_manage_recipients,
+        handler_func=handle_manage_recipients, 
+        prompt_func=get_manage_recipients_prompt,
+        keyboard_func=get_recipients_keyboard_func,
         filter_type="TEXT",
     )
 
     reply_chain.add_step(
         name="manage_cc",
         handler_func=handle_manage_recipients,  # 重用收件人处理函数，逻辑类似
+        prompt_func=get_manage_cc_prompt,
+        keyboard_func=get_recipients_keyboard_func,
         filter_type="TEXT",
     )
 
     reply_chain.add_step(
         name="manage_bcc",
         handler_func=handle_manage_recipients,  # 重用收件人处理函数，逻辑类似
+        prompt_func=get_manage_bcc_prompt,
+        keyboard_func=get_recipients_keyboard_func,
         filter_type="TEXT",
     )
 
     reply_chain.add_step(
         name="attachments",
         handler_func=handle_attachment_selection,
+        keyboard_func=email_utils.get_attachment_keyboard,
+        prompt_func=email_utils.get_attachment_prompt,
         filter_type="CUSTOM",
         filter_handlers=[
             (filters.TEXT & ~filters.COMMAND, handle_attachment_selection),
