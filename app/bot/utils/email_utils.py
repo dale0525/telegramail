@@ -16,6 +16,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
+    Message,
 )
 from telegram.ext import (
     ContextTypes,
@@ -114,70 +115,88 @@ class EmailUtils:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input
     ):
         """处理用户添加的附件"""
-        # 添加日志输出
-        logger.info(
-            f"处理附件: 输入类型={type(user_input)}, 是否有文档={hasattr(update.message, 'document')}, 是否有照片={hasattr(update.message, 'photo')}"
+        # 基础日志记录
+        logger.debug(
+            f"处理附件: 类型={type(user_input).__name__}, "
+            f"有文档={hasattr(update.message, 'document')}, "
+            f"有照片={hasattr(update.message, 'photo')}"
         )
 
-        # 处理附件或相关命令
+        # 确保附件列表初始化
+        if "compose_attachments" not in context.user_data:
+            context.user_data["compose_attachments"] = []
+
+        attachments = context.user_data["compose_attachments"]
+
+        # 文本命令处理
         if isinstance(user_input, str):
-            # 处理文本消息
-            if user_input == "✅ 发送邮件（无附件）" or user_input == "✅ 发送邮件":
-                await self.send_composed_email(update, context)
-                return ConversationHandler.END
+            if user_input in ["⏭️ 不添加附件"]:
+                # 清空附件列表
+                context.user_data["compose_attachments"] = []
+                logger.debug("用户选择不添加附件，已清空附件列表")
 
-            elif user_input == "📎 添加附件" or user_input == "📎 添加更多附件":
-                # 提示用户上传附件
                 message = await update.message.reply_text(
-                    """📎 请上传您想要添加的附件文件。
-
-    ⚠️ 您可以一次上传单个文件或多个文件。上传后，您可以继续添加更多附件或发送邮件。
-
-    支持的文件类型：文档、图片、音频、视频等。
-    最大文件大小：50MB（受Telegram限制）""",
-                    reply_markup=ReplyKeyboardMarkup(
-                        [["❌ 取消"]], one_time_keyboard=True, resize_keyboard=True
-                    ),
+                    "⏭️ 跳过添加附件",
                     disable_notification=True,
                 )
                 await self.chain._record_message(context, message)
-                return None  # 保持在当前状态
+                return None
 
+            elif user_input in ["✅ 发送邮件", "✅ 发送邮件（无附件）"]:
+                # 记录日志并继续到下一步
+                logger.info(f"用户选择发送邮件，附件数量: {len(attachments)}")
+                return None
+
+            else:
+                # 未知命令，结束会话
+                logger.warning(f"收到未知命令: '{user_input}'，结束会话")
+                return await self.chain.end_conversation(update, context)
+
+        # 媒体文件处理
         else:
-            # 处理媒体消息（文档、照片等）
-            logger.info(
-                f"接收到媒体消息: message={update.message}, message.document={update.message.document if hasattr(update.message, 'document') else None}, message.photo={update.message.photo if hasattr(update.message, 'photo') else None}"
+            # 显示处理状态
+            message = await update.message.reply_text(
+                "处理附件中...",
+                disable_notification=True,
+                reply_markup=ReplyKeyboardRemove(),
             )
-            await self.process_attachment(update, context)
-            return None  # 保持在当前状态
+            await self.chain._record_message(context, message)
 
-        return None  # 默认行为是保持在当前状态
+            # 记录详细日志
+            logger.debug(
+                f"接收到媒体消息: "
+                f"document={update.message.document.file_name if hasattr(update.message, 'document') and update.message.document else None}, "
+                f"photo={True if hasattr(update.message, 'photo') and update.message.photo else False}"
+            )
+
+            # 处理附件
+            await self.process_attachment(update, context)
+
+            return None
 
     async def process_attachment(self, update, context):
         """处理用户上传的附件"""
-        logger.info(
-            f"开始处理附件: message_type={type(update.message)}, 有文档={bool(update.message.document)}, 有照片={bool(update.message.photo)}"
-        )
+        logger.info("开始处理附件")
 
-        chat_id = update.effective_chat.id
-        message = update.message
+        # 获取消息对象
+        message = update.message if hasattr(update, "message") else update
+
+        # 确保消息是Message类型
+        if not isinstance(message, Message):
+            logger.error(f"无法处理附件: 消息对象类型错误 {type(message)}")
+            return None
+
         added_files = []
 
-        # 初始化附件列表（如果不存在）
-        if "compose_attachments" not in context.user_data:
+        # 初始化附件列表（如果不存在或不是列表类型）
+        if "compose_attachments" not in context.user_data or not isinstance(
+            context.user_data["compose_attachments"], list
+        ):
             context.user_data["compose_attachments"] = []
 
         # 检查是否是媒体组
         is_media_group = hasattr(message, "media_group_id") and message.media_group_id
         media_group_id = message.media_group_id if is_media_group else None
-
-        # 显示处理中状态消息（仅对媒体组）
-        processing_msg = None
-        if is_media_group:
-            processing_msg = await update.message.reply_text(
-                "📎 正在处理多个附件，请稍候...", disable_notification=True
-            )
-            await self.chain._record_message(context, processing_msg)
 
         # 处理文档
         if message.document:
@@ -203,12 +222,13 @@ class EmailUtils:
 
         # 处理照片
         elif message.photo:
+            # 获取最大尺寸的照片
             photo = message.photo[-1]
             file_id = photo.file_id
 
-            # 生成文件名
-            timestamp = int(time.time())
-            filename = f"photo_{timestamp}.jpg"
+            # 生成文件名（使用当前时间）
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"照片_{timestamp}.jpg"
             mime_type = "image/jpeg"
 
             # 获取文件对象和内容
@@ -227,187 +247,132 @@ class EmailUtils:
 
             added_files.append(filename)
 
-        # 处理媒体组逻辑
+        # 媒体组处理交由 ConversationChain 处理
+        # 由于媒体组的每个文件都会单独触发一次处理，所以这里不需要特殊处理
+        # ConversationChain 的 _handle_media_group 和 check_media_group_completion 会管理整个媒体组
         if is_media_group:
-            # 初始化或更新媒体组信息
-            if "current_media_group" not in context.user_data:
-                # 首次接收到此媒体组的文件
-                context.user_data["current_media_group"] = {
-                    "id": media_group_id,
-                    "processed_count": 1,
-                    "files": added_files,
-                    "last_update_time": datetime.now(),
-                }
+            # 只记录添加的文件而不立即显示消息
+            return None
 
-                # 创建检测媒体组完成的任务
-                asyncio.create_task(
-                    self.check_media_group_completion(
-                        update, context, media_group_id, processing_msg
-                    )
-                )
-
-            elif context.user_data["current_media_group"]["id"] == media_group_id:
-                # 继续接收同一媒体组的后续文件
-                context.user_data["current_media_group"]["processed_count"] += 1
-                context.user_data["current_media_group"]["files"].extend(added_files)
-                context.user_data["current_media_group"][
-                    "last_update_time"
-                ] = datetime.now()
-
-                # 更新处理中状态消息
-                if processing_msg:
-                    try:
-                        await processing_msg.edit_text(
-                            f"📎 已处理 {context.user_data['current_media_group']['processed_count']} 个附件，请稍候..."
-                        )
-                    except Exception as e:
-                        logger.error(f"更新处理状态消息失败: {e}")
-
-            # 对于媒体组，不立即显示选项，等待媒体组完成检测
-            return
-
-        # 非媒体组文件，立即显示选项
+        # 非媒体组文件，立即显示选项（只会有一个文件）
         if added_files:
-            attachment_names = [
-                att["filename"] for att in context.user_data["compose_attachments"]
-            ]
-            attachment_list = "\n".join([f"- {name}" for name in attachment_names])
-
-            # 创建键盘
-            keyboard = [["✅ 发送邮件"], ["📎 添加更多附件"], ["❌ 取消"]]
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard, one_time_keyboard=True, resize_keyboard=True
-            )
 
             # 显示消息
-            message_text = f"""✅ 已添加附件：{added_files[0] if len(added_files) == 1 else '多个文件'}
-
-    当前附件列表({len(attachment_names)}个)：
-    {attachment_list}
-
-    您可以：
-    📎 继续添加更多附件
-    ✅ 发送带有当前附件的邮件
-    ❌ 取消发送"""
+            message_text = f"""✅ 已添加附件：{added_files[0] if len(added_files) == 1 else '多个文件'}"""
 
             result_msg = await update.message.reply_text(
-                message_text, reply_markup=reply_markup, disable_notification=True
+                message_text, disable_notification=True
             )
             await self.chain._record_message(context, result_msg)
+        return None
 
-        return None  # 确保函数总是有返回值
-
-    async def check_media_group_completion(
-        self, update, context, media_group_id, processing_msg, chain
+    async def process_single_attachment(
+        self,
+        update,
+        context,
+        file_id,
+        filename,
+        mime_type,
+        status_msg,
+        attachment_key="compose_attachments",
     ):
-        """
-        检查媒体组是否已完成处理并显示选项键盘
-        """
+        """处理单个附件并更新状态消息"""
         try:
-            # 等待初始延迟
-            await asyncio.sleep(2.0)
+            # 确保附件列表已初始化
+            if attachment_key not in context.user_data:
+                context.user_data[attachment_key] = []
 
-            # 记录初始计数
-            initial_count = context.user_data["current_media_group"]["processed_count"]
-            last_count = initial_count
+            # 下载文件
+            file = await context.bot.get_file(file_id)
+            file_bytes = await file.download_as_bytearray()
 
-            # 检查周期
-            max_checks = 5  # 最多检查5次
-            for i in range(max_checks):
-                # 等待一段时间后检查计数是否有变化
-                await asyncio.sleep(1.0)
+            # 添加到附件列表
+            context.user_data[attachment_key].append(
+                {
+                    "file_id": file_id,
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "content": file_bytes,
+                }
+            )
 
-                # 获取当前计数（如果媒体组信息已被删除，则说明处理已完成）
-                if (
-                    "current_media_group" not in context.user_data
-                    or context.user_data["current_media_group"]["id"] != media_group_id
-                ):
-                    return
-
-                current_count = context.user_data["current_media_group"][
-                    "processed_count"
-                ]
-
-                # 如果计数增加，表示还在接收附件
-                if current_count > last_count:
-                    last_count = current_count
-                    continue
-
-                # 如果计数没有变化，且已经检查了多次，认为所有附件都已接收
-                if i >= 2:  # 至少检查3次才能确定
-                    logger.info(
-                        f"媒体组 {media_group_id} 所有附件似乎已接收完毕（共{current_count}个）"
-                    )
-                    break
-
-            # 删除处理状态消息
-            if processing_msg:
-                try:
-                    await context.bot.delete_message(
-                        chat_id=update.effective_chat.id,
-                        message_id=processing_msg.message_id,
-                    )
-                    # 从记录列表中移除，避免后续重复删除
-                    if (
-                        chain.messages_key in context.user_data
-                        and processing_msg.message_id
-                        in context.user_data[chain.messages_key]
-                    ):
-                        context.user_data[chain.messages_key].remove(
-                            processing_msg.message_id
-                        )
-                except Exception as e:
-                    logger.error(f"删除处理状态消息失败: {e}")
-
-            # 准备附件列表
+            # 准备附件列表显示
             attachment_names = [
-                att["filename"]
-                for att in context.user_data.get("compose_attachments", [])
+                att["filename"] for att in context.user_data[attachment_key]
             ]
             attachment_list = "\n".join([f"- {name}" for name in attachment_names])
 
-            # 创建键盘
-            keyboard = [["✅ 发送邮件"], ["📎 添加更多附件"], ["❌ 取消"]]
-            reply_markup = ReplyKeyboardMarkup(
-                keyboard, one_time_keyboard=True, resize_keyboard=True
+            # 获取聊天ID
+            chat_id = (
+                update.effective_chat.id
+                if hasattr(update, "effective_chat")
+                else status_msg.chat.id
             )
 
-            # 发送完成消息和选项
-            completion_message = await update.message.reply_text(
-                f"""✅ 已成功添加媒体组附件
+            # 更新状态消息
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"""✅ 附件已添加: {filename}
 
-    当前附件列表({len(attachment_names)}个)：
-    {attachment_list}
+当前附件列表 ({len(attachment_names)} 个):
+{attachment_list}""",
+                )
+            except Exception as e:
+                logger.error(f"更新状态消息失败: {e}")
 
-    您可以：
-    📎 继续添加更多附件
-    ✅ 发送带有当前附件的邮件
-    ❌ 取消发送""",
-                reply_markup=reply_markup,
-                disable_notification=True,
-            )
+            return True
 
-            # 记录完成消息ID
-            await chain._record_message(context, completion_message)
-
-            # 清理媒体组状态
-            if (
-                "current_media_group" in context.user_data
-                and context.user_data["current_media_group"]["id"] == media_group_id
-            ):
-                del context.user_data["current_media_group"]
-
-        except asyncio.CancelledError:
-            # 任务被取消，什么都不做
-            pass
         except Exception as e:
-            logger.error(f"检查媒体组完成时出错: {e}")
+            logger.error(f"处理附件时出错: {e}")
             logger.error(traceback.format_exc())
+
+            # 更新状态消息显示错误
+            try:
+                # 获取聊天ID
+                chat_id = (
+                    update.effective_chat.id
+                    if hasattr(update, "effective_chat")
+                    else status_msg.chat.id
+                )
+
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg.message_id,
+                    text=f"❌ 处理附件失败: {str(e)}",
+                )
+            except:
+                pass
+
+            return False
+
+    async def handle_confirm_send(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input
+    ):
+        # 添加详细日志
+        logger.info(f"执行确认发送处理: 用户输入='{user_input}'")
+
+        # 如果用户确认发送，则调用发送邮件方法
+        if user_input == "✅ 确认发送":
+            logger.info("用户确认发送邮件，调用 send_composed_email 方法")
+            # 记录当前的步骤和状态
+            logger.info(f"附件数量: {len(context.user_data.get('compose_attachments', []))}")
+            logger.info(f"邮件接收人: {context.user_data.get('compose_recipients', [])}")
+
+            # 该方法会处理邮件发送和获取发件箱邮件功能
+            await self.send_composed_email(update, context)
+            return ConversationHandler.END
+        else:
+            logger.warning(f"未知的确认输入: '{user_input}'，结束会话")
+            await self.chain.end_conversation(update, context)
+            return ConversationHandler.END
 
     async def send_composed_email(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """发送已创建的邮件"""
+        logger.info("开始执行send_composed_email方法")
         chat_id = update.effective_chat.id
 
         # 获取账户信息
@@ -415,6 +380,7 @@ class EmailUtils:
         account = get_email_account_by_id(account_id)
 
         if not account:
+            logger.error("发送邮件失败: 无法获取邮箱账户信息")
             await update.message.reply_text(
                 "⚠️ 发送邮件时出现错误：无法获取邮箱账户信息。",
                 reply_markup=ReplyKeyboardRemove(),
@@ -431,6 +397,30 @@ class EmailUtils:
         bcc_list = context.user_data.get("compose_bcc", [])
         body_markdown = context.user_data.get("compose_body", "")
         attachments = context.user_data.get("compose_attachments", [])
+
+        # 添加附件信息的调试日志
+        logger.info(f"准备发送邮件，附件数量: {len(attachments)}")
+        if attachments:
+            # 记录每个附件的基本信息，但不记录内容以避免日志过大
+            attachment_info = []
+            total_size = 0
+            for i, att in enumerate(attachments):
+                content_size = len(att.get("content", b"")) if "content" in att else 0
+                total_size += content_size
+                attachment_info.append({
+                    "index": i,
+                    "filename": att.get("filename", f"未命名附件_{i}"),
+                    "mime_type": att.get("mime_type", "application/octet-stream"),
+                    "content_size": f"{content_size/1024:.2f} KB"
+                })
+            logger.info(f"附件详情: {attachment_info}")
+            logger.info(f"附件总大小: {total_size/(1024*1024):.2f} MB")
+
+        # 清理媒体组相关数据，确保不会影响邮件发送过程
+        media_group_key = self.chain.media_group_key
+        if media_group_key in context.user_data:
+            logger.info(f"清理媒体组数据: {context.user_data[media_group_key]}")
+            context.user_data[media_group_key] = {}
 
         # 确保所有邮箱列表是有效的格式
         # 收件人列表必须非空
@@ -616,13 +606,18 @@ class EmailUtils:
             smtp_attachments = []
             if attachments:
                 for att in attachments:
-                    smtp_attachments.append(
-                        {
-                            "filename": att["filename"],
-                            "content": att["content"],
-                            "content_type": att["mime_type"],
-                        }
-                    )
+                    # 检查att是否为字典类型，且包含所需键
+                    if isinstance(att, dict) and all(key in att for key in ["filename", "content", "mime_type"]):
+                        smtp_attachments.append(
+                            {
+                                "filename": att["filename"],
+                                "content": att["content"],
+                                "content_type": att["mime_type"],
+                            }
+                        )
+                    else:
+                        # 记录无效附件信息
+                        logger.error(f"跳过无效附件: {att}")
 
             # 发送邮件
             sent = await smtp_client.send_email(
@@ -660,7 +655,14 @@ class EmailUtils:
                     success_msg_text += f"\n🔒 密送: {', '.join(bcc_list)}"
 
                 if attachments:
-                    attachment_names = [att["filename"] for att in attachments]
+                    # 安全获取附件名称，确保每个附件是字典类型且有filename字段
+                    attachment_names = []
+                    for att in attachments:
+                        if isinstance(att, dict) and "filename" in att:
+                            attachment_names.append(att["filename"])
+                        elif isinstance(att, str):
+                            # 如果是字符串，直接添加
+                            attachment_names.append(att)
                     attachment_list = ", ".join(attachment_names)
                     success_msg_text += f"\n📎 附件: {attachment_list}"
 
@@ -793,20 +795,6 @@ class EmailUtils:
             await self.chain._record_message(context, error_msg)
             await self.chain.end_conversation(update, context)
 
-        # 清理会话数据
-        for key in [
-            "compose_account_id",
-            "compose_account_email",
-            "compose_subject",
-            "compose_recipients",
-            "compose_cc",
-            "compose_bcc",
-            "compose_body",
-            "compose_attachments",
-        ]:
-            if key in context.user_data:
-                del context.user_data[key]
-
     def validate_email_format(self, emails_list):
         """验证邮箱格式是否正确"""
         invalid_emails = []
@@ -841,7 +829,16 @@ class EmailUtils:
         return invalid_emails
 
     def get_attachment_keyboard(self, context):
-        keyboard = [["✅ 发送邮件（无附件）"], ["📎 添加附件"], ["❌ 取消"]]
+        # 检查是否已添加附件
+        attachments = context.user_data.get("compose_attachments", [])
+
+        if attachments:
+            # 如果有附件，显示"发送邮件"按钮
+            keyboard = [["✅ 发送邮件"], ["⏭️ 不添加附件"], ["❌ 取消"]]
+        else:
+            # 如果没有附件，只显示不添加附件和取消按钮
+            keyboard = [["⏭️ 不添加附件"], ["❌ 取消"]]
+
         return ReplyKeyboardMarkup(
             keyboard, one_time_keyboard=True, resize_keyboard=True
         )
@@ -849,11 +846,11 @@ class EmailUtils:
     def get_attachment_prompt(self, context):
         return """📩 您的邮件已准备就绪!
 
-    您可以选择直接发送邮件，或者添加附件后发送。
+您可以选择添加附件或直接进入发送确认步骤。
 
-    📎 若要添加附件，请点击"添加附件"按钮，然后上传文件。
-    ✅ 若不需要附件，请点击"发送邮件(无附件)"按钮。
-    ❌ 若要取消发送，请点击"取消"按钮。"""
+📎 若要添加附件，请直接发送文件。可以一次发送多个文件。发送多个文件时请勾选Group items，否则只有第一个文件会被使用。
+✅ 若不需要附件，请点击"不添加附件"按钮进入下一步。
+❌ 若要取消发送，请点击"取消"按钮。"""
 
     @staticmethod
     def parse_email_addresses(email_data, field_name: str) -> List[str]:
@@ -1105,13 +1102,18 @@ class EmailUtils:
             smtp_attachments = []
             if attachments:
                 for att in attachments:
-                    smtp_attachments.append(
-                        {
-                            "filename": att["filename"],
-                            "content": att["content"],
-                            "content_type": att["mime_type"],
-                        }
-                    )
+                    # 检查att是否为字典类型，且包含所需键
+                    if isinstance(att, dict) and all(key in att for key in ["filename", "content", "mime_type"]):
+                        smtp_attachments.append(
+                            {
+                                "filename": att["filename"],
+                                "content": att["content"],
+                                "content_type": att["mime_type"],
+                            }
+                        )
+                    else:
+                        # 记录无效附件信息
+                        logger.error(f"跳过无效附件: {att}")
 
             # 发送邮件
             sent = await smtp_client.send_email(
@@ -1150,7 +1152,14 @@ class EmailUtils:
                     success_msg_text += f"\n🔒 密送: {', '.join(bcc_list)}"
 
                 if attachments:
-                    attachment_names = [att["filename"] for att in attachments]
+                    # 安全获取附件名称，确保每个附件是字典类型且有filename字段
+                    attachment_names = []
+                    for att in attachments:
+                        if isinstance(att, dict) and "filename" in att:
+                            attachment_names.append(att["filename"])
+                        elif isinstance(att, str):
+                            # 如果是字符串，直接添加
+                            attachment_names.append(att)
                     attachment_list = ", ".join(attachment_names)
                     success_msg_text += f"\n📎 附件: {attachment_list}"
 

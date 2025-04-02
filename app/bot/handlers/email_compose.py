@@ -4,13 +4,15 @@ Email compose handlers for TelegramMail Bot using ConversationChain.
 """
 
 import logging
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
+    filters,
 )
 from app.bot.utils.common_steps import (
     attachment_step,
+    confirm_send_step,
     get_cancel_keyboard,
     email_body_step,
 )
@@ -282,4 +284,8 @@ def get_compose_handler():
 
     compose_chain.add_step_from_template(email_body_step(compose_chain))
     compose_chain.add_step_from_template(attachment_step(compose_chain))
-    return compose_chain.build()
+    compose_chain.add_step_from_template(confirm_send_step(compose_chain))
+
+    conversation_handler = compose_chain.build()
+
+    return conversation_handler

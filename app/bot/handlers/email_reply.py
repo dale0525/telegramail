@@ -601,18 +601,23 @@ async def handle_attachment_selection(
     """处理附件选择"""
     chat_id = update.effective_chat.id
     message = update.message
+    
+    # 添加日志记录，帮助调试
+    logger.info(f"处理附件选择: 输入类型={type(user_input)}, 值={user_input if isinstance(user_input, str) else '非文本'}")
 
     # 处理文本输入
     if isinstance(user_input, str):
         if user_input == "✅ 发送邮件（无附件）" or user_input == "✅ 发送邮件":
+            logger.info("用户选择发送邮件，调用 send_reply_email")
             # 发送邮件
             return await send_reply_email(update, context)
 
         elif user_input == "📎 添加附件" or user_input == "📎 添加更多附件":
+            logger.info("用户选择添加更多附件")
             # 提示用户上传附件
             prompt_msg = await message.reply_text(
                 "📎 请上传您想要添加的附件文件。\n\n"
-                "⚠️ 您可以一次上传单个文件或多个文件。上传后，您可以继续添加更多附件或发送邮件。\n\n"
+                "⚠️ 您可以一次上传单个文件或多个文件。上传完成后，系统将自动继续进行下一步。\n\n"
                 "支持的文件类型：文档、图片、音频、视频等。\n"
                 "最大文件大小：50MB（受Telegram限制）",
                 reply_markup=ReplyKeyboardMarkup(
@@ -624,6 +629,7 @@ async def handle_attachment_selection(
             return HANDLE_ATTACHMENTS
 
         elif user_input == "❌ 取消":
+            logger.info("用户取消操作")
             # 取消回复
             cancel_msg = await message.reply_text(
                 "❌ 已取消回复邮件。",
@@ -635,91 +641,94 @@ async def handle_attachment_selection(
 
     # 处理附件（文档、照片等）
     elif hasattr(update.message, "document") or hasattr(update.message, "photo"):
+        logger.info("接收到文件附件，调用 process_attachment")
         # 处理附件上传
         await process_attachment(update, context)
         return HANDLE_ATTACHMENTS
+    
+    # 处理传入的 Message 对象（可能是媒体组的一部分）
+    elif hasattr(user_input, "document") or hasattr(user_input, "photo"):
+        # 判断是否是媒体组的一部分
+        is_media_group = hasattr(user_input, "media_group_id") and user_input.media_group_id
+        logger.info(f"接收到媒体消息对象，是否媒体组: {is_media_group}")
+        
+        # 将 Message 对象传递给 process_attachment
+        await process_attachment(user_input, context)
+        return HANDLE_ATTACHMENTS
 
     # 其他情况，保持在当前状态
+    logger.info(f"未识别的输入类型，保持当前状态: {type(user_input)}")
     return HANDLE_ATTACHMENTS
 
 
 async def process_attachment(update, context):
     """处理上传的附件"""
+    # 获取消息对象
+    message = update.message if hasattr(update, "message") else update
+    
     # 检查是否已初始化附件列表
     if "reply_attachments" not in context.user_data:
         context.user_data["reply_attachments"] = []
     
-    # 检查是否是媒体组的一部分
-    media_group_id = update.message.media_group_id if hasattr(update.message, "media_group_id") else None
-    
-    # 如果是媒体组的一部分，使用专门的处理函数
-    if media_group_id:
-        processing_msg = await update.message.reply_text(
-            "📤 正在处理媒体组...", disable_notification=True
-        )
-        
-        # 记录处理消息
-        await reply_chain._record_message(context, processing_msg)
-        
-        # 添加媒体组ID和消息到上下文
-        chain_key = reply_chain.media_group_key
-        if chain_key not in context.user_data:
-            context.user_data[chain_key] = {}
-        
-        if media_group_id not in context.user_data[chain_key]:
-            context.user_data[chain_key][media_group_id] = {
-                "messages": [],
-                "processing_msg": processing_msg,
-            }
-        
-        # 记录媒体组消息
-        context.user_data[chain_key][media_group_id]["messages"].append(update.message)
-        
-        # 使用EmailUtils中的附件处理函数
-        await email_utils.check_media_group_completion(
-            update, context, media_group_id, processing_msg, reply_chain
-        )
-        return
+    # 判断是否是媒体组的一部分
+    is_media_group = (hasattr(message, "media_group_id") and message.media_group_id is not None)
     
     # 处理单个文件
-    # 使用EmailUtils.process_attachment静态方法
-    if hasattr(update.message, "document"):
-        document = update.message.document
+    if hasattr(message, "document") and message.document:
+        document = message.document
         file_id = document.file_id
         filename = document.file_name or f"attachment_{file_id}.file"
         mime_type = document.mime_type or "application/octet-stream"
         
         # 处理文件
-        status_msg = await update.message.reply_text(
+        status_msg = await message.reply_text(
             f"📥 正在下载文件: {filename}...", disable_notification=True
         )
         await reply_chain._record_message(context, status_msg)
         
         # 使用EmailUtils的方法处理单个附件
-        await email_utils.process_single_attachment(
+        result = await email_utils.process_single_attachment(
             update, context, file_id, filename, mime_type, status_msg, 
             "reply_attachments"
         )
-    
-    elif hasattr(update.message, "photo"):
+        
+    elif hasattr(message, "photo") and message.photo:
         # 处理照片 - 使用最高质量的版本
-        photos = update.message.photo
+        photos = message.photo
         photo = photos[-1]  # 最高分辨率的照片
         file_id = photo.file_id
         filename = f"photo_{file_id}.jpg"
         mime_type = "image/jpeg"
         
         # 处理文件
-        status_msg = await update.message.reply_text(
+        status_msg = await message.reply_text(
             f"📥 正在下载照片...", disable_notification=True
         )
         await reply_chain._record_message(context, status_msg)
         
         # 使用EmailUtils的方法处理单个附件
-        await email_utils.process_single_attachment(
+        result = await email_utils.process_single_attachment(
             update, context, file_id, filename, mime_type, status_msg,
             "reply_attachments"
         )
+    
+    # 如果不是媒体组的一部分，使用 proceed_to_next_step 方法自动进入下一步
+    if not is_media_group:
+        # 获取当前步骤的索引
+        current_step_index = None
+        for i, step in enumerate(reply_chain.steps):
+            if step.name == "attachments":
+                current_step_index = i
+                break
+        
+        if current_step_index is not None:
+            # 使用共享方法自动进入下一步
+            return await reply_chain.proceed_to_next_step(
+                update, 
+                context, 
+                current_step_index, 
+                success_message="✅ 附件处理完成。"
+            )
 
 
 async def send_reply_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
