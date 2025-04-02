@@ -351,7 +351,7 @@ class EmailUtils:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input
     ):
         # 添加详细日志
-        logger.info(f"执行确认发送处理: 用户输入='{user_input}'")
+        logger.info(f"===== 执行确认发送处理: 用户输入='{user_input}' =====")
 
         # 如果用户确认发送，则调用发送邮件方法
         if user_input == "✅ 确认发送":
@@ -360,8 +360,17 @@ class EmailUtils:
             logger.info(f"附件数量: {len(context.user_data.get('compose_attachments', []))}")
             logger.info(f"邮件接收人: {context.user_data.get('compose_recipients', [])}")
 
-            # 该方法会处理邮件发送和获取发件箱邮件功能
-            await self.send_composed_email(update, context)
+            # 该方法会处理邮件发送
+            sent_result = await self.send_composed_email(update, context)
+            
+            # 如果邮件成功发送(返回None)，继续到获取发送邮件步骤
+            if sent_result is None:
+                logger.info("邮件发送成功，将在下一步获取发送邮件")
+                # 在此不返回具体值，让对话链自动处理进入下一步
+                return None
+            
+            # 如果有返回值(出错)，则结束对话
+            logger.warning(f"邮件发送失败或出错，返回值: {sent_result}")
             return ConversationHandler.END
         else:
             logger.warning(f"未知的确认输入: '{user_input}'，结束会话")
@@ -670,93 +679,13 @@ class EmailUtils:
                     success_msg_text, disable_notification=True
                 )
                 await self.chain._record_message(context, success_msg)
-
-                # 发送完成后获取最新的发送邮件
-                try:
-                    logger.info(f"尝试获取账户 {account.email} 的最新发送邮件")
-                    from app.email.imap_client import IMAPClient
-                    from app.bot.notifications import send_sent_email_notification
-                    from app.database.operations import save_email_metadata
-
-                    # 添加重试逻辑，因为有时候刚发送的邮件可能需要一点时间才能在IMAP中可见
-                    retry_count = 0
-                    max_retries = 3
-
-                    latest_sent_email = None
-                    while retry_count < max_retries and not latest_sent_email:
-                        latest_sent_email = await IMAPClient(
-                            account
-                        ).get_latest_sent_email()
-
-                        if not latest_sent_email:
-                            logger.warning(
-                                f"尝试 {retry_count + 1}/{max_retries} - 未找到最新发送邮件，等待后重试"
-                            )
-                            await asyncio.sleep(2)  # 等待2秒后重试
-                            retry_count += 1
-                        else:
-                            logger.info(
-                                f"成功获取最新发送邮件: 主题: {latest_sent_email.get('subject', '无主题')}"
-                            )
-
-                    if not latest_sent_email:
-                        logger.error(f"重试 {max_retries} 次后仍未找到最新发送邮件")
-                        await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
-                            text="✅ 邮件已发送，但无法获取发送后的邮件详情。",
-                            parse_mode="HTML",
-                        )
-                    else:
-                        # 确保 recipients 是列表类型
-                        recipients = latest_sent_email.get("recipients", [])
-                        if isinstance(recipients, str):
-                            recipients = [recipients]
-                            logger.info(
-                                f"recipients 是字符串类型，已转换为列表: {recipients}"
-                            )
-
-                        # 比较收件人列表（忽略大小写）
-                        current_recipients = set(recipients_list)
-                        latest_recipients = set(r.lower() for r in recipients)
-
-                        recipients_match = any(
-                            r.lower() in latest_recipients for r in current_recipients
-                        ) or any(
-                            r.lower() in current_recipients for r in latest_recipients
-                        )
-
-                        logger.info(
-                            f"收件人比较 - 当前邮件收件人: {current_recipients}, 最新邮件收件人: {latest_recipients}, 匹配结果: {recipients_match}"
-                        )
-
-                        if recipients_match:
-                            # 保存最新发送邮件的元数据
-                            email_id = save_email_metadata(
-                                account.id, latest_sent_email
-                            )
-                            if email_id:
-                                logger.info(f"邮件元数据保存成功，ID: {email_id}")
-                                # 向Telegram发送已发送邮件通知
-                                await send_sent_email_notification(
-                                    context, account.id, latest_sent_email, email_id
-                                )
-                            else:
-                                logger.error("保存邮件元数据失败")
-                        else:
-                            logger.warning(
-                                f"收件人不匹配，可能不是刚才发送的邮件。当前收件人: {current_recipients}, 最新邮件收件人: {latest_recipients}"
-                            )
-                except Exception as e:
-                    logger.error(f"获取或处理最新发送邮件时出错: {e}")
-                    logger.error(traceback.format_exc())
-                    await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=f"✅ 邮件已发送，但获取发送后的邮件详情时出错: {str(e)}",
-                        parse_mode="HTML",
-                    )
-
-                # 延迟清理消息
-                await self.chain.end_conversation(update, context)
+                
+                # 将发送成功的信息保存在 context 中，供下一步使用
+                context.user_data["sent_email_success"] = True
+                
+                # 延迟清理任务
+                # await self.chain.end_conversation(update, context)
+                return None
             else:
                 # 发送失败
                 error_msg = await update.message.reply_text(
@@ -794,6 +723,175 @@ class EmailUtils:
             )
             await self.chain._record_message(context, error_msg)
             await self.chain.end_conversation(update, context)
+            
+    async def fetch_sent_email(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input) -> None:
+        """获取并通知最新发送的邮件"""
+        logger.info("===== 开始执行fetch_sent_email方法 =====")
+        logger.info(f"用户输入: {user_input}")
+        logger.info(f"是否为自动执行: {context.user_data.get('is_auto_execute', False)}")
+        
+        # 由于这是一个自动处理的步骤，user_input可能是任何值
+        # 我们不需要检查用户输入，直接继续处理
+        
+        # 检查之前是否成功发送了邮件
+        logger.info(f"sent_email_success: {context.user_data.get('sent_email_success', False)}")
+        if not context.user_data.get("sent_email_success", False):
+            logger.warning("没有找到发送成功的邮件记录，可能是发送失败")
+            # 由于之前的发送步骤应该已经处理了错误情况，这里只是结束会话
+            await update.message.reply_text(
+                "⚠️ 无法获取发送邮件详情：没有成功发送的邮件记录。",
+                reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
+            )
+            return None  # 允许继续到下一步，如果有的话
+            
+        # 获取账户信息
+        account_id = context.user_data.get("compose_account_id")
+        account = get_email_account_by_id(account_id)
+        logger.info(f"账户ID: {account_id}, 账户对象存在: {account is not None}")
+        
+        if not account:
+            logger.error("获取发送邮件失败: 无法获取邮箱账户信息")
+            message = await update.message.reply_text(
+                "⚠️ 获取发送邮件信息时出现错误：无法获取邮箱账户信息。",
+                reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
+            )
+            await self.chain._record_message(context, message)
+            return None  # 允许继续到下一步，如果有的话
+            
+        # 获取邮件相关信息，以便验证获取到的邮件是否正确
+        subject = context.user_data.get("compose_subject", "无主题")
+        recipients = context.user_data.get("compose_recipients", [])
+        recipients_list = recipients
+        if isinstance(recipients, str):
+            recipients_list = [recipients]
+        logger.info(f"邮件主题: {subject}")
+        logger.info(f"收件人列表: {recipients_list}")
+
+        # 这一步应该在ConversationChain的步骤处理流程中已经显示了提示消息
+        # 但为了确保用户知道正在处理，我们还是发送一条状态消息
+        status_msg = await update.message.reply_text(
+            "📤 正在获取发送邮件详情...",
+            disable_notification=True,
+        )
+        await self.chain._record_message(context, status_msg)
+        
+        try:
+            # 获取最新的发送邮件
+            from app.email.imap_client import IMAPClient
+            from app.bot.notifications import send_sent_email_notification
+            from app.database.operations import save_email_metadata
+
+            # 添加重试逻辑，因为有时候刚发送的邮件可能需要一点时间才能在IMAP中可见
+            retry_count = 0
+            max_retries = 3
+
+            latest_sent_email = None
+            while retry_count < max_retries and not latest_sent_email:
+                logger.info(f"尝试第 {retry_count + 1} 次获取最新发送邮件")
+                latest_sent_email = await IMAPClient(
+                    account
+                ).get_latest_sent_email()
+
+                if not latest_sent_email:
+                    logger.warning(
+                        f"尝试 {retry_count + 1}/{max_retries} - 未找到最新发送邮件，等待后重试"
+                    )
+                    message = await update.message.reply_text(
+                        f"⏳ 正在等待邮件同步 ({retry_count + 1}/{max_retries})...",
+                        disable_notification=True,
+                    )
+                    await self.chain._record_message(context, message)
+                    await asyncio.sleep(2)  # 等待2秒后重试
+                    retry_count += 1
+                else:
+                    logger.info(
+                        f"成功获取最新发送邮件: 主题: {latest_sent_email.get('subject', '无主题')}"
+                    )
+
+            if not latest_sent_email:
+                logger.error(f"重试 {max_retries} 次后仍未找到最新发送邮件")
+                message = await update.message.reply_text(
+                    "✅ 邮件已发送，但无法获取发送后的邮件详情。",
+                    parse_mode="HTML",
+                    disable_notification=True,
+                )
+                await self.chain._record_message(context, message)
+                return None  # 允许继续到下一步，如果有的话
+            else:
+                # 确保 recipients 是列表类型
+                imap_recipients = latest_sent_email.get("recipients", [])
+                if isinstance(imap_recipients, str):
+                    imap_recipients = [imap_recipients]
+                    logger.info(
+                        f"recipients 是字符串类型，已转换为列表: {imap_recipients}"
+                    )
+
+                # 比较收件人列表（忽略大小写）
+                current_recipients = set(r.lower() for r in recipients_list)
+                latest_recipients = set(r.lower() for r in imap_recipients)
+
+                recipients_match = any(
+                    r in latest_recipients for r in current_recipients
+                ) or any(
+                    r in current_recipients for r in latest_recipients
+                )
+
+                logger.info(
+                    f"收件人比较 - 当前邮件收件人: {current_recipients}, 最新邮件收件人: {latest_recipients}, 匹配结果: {recipients_match}"
+                )
+
+                if recipients_match:
+                    # 保存最新发送邮件的元数据
+                    email_id = save_email_metadata(
+                        account.id, latest_sent_email
+                    )
+                    if email_id:
+                        logger.info(f"邮件元数据保存成功，ID: {email_id}")
+                        # 向Telegram发送已发送邮件通知
+                        await send_sent_email_notification(
+                            context, account.id, latest_sent_email, email_id
+                        )
+                        
+                        # 发送完成消息
+                        message = await update.message.reply_text(
+                            "✅ 邮件发送完成，已获取发送邮件详情。",
+                            disable_notification=True,
+                        )
+                        await self.chain._record_message(context, message)
+                    else:
+                        logger.error("保存邮件元数据失败")
+                        message = await update.message.reply_text(
+                            "⚠️ 邮件发送成功，但保存邮件元数据失败。",
+                            disable_notification=True,
+                        )
+                        await self.chain._record_message(context, message)
+                else:
+                    logger.warning(
+                        f"收件人不匹配，可能不是刚才发送的邮件。当前收件人: {current_recipients}, 最新邮件收件人: {latest_recipients}"
+                    )
+                    message = await update.message.reply_text(
+                        "⚠️ 找到最新发送的邮件，但收件人不匹配，可能不是刚才发送的邮件。",
+                        disable_notification=True,
+                    )
+                    await self.chain._record_message(context, message)
+                    
+                # 成功完成，让对话链继续到下一步（如果有的话）
+                logger.info("获取发送邮件完成，继续到下一步")
+                return None
+                
+        except Exception as e:
+            logger.error(f"获取或处理最新发送邮件时出错: {e}")
+            logger.error(traceback.format_exc())
+            message = await update.message.reply_text(
+                f"✅ 邮件已发送，但获取发送后的邮件详情时出错: {str(e)}",
+                parse_mode="HTML",
+                disable_notification=True,
+            )
+            await self.chain._record_message(context, message)
+            # 即使出错，也允许继续到下一步，如果有的话
+            return None
 
     def validate_email_format(self, emails_list):
         """验证邮箱格式是否正确"""

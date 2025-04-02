@@ -44,6 +44,7 @@ class ConversationStep:
         data_key: Optional[str] = None,
         filter_type: str = "TEXT",
         filter_handlers: Optional[List[Tuple]] = None,
+        auto_execute: bool = False,  # 新增：是否自动执行而不等待用户输入
     ):
         """
         初始化会话步骤
@@ -57,6 +58,7 @@ class ConversationStep:
             data_key: 存储用户响应的数据键，若未提供则使用步骤名称
             filter_type: 消息过滤器类型，可选 "TEXT", "PHOTO", "DOCUMENT", "ALL", "MEDIA", "CUSTOM"
             filter_handlers: 自定义过滤器和处理函数列表，仅当 filter_type="CUSTOM" 时使用
+            auto_execute: 是否自动执行而不等待用户输入，适用于不需要用户交互的步骤
         """
         self.id = None  # 将在添加到ConversationChain时设置
         self.name = name
@@ -69,6 +71,7 @@ class ConversationStep:
         self.filter_handlers = (
             filter_handlers if filter_type == "CUSTOM" and filter_handlers else None
         )
+        self.auto_execute = auto_execute  # 是否自动执行而不等待用户输入
 
     def get_prompt(self, context: ContextTypes.DEFAULT_TYPE) -> str:
         """获取提示消息"""
@@ -277,6 +280,7 @@ class ConversationChain:
             data_key=template.data_key,
             filter_type=template.filter_type,
             filter_handlers=template.filter_handlers,
+            auto_execute=template.auto_execute,  # 确保auto_execute属性被正确传递
         )
 
         # 应用覆盖
@@ -301,6 +305,7 @@ class ConversationChain:
         data_key: Optional[str] = None,
         filter_type: str = "TEXT",
         filter_handlers: Optional[List[Tuple]] = None,
+        auto_execute: bool = False,  # 新增：是否自动执行而不等待用户输入
     ) -> ConversationStep:
         """
         创建步骤模板，但不添加到链条中
@@ -314,6 +319,7 @@ class ConversationChain:
             data_key: 存储用户响应的数据键
             filter_type: 消息过滤器类型
             filter_handlers: 自定义过滤器和处理函数列表
+            auto_execute: 是否自动执行而不等待用户输入，适用于不需要用户交互的步骤
 
         Returns:
             ConversationStep: 步骤模板
@@ -327,6 +333,7 @@ class ConversationChain:
             data_key=data_key,
             filter_type=filter_type,
             filter_handlers=filter_handlers,
+            auto_execute=auto_execute,  # 传递auto_execute参数
         )
 
     async def _clean_messages(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
@@ -407,6 +414,7 @@ class ConversationChain:
             return await self.end_conversation(update, context)
 
         first_step = self.steps[0]
+        chat_id = update.effective_chat.id
 
         # 创建提示消息
         prompt_text = first_step.get_prompt(context)
@@ -422,6 +430,42 @@ class ConversationChain:
         # 记录消息ID
         await self._record_message(context, message)
 
+        # 检查是否需要自动执行第一个步骤
+        if first_step.auto_execute:
+            logger.info(f"[{self.name}] 自动执行第一个步骤: {first_step.name}")
+            
+            # 调用步骤的处理函数，传入一个空字符串作为用户输入
+            # 因为是自动执行的步骤，不依赖用户输入
+            next_state = await first_step.handle(update, context, "")
+            
+            if next_state is not None:
+                # 如果处理函数返回了状态，使用它
+                return await self._ensure_message_cleanup(context, chat_id, next_state)
+            elif len(self.steps) > 1:
+                # 否则，如果还有下一步，自动转到下一步
+                next_step = self.steps[1]
+                
+                # 如果下一步也是自动执行的，则递归处理
+                if next_step.auto_execute:
+                    # 递归处理下一个自动执行步骤
+                    # 这里我们不递归调用_entry_point_handler，而是手动设置状态并返回
+                    return next_step.id
+                else:
+                    # 下一步不是自动执行的，发送提示并返回下一步状态
+                    next_prompt = next_step.get_prompt(context)
+                    next_keyboard = next_step.get_keyboard(context)
+                    
+                    next_message = await update.message.reply_text(
+                        next_prompt, reply_markup=next_keyboard, disable_notification=True
+                    )
+                    await self._record_message(context, next_message)
+                    
+                    return next_step.id
+            else:
+                # 没有下一步，会话结束
+                return await self.end_conversation(update, context, message="✅ 操作已完成。")
+
+        # 不是自动执行的步骤，返回当前步骤ID
         return first_step.id
 
     async def _cancel_handler(
@@ -467,6 +511,11 @@ class ConversationChain:
 
         current_step = self.steps[step_index]
         next_step_index = step_index + 1
+        
+        logger.info(f"[{self.name}] 当前步骤: {current_step.name}, auto_execute: {current_step.auto_execute}")
+        logger.info(f"[{self.name}] 下一步索引: {next_step_index}, 总步骤数: {len(self.steps)}")
+        if next_step_index < len(self.steps):
+            logger.info(f"[{self.name}] 下一步: {self.steps[next_step_index].name}, auto_execute: {self.steps[next_step_index].auto_execute}")
 
         # 检查用户是否取消操作 (虽然有专门的取消处理器，但用户也可能直接回复"取消")
         if isinstance(user_input, str) and (
@@ -491,46 +540,102 @@ class ConversationChain:
 
             # 保持在当前状态
             return current_step.id
-
+            
         # 存储用户的有效输入
         data_key = f"{self.data_prefix}{current_step.data_key}"
         context.user_data[data_key] = user_input
         logger.debug(f"[{self.name}] 存储用户输入 '{data_key}': {user_input}")
 
-        # 如果有自定义处理函数，调用它
-        logger.debug(f"[{self.name}] 调用步骤处理函数: {current_step.name}")
-        next_state = await current_step.handle(update, context, user_input)
-        if next_state is not None:
-            logger.debug(f"[{self.name}] 步骤处理函数返回了自定义状态: {next_state}")
-            return await self._ensure_message_cleanup(context, chat_id, next_state)
+        # 调用当前步骤的处理函数
+        logger.info(f"[{self.name}] 调用步骤处理函数: {current_step.name}")
+        result = await current_step.handle(update, context, user_input)
+        logger.info(f"[{self.name}] 步骤处理函数返回结果: {result}")
 
-        # 检查是否还有下一步
-        if next_step_index >= len(self.steps):
-            # 如果没有下一步，结束对话
-            logger.debug(f"[{self.name}] 没有更多步骤，结束对话")
-            return await self.end_conversation(update, context)
+        # 检查处理函数返回的结果
+        if result is not None:
+            # 如果处理函数返回了状态，使用它
+            logger.info(f"[{self.name}] 步骤处理函数返回状态: {result}")
+            return await self._ensure_message_cleanup(context, chat_id, result)
 
-        # 准备下一步
-        next_step = self.steps[next_step_index]
-        logger.debug(f"[{self.name}] 准备下一步: {next_step.name}")
-
-        # 创建提示消息
-        prompt_text = next_step.get_prompt(context)
-
-        # 创建键盘
-        keyboard = next_step.get_keyboard(context)
-
-        # 发送提示消息
-        logger.debug(f"[{self.name}] 发送下一步提示: {prompt_text[:50]}...")
-        message = await update.message.reply_text(
-            prompt_text, reply_markup=keyboard, disable_notification=True
-        )
-
-        # 记录消息ID
-        await self._record_message(context, message)
-
-        logger.debug(f"[{self.name}] 转入下一步: {next_step.name} (ID: {next_step.id})")
-        return next_step.id
+        # 检查是否有下一步
+        if next_step_index < len(self.steps):
+            # 获取下一步
+            next_step = self.steps[next_step_index]
+            logger.info(f"[{self.name}] 准备进入下一步: {next_step.name}, auto_execute: {next_step.auto_execute}")
+            
+            # 创建下一步的提示消息
+            prompt_text = next_step.get_prompt(context)
+            
+            # 创建下一步的键盘
+            keyboard = next_step.get_keyboard(context)
+            
+            # 发送下一步的提示消息
+            message = await update.message.reply_text(
+                prompt_text, reply_markup=keyboard, disable_notification=True
+            )
+            
+            # 记录消息ID
+            await self._record_message(context, message)
+            
+            # 检查下一步是否需要自动执行
+            if next_step.auto_execute:
+                logger.info(f"[{self.name}] 自动执行下一步: {next_step.name}")
+                
+                # 为自动步骤存储空输入
+                auto_data_key = f"{self.data_prefix}{next_step.data_key}"
+                context.user_data[auto_data_key] = ""
+                context.user_data["is_auto_execute"] = True  # 添加自动执行标记
+                
+                # 调用下一步的处理函数，传入一个空字符串作为用户输入
+                auto_result = await next_step.handle(update, context, "")
+                logger.info(f"[{self.name}] 自动步骤处理函数返回结果: {auto_result}")
+                
+                # 删除自动执行标记
+                if "is_auto_execute" in context.user_data:
+                    del context.user_data["is_auto_execute"]
+                
+                if auto_result is not None:
+                    # 如果处理函数返回了状态，使用它
+                    logger.info(f"[{self.name}] 自动步骤返回了特定状态: {auto_result}")
+                    return await self._ensure_message_cleanup(context, chat_id, auto_result)
+                
+                # 检查是否还有后续步骤
+                subsequent_step_index = next_step_index + 1
+                logger.info(f"[{self.name}] 后续步骤索引: {subsequent_step_index}, 总步骤数: {len(self.steps)}")
+                
+                if subsequent_step_index < len(self.steps):
+                    # 获取后续步骤
+                    subsequent_step = self.steps[subsequent_step_index]
+                    logger.info(f"[{self.name}] 后续步骤: {subsequent_step.name}, auto_execute: {subsequent_step.auto_execute}")
+                    
+                    # 如果后续步骤也是自动执行的，交给下一轮处理
+                    if subsequent_step.auto_execute:
+                        logger.info(f"[{self.name}] 后续步骤也是自动执行的，设置状态为: {subsequent_step.id}")
+                        return subsequent_step.id
+                    
+                    # 后续步骤不是自动执行的，发送提示并返回
+                    logger.info(f"[{self.name}] 后续步骤不是自动执行的，发送提示")
+                    subsequent_prompt = subsequent_step.get_prompt(context)
+                    subsequent_keyboard = subsequent_step.get_keyboard(context)
+                    
+                    subsequent_message = await update.message.reply_text(
+                        subsequent_prompt, reply_markup=subsequent_keyboard, disable_notification=True
+                    )
+                    await self._record_message(context, subsequent_message)
+                    
+                    return subsequent_step.id
+                else:
+                    # 没有更多步骤，结束会话
+                    logger.info(f"[{self.name}] 没有更多步骤，结束会话")
+                    return await self.end_conversation(update, context, message="✅ 操作已完成。")
+            
+            # 不是自动执行的步骤，返回下一步状态
+            logger.info(f"[{self.name}] 下一步不是自动执行的，返回状态: {next_step.id}")
+            return next_step.id
+        else:
+            # 没有下一步，结束会话
+            logger.info(f"[{self.name}] 没有下一步，结束会话")
+            return await self.end_conversation(update, context, message=f"✅ {self.description or '操作'}已完成。")
 
     async def _handle_media_group(
         self,

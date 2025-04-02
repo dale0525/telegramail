@@ -15,6 +15,7 @@ from app.bot.utils.common_steps import (
     confirm_send_step,
     get_cancel_keyboard,
     email_body_step,
+    fetch_sent_email_step,
 )
 from app.database.operations import AccountOperations
 from app.bot.utils.conversation_chain import ConversationChain
@@ -285,6 +286,7 @@ def get_compose_handler():
     compose_chain.add_step_from_template(email_body_step(compose_chain))
     compose_chain.add_step_from_template(attachment_step(compose_chain))
     compose_chain.add_step_from_template(confirm_send_step(compose_chain))
+    compose_chain.add_step_from_template(fetch_sent_email_step(compose_chain))
 
     conversation_handler = compose_chain.build()
 
