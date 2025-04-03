@@ -2,13 +2,19 @@
 TelegramMail - A Telegram bot for receiving and sending emails.
 """
 import logging
+import os
 from typing import Optional
 from telegram.ext import Application
 
 __version__ = "0.1.0"
 
-# 配置日志
+# 获取环境变量中的日志级别
+log_level_str = os.getenv("LOG_LEVEL", "INFO")
+log_level = getattr(logging, log_level_str)
+
+# 配置日志 - 确保app包的日志器设置为正确的级别
 logger = logging.getLogger(__name__)
+logger.setLevel(log_level)
 
 # 全局应用实例
 _bot_application = None

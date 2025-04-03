@@ -20,9 +20,28 @@ log_level = getattr(logging, log_level_str)
 # 设置日志
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
-    level=log_level
+    level=logging.WARNING  # 默认级别为WARNING，这样第三方库只会显示WARNING及以上级别的日志
 )
+
+# 为应用自身的日志设置指定的级别
+app_logger = logging.getLogger("app")
+app_logger.setLevel(log_level)
+
+# 为主模块设置日志记录器
 logger = logging.getLogger(__name__)
+
+# 使用过滤器来过滤掉不需要的包的日志
+class PackageFilter(logging.Filter):
+    """
+    过滤特定包的日志
+    """
+    def filter(self, record):
+        # 只允许app包的日志和__main__日志通过
+        return record.name.startswith("app.") or record.name == "__main__" or record.name == "app"
+
+# 添加过滤器到根日志处理器
+for handler in logging.root.handlers:
+    handler.addFilter(PackageFilter())
 
 def main():
     """主函数，启动Telegram Bot应用程序"""
