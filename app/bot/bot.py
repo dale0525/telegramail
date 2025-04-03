@@ -42,9 +42,13 @@ from app.email.email_monitor import get_email_monitor
 from app.bot.handlers.email_delete import handle_delete_email
 from app.bot.handlers.email_reply import get_reply_handler, reply_chain
 
+# 获取日志级别
+log_level_str = config.LOG_LEVEL
+log_level = getattr(logging, log_level_str)
+
 # 配置日志
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=log_level
 )
 logger = logging.getLogger(__name__)
 

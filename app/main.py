@@ -10,10 +10,17 @@ from dotenv import load_dotenv
 from app.bot_async import run_polling
 from app.database.models import init_db
 
+# 加载环境变量
+load_dotenv()
+
+# 从配置中读取日志级别
+log_level_str = os.getenv("LOG_LEVEL", "INFO")
+log_level = getattr(logging, log_level_str)
+
 # 设置日志
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
-    level=logging.INFO
+    level=log_level
 )
 logger = logging.getLogger(__name__)
 
