@@ -266,87 +266,6 @@ class EmailUtils:
             await self.chain._record_message(context, result_msg)
         return None
 
-    async def process_single_attachment(
-        self,
-        update,
-        context,
-        file_id,
-        filename,
-        mime_type,
-        status_msg,
-        attachment_key="compose_attachments",
-    ):
-        """处理单个附件并更新状态消息"""
-        try:
-            # 确保附件列表已初始化
-            if attachment_key not in context.user_data:
-                context.user_data[attachment_key] = []
-
-            # 下载文件
-            file = await context.bot.get_file(file_id)
-            file_bytes = await file.download_as_bytearray()
-
-            # 添加到附件列表
-            context.user_data[attachment_key].append(
-                {
-                    "file_id": file_id,
-                    "filename": filename,
-                    "mime_type": mime_type,
-                    "content": file_bytes,
-                }
-            )
-
-            # 准备附件列表显示
-            attachment_names = [
-                att["filename"] for att in context.user_data[attachment_key]
-            ]
-            attachment_list = "\n".join([f"- {name}" for name in attachment_names])
-
-            # 获取聊天ID
-            chat_id = (
-                update.effective_chat.id
-                if hasattr(update, "effective_chat")
-                else status_msg.chat.id
-            )
-
-            # 更新状态消息
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_msg.message_id,
-                    text=f"""✅ 附件已添加: {filename}
-
-当前附件列表 ({len(attachment_names)} 个):
-{attachment_list}""",
-                )
-            except Exception as e:
-                logger.error(f"更新状态消息失败: {e}")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"处理附件时出错: {e}")
-            logger.error(traceback.format_exc())
-
-            # 更新状态消息显示错误
-            try:
-                # 获取聊天ID
-                chat_id = (
-                    update.effective_chat.id
-                    if hasattr(update, "effective_chat")
-                    else status_msg.chat.id
-                )
-
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_msg.message_id,
-                    text=f"❌ 处理附件失败: {str(e)}",
-                )
-            except:
-                pass
-
-            return False
-
     async def handle_confirm_send(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input
     ):
@@ -357,18 +276,22 @@ class EmailUtils:
         if user_input == "✅ 确认发送":
             logger.info("用户确认发送邮件，调用 send_composed_email 方法")
             # 记录当前的步骤和状态
-            logger.info(f"附件数量: {len(context.user_data.get('compose_attachments', []))}")
-            logger.info(f"邮件接收人: {context.user_data.get('compose_recipients', [])}")
+            logger.info(
+                f"附件数量: {len(context.user_data.get('compose_attachments', []))}"
+            )
+            logger.info(
+                f"邮件接收人: {context.user_data.get('compose_recipients', [])}"
+            )
 
             # 该方法会处理邮件发送
             sent_result = await self.send_composed_email(update, context)
-            
+
             # 如果邮件成功发送(返回None)，继续到获取发送邮件步骤
             if sent_result is None:
                 logger.info("邮件发送成功，将在下一步获取发送邮件")
                 # 在此不返回具体值，让对话链自动处理进入下一步
                 return None
-            
+
             # 如果有返回值(出错)，则结束对话
             logger.warning(f"邮件发送失败或出错，返回值: {sent_result}")
             return ConversationHandler.END
@@ -416,12 +339,14 @@ class EmailUtils:
             for i, att in enumerate(attachments):
                 content_size = len(att.get("content", b"")) if "content" in att else 0
                 total_size += content_size
-                attachment_info.append({
-                    "index": i,
-                    "filename": att.get("filename", f"未命名附件_{i}"),
-                    "mime_type": att.get("mime_type", "application/octet-stream"),
-                    "content_size": f"{content_size/1024:.2f} KB"
-                })
+                attachment_info.append(
+                    {
+                        "index": i,
+                        "filename": att.get("filename", f"未命名附件_{i}"),
+                        "mime_type": att.get("mime_type", "application/octet-stream"),
+                        "content_size": f"{content_size/1024:.2f} KB",
+                    }
+                )
             logger.info(f"附件详情: {attachment_info}")
             logger.info(f"附件总大小: {total_size/(1024*1024):.2f} MB")
 
@@ -616,7 +541,9 @@ class EmailUtils:
             if attachments:
                 for att in attachments:
                     # 检查att是否为字典类型，且包含所需键
-                    if isinstance(att, dict) and all(key in att for key in ["filename", "content", "mime_type"]):
+                    if isinstance(att, dict) and all(
+                        key in att for key in ["filename", "content", "mime_type"]
+                    ):
                         smtp_attachments.append(
                             {
                                 "filename": att["filename"],
@@ -679,10 +606,10 @@ class EmailUtils:
                     success_msg_text, disable_notification=True
                 )
                 await self.chain._record_message(context, success_msg)
-                
+
                 # 将发送成功的信息保存在 context 中，供下一步使用
                 context.user_data["sent_email_success"] = True
-                
+
                 # 延迟清理任务
                 # await self.chain.end_conversation(update, context)
                 return None
@@ -723,18 +650,24 @@ class EmailUtils:
             )
             await self.chain._record_message(context, error_msg)
             await self.chain.end_conversation(update, context)
-            
-    async def fetch_sent_email(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input) -> None:
+
+    async def fetch_sent_email(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input
+    ) -> None:
         """获取并通知最新发送的邮件"""
         logger.info("===== 开始执行fetch_sent_email方法 =====")
         logger.info(f"用户输入: {user_input}")
-        logger.info(f"是否为自动执行: {context.user_data.get('is_auto_execute', False)}")
-        
+        logger.info(
+            f"是否为自动执行: {context.user_data.get('is_auto_execute', False)}"
+        )
+
         # 由于这是一个自动处理的步骤，user_input可能是任何值
         # 我们不需要检查用户输入，直接继续处理
-        
+
         # 检查之前是否成功发送了邮件
-        logger.info(f"sent_email_success: {context.user_data.get('sent_email_success', False)}")
+        logger.info(
+            f"sent_email_success: {context.user_data.get('sent_email_success', False)}"
+        )
         if not context.user_data.get("sent_email_success", False):
             logger.warning("没有找到发送成功的邮件记录，可能是发送失败")
             # 由于之前的发送步骤应该已经处理了错误情况，这里只是结束会话
@@ -744,12 +677,12 @@ class EmailUtils:
                 disable_notification=True,
             )
             return None  # 允许继续到下一步，如果有的话
-            
+
         # 获取账户信息
         account_id = context.user_data.get("compose_account_id")
         account = get_email_account_by_id(account_id)
         logger.info(f"账户ID: {account_id}, 账户对象存在: {account is not None}")
-        
+
         if not account:
             logger.error("获取发送邮件失败: 无法获取邮箱账户信息")
             message = await update.message.reply_text(
@@ -759,7 +692,7 @@ class EmailUtils:
             )
             await self.chain._record_message(context, message)
             return None  # 允许继续到下一步，如果有的话
-            
+
         # 获取邮件相关信息，以便验证获取到的邮件是否正确
         subject = context.user_data.get("compose_subject", "无主题")
         recipients = context.user_data.get("compose_recipients", [])
@@ -776,7 +709,7 @@ class EmailUtils:
             disable_notification=True,
         )
         await self.chain._record_message(context, status_msg)
-        
+
         try:
             # 获取最新的发送邮件
             from app.email.imap_client import IMAPClient
@@ -790,9 +723,7 @@ class EmailUtils:
             latest_sent_email = None
             while retry_count < max_retries and not latest_sent_email:
                 logger.info(f"尝试第 {retry_count + 1} 次获取最新发送邮件")
-                latest_sent_email = await IMAPClient(
-                    account
-                ).get_latest_sent_email()
+                latest_sent_email = await IMAPClient(account).get_latest_sent_email()
 
                 if not latest_sent_email:
                     logger.warning(
@@ -834,9 +765,7 @@ class EmailUtils:
 
                 recipients_match = any(
                     r in latest_recipients for r in current_recipients
-                ) or any(
-                    r in current_recipients for r in latest_recipients
-                )
+                ) or any(r in current_recipients for r in latest_recipients)
 
                 logger.info(
                     f"收件人比较 - 当前邮件收件人: {current_recipients}, 最新邮件收件人: {latest_recipients}, 匹配结果: {recipients_match}"
@@ -844,16 +773,14 @@ class EmailUtils:
 
                 if recipients_match:
                     # 保存最新发送邮件的元数据
-                    email_id = save_email_metadata(
-                        account.id, latest_sent_email
-                    )
+                    email_id = save_email_metadata(account.id, latest_sent_email)
                     if email_id:
                         logger.info(f"邮件元数据保存成功，ID: {email_id}")
                         # 向Telegram发送已发送邮件通知
                         await send_sent_email_notification(
                             context, account.id, latest_sent_email, email_id
                         )
-                        
+
                         # 发送完成消息
                         message = await update.message.reply_text(
                             "✅ 邮件发送完成，已获取发送邮件详情。",
@@ -876,11 +803,11 @@ class EmailUtils:
                         disable_notification=True,
                     )
                     await self.chain._record_message(context, message)
-                    
+
                 # 成功完成，让对话链继续到下一步（如果有的话）
                 logger.info("获取发送邮件完成，继续到下一步")
                 return None
-                
+
         except Exception as e:
             logger.error(f"获取或处理最新发送邮件时出错: {e}")
             logger.error(traceback.format_exc())
@@ -1201,7 +1128,9 @@ class EmailUtils:
             if attachments:
                 for att in attachments:
                     # 检查att是否为字典类型，且包含所需键
-                    if isinstance(att, dict) and all(key in att for key in ["filename", "content", "mime_type"]):
+                    if isinstance(att, dict) and all(
+                        key in att for key in ["filename", "content", "mime_type"]
+                    ):
                         smtp_attachments.append(
                             {
                                 "filename": att["filename"],
@@ -1357,3 +1286,86 @@ class EmailUtils:
             return False, None
 
         return False, None
+
+    @staticmethod
+    def validate_email_list(user_input, is_optional=False):
+        """验证邮箱列表（收件人、抄送或密送）"""
+        # 检查是否为空
+        if not user_input:
+            if is_optional:
+                return True, None, []
+            else:
+                return False, "⚠️ 收件人不能为空，请输入至少一个有效的邮箱地址。", None
+
+        # 去除输入两端空白
+        user_input = user_input.strip()
+
+        # 检查是否为特殊标记（"-" 或 "无"）表示空列表
+        if is_optional and user_input in ["-", "无"]:
+            return True, None, []
+
+        # 分割邮箱列表，确保即使有多余的空格也能正确处理
+        email_list = []
+        if "," in user_input:
+            # 使用逗号分隔，并过滤掉空项和特殊标记
+            raw_emails = [email.strip() for email in user_input.split(",")]
+            for email in raw_emails:
+                if not email:
+                    continue  # 跳过空项
+                if is_optional and email in ["-", "无"]:
+                    continue  # 跳过特殊标记
+                email_list.append(email)
+        else:
+            # 没有逗号，可能是单个邮箱
+            if user_input and not (is_optional and user_input in ["-", "无"]):
+                email_list = [user_input]
+
+        # 如果是必填项但列表为空，则返回错误
+        if not is_optional and not email_list:
+            return False, "⚠️ 收件人不能为空，请输入至少一个有效的邮箱地址。", None
+
+        # 验证邮箱格式
+        invalid_emails = EmailUtils.validate_email_format(email_list)
+
+        if invalid_emails:
+            return (
+                False,
+                f"⚠️ 以下邮箱格式无效，请重新输入：\n{', '.join(invalid_emails)}\n\n每个邮箱地址应该形如：name@example.com\n多个邮箱请用逗号分隔",
+                None,
+            )
+
+        return True, None, email_list
+
+    @staticmethod
+    def validate_email_format(emails_list):
+        """验证邮箱格式是否正确"""
+        invalid_emails = []
+        for email in emails_list:
+            # 检查是否包含非法字符（特别是逗号）
+            if "," in email:
+                invalid_emails.append(email)
+                continue
+
+            # 基本的邮箱格式验证
+            if "@" not in email or "." not in email.split("@")[1]:
+                invalid_emails.append(email)
+                continue
+
+            # 检查邮箱格式是否符合基本规则
+            try:
+                # 简化的邮箱规则：用户名@域名.后缀
+                username, domain = email.split("@", 1)
+                if not username or not domain:
+                    invalid_emails.append(email)
+                    continue
+
+                # 域名必须包含至少一个点，且不能以点开头或结尾
+                if "." not in domain or domain.startswith(".") or domain.endswith("."):
+                    invalid_emails.append(email)
+                    continue
+
+                # 验证通过
+            except Exception:
+                invalid_emails.append(email)
+
+        return invalid_emails

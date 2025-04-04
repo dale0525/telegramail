@@ -4,11 +4,10 @@ Email compose handlers for TelegramMail Bot using ConversationChain.
 """
 
 import logging
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
-    filters,
 )
 from app.bot.utils.common_steps import (
     attachment_step,
@@ -34,93 +33,10 @@ compose_chain = ConversationChain(
 )
 
 
-def validate_email_format(emails_list):
-    """验证邮箱格式是否正确"""
-    invalid_emails = []
-    for email in emails_list:
-        # 检查是否包含非法字符（特别是逗号）
-        if "," in email:
-            invalid_emails.append(email)
-            continue
-
-        # 基本的邮箱格式验证
-        if "@" not in email or "." not in email.split("@")[1]:
-            invalid_emails.append(email)
-            continue
-
-        # 检查邮箱格式是否符合基本规则
-        try:
-            # 简化的邮箱规则：用户名@域名.后缀
-            username, domain = email.split("@", 1)
-            if not username or not domain:
-                invalid_emails.append(email)
-                continue
-
-            # 域名必须包含至少一个点，且不能以点开头或结尾
-            if "." not in domain or domain.startswith(".") or domain.endswith("."):
-                invalid_emails.append(email)
-                continue
-
-            # 验证通过
-        except Exception:
-            invalid_emails.append(email)
-
-    return invalid_emails
-
-
-def validate_email_list(user_input, context, is_optional=False):
-    """验证邮箱列表（收件人、抄送或密送）"""
-    # 检查是否为空
-    if not user_input:
-        if is_optional:
-            return True, None, []
-        else:
-            return False, "⚠️ 收件人不能为空，请输入至少一个有效的邮箱地址。", None
-
-    # 去除输入两端空白
-    user_input = user_input.strip()
-
-    # 检查是否为特殊标记（"-" 或 "无"）表示空列表
-    if is_optional and user_input in ["-", "无"]:
-        return True, None, []
-
-    # 分割邮箱列表，确保即使有多余的空格也能正确处理
-    email_list = []
-    if "," in user_input:
-        # 使用逗号分隔，并过滤掉空项和特殊标记
-        raw_emails = [email.strip() for email in user_input.split(",")]
-        for email in raw_emails:
-            if not email:
-                continue  # 跳过空项
-            if is_optional and email in ["-", "无"]:
-                continue  # 跳过特殊标记
-            email_list.append(email)
-    else:
-        # 没有逗号，可能是单个邮箱
-        if user_input and not (is_optional and user_input in ["-", "无"]):
-            email_list = [user_input]
-
-    # 如果是必填项但列表为空，则返回错误
-    if not is_optional and not email_list:
-        return False, "⚠️ 收件人不能为空，请输入至少一个有效的邮箱地址。", None
-
-    # 验证邮箱格式
-    invalid_emails = validate_email_format(email_list)
-
-    if invalid_emails:
-        return (
-            False,
-            f"⚠️ 以下邮箱格式无效，请重新输入：\n{', '.join(invalid_emails)}\n\n每个邮箱地址应该形如：name@example.com\n多个邮箱请用逗号分隔",
-            None,
-        )
-
-    return True, None, email_list
-
-
 def validate_recipients(user_input, context):
     """验证收件人列表"""
-    is_valid, error_msg, email_list = validate_email_list(
-        user_input, context, is_optional=False
+    is_valid, error_msg, email_list = EmailUtils.validate_email_list(
+        user_input, is_optional=False
     )
     if is_valid:
         context.user_data["compose_recipients"] = email_list
@@ -129,8 +45,8 @@ def validate_recipients(user_input, context):
 
 def validate_cc(user_input, context):
     """验证抄送列表"""
-    is_valid, error_msg, email_list = validate_email_list(
-        user_input, context, is_optional=True
+    is_valid, error_msg, email_list = EmailUtils.validate_email_list(
+        user_input, is_optional=True
     )
     if is_valid:
         # 确保即使用户输入了 "-" 或 "无"，也会存储为空列表
@@ -140,8 +56,8 @@ def validate_cc(user_input, context):
 
 def validate_bcc(user_input, context):
     """验证密送列表"""
-    is_valid, error_msg, email_list = validate_email_list(
-        user_input, context, is_optional=True
+    is_valid, error_msg, email_list = EmailUtils.validate_email_list(
+        user_input, is_optional=True
     )
     if is_valid:
         # 确保即使用户输入了 "-" 或 "无"，也会存储为空列表
@@ -241,7 +157,6 @@ def get_compose_handler():
         keyboard_func=email_utils.get_account_keyboard,
         prompt_func=get_account_prompt,
         filter_type="TEXT",
-        data_key="account",
     )
 
     compose_chain.add_step(
@@ -250,7 +165,6 @@ def get_compose_handler():
         keyboard_func=get_cancel_keyboard,
         prompt_func=get_subject_prompt,
         filter_type="TEXT",
-        data_key="subject",
     )
 
     compose_chain.add_step(
@@ -260,7 +174,6 @@ def get_compose_handler():
         keyboard_func=get_cancel_keyboard,
         prompt_func=get_recipients_prompt,
         filter_type="TEXT",
-        data_key="recipients",
     )
 
     compose_chain.add_step(
@@ -270,7 +183,6 @@ def get_compose_handler():
         keyboard_func=get_cancel_keyboard,
         prompt_func=get_cc_prompt,
         filter_type="TEXT",
-        data_key="cc",
     )
 
     compose_chain.add_step(
@@ -280,7 +192,6 @@ def get_compose_handler():
         keyboard_func=get_cancel_keyboard,
         prompt_func=get_bcc_prompt,
         filter_type="TEXT",
-        data_key="bcc",
     )
 
     compose_chain.add_step_from_template(email_body_step(compose_chain))

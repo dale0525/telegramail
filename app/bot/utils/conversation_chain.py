@@ -23,110 +23,11 @@ from telegram.ext import (
 )
 import traceback
 
+# 从新模块导入ConversationStep
+from app.bot.utils.conversation_step import ConversationStep
+
 # 配置日志
 logger = logging.getLogger(__name__)
-
-
-class ConversationStep:
-    """
-    会话步骤类，封装了会话中单个步骤的所有属性和行为
-
-    这个类使得每个步骤的定义更加清晰和结构化，同时提供了更好的类型提示。
-    """
-
-    def __init__(
-        self,
-        name: str,
-        handler_func: Callable,
-        validator: Optional[Callable] = None,
-        keyboard_func: Optional[Callable] = None,
-        prompt_func: Optional[Callable] = None,
-        data_key: Optional[str] = None,
-        filter_type: str = "TEXT",
-        filter_handlers: Optional[List[Tuple]] = None,
-        auto_execute: bool = False,  # 新增：是否自动执行而不等待用户输入
-    ):
-        """
-        初始化会话步骤
-
-        Args:
-            name: 步骤名称
-            handler_func: 处理用户输入的函数
-            validator: 验证用户输入的函数，若未提供则不做验证
-            keyboard_func: 生成回复键盘的函数，若未提供则不使用键盘
-            prompt_func: 生成提示消息的函数
-            data_key: 存储用户响应的数据键，若未提供则使用步骤名称
-            filter_type: 消息过滤器类型，可选 "TEXT", "PHOTO", "DOCUMENT", "ALL", "MEDIA", "CUSTOM"
-            filter_handlers: 自定义过滤器和处理函数列表，仅当 filter_type="CUSTOM" 时使用
-            auto_execute: 是否自动执行而不等待用户输入，适用于不需要用户交互的步骤
-        """
-        self.id = None  # 将在添加到ConversationChain时设置
-        self.name = name
-        self.handler_func = handler_func
-        self.validator = validator
-        self.keyboard_func = keyboard_func
-        self.prompt_func = prompt_func
-        self.data_key = data_key or name
-        self.filter_type = filter_type
-        self.filter_handlers = (
-            filter_handlers if filter_type == "CUSTOM" and filter_handlers else None
-        )
-        self.auto_execute = auto_execute  # 是否自动执行而不等待用户输入
-
-    def get_prompt(self, context: ContextTypes.DEFAULT_TYPE) -> str:
-        """获取提示消息"""
-        if self.prompt_func:
-            return self.prompt_func(context)
-        return f"请输入{self.name}:"
-
-    def get_keyboard(
-        self, context: ContextTypes.DEFAULT_TYPE
-    ) -> Union[ReplyKeyboardMarkup, ForceReply]:
-        """获取键盘"""
-        if self.keyboard_func:
-            return self.keyboard_func(context)
-        return ForceReply(selective=True)
-
-    def validate(
-        self, user_input: Any, context: ContextTypes.DEFAULT_TYPE
-    ) -> Tuple[bool, Optional[str]]:
-        """验证用户输入"""
-        if self.validator:
-            return self.validator(user_input, context)
-        return True, None
-
-    async def handle(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_input: Any
-    ) -> Optional[int]:
-        """处理用户输入"""
-        if self.handler_func:
-            # 当 user_input 是 Message 对象且不等于 update.message 时，
-            # 这可能是媒体组中的一条消息，需要特殊处理
-            if isinstance(user_input, Message) and user_input != update.message:
-                # 创建处理该消息的临时上下文
-                # 此处我们不修改原始的 update 对象，而是直接把消息传给处理函数
-                return await self.handler_func(update, context, user_input)
-            else:
-                return await self.handler_func(update, context, user_input)
-        return None
-
-    def get_filters(self) -> List[MessageHandler]:
-        """获取适用于此步骤的过滤器"""
-        if self.filter_type == "CUSTOM" and self.filter_handlers:
-            return self.filter_handlers
-
-        filter_map = {
-            "TEXT": filters.TEXT & ~filters.COMMAND,
-            "PHOTO": filters.PHOTO,
-            "DOCUMENT": filters.Document.ALL,
-            "MEDIA": filters.PHOTO
-            | filters.Document.ALL
-            | filters.VIDEO
-            | filters.AUDIO,
-            "ALL": filters.ALL & ~filters.COMMAND,
-        }
-
-        return filter_map.get(self.filter_type, filters.TEXT & ~filters.COMMAND)
 
 
 class ConversationChain:
@@ -139,6 +40,7 @@ class ConversationChain:
     - 自动消息清理
     - 会话数据存储与管理
     - 媒体组处理
+    - 子链嵌套
     """
 
     def __init__(
@@ -181,6 +83,12 @@ class ConversationChain:
 
         # 消息键，用于在context.user_data中存储待清理的消息ID
         self.messages_key = f"{self.data_prefix}messages"
+
+        # 子链相关键
+        self.sub_chain_key = f"{self.data_prefix}sub_chain"
+        self.sub_chain_step_key = f"{self.data_prefix}sub_chain_step"
+        self.parent_chain_key = f"{self.data_prefix}parent_chain"
+        self.in_sub_chain_key = f"{self.data_prefix}in_sub_chain"
 
         # 取消命令处理器
         self.fallbacks = [CommandHandler("cancel", self._cancel_handler)]
@@ -227,9 +135,11 @@ class ConversationChain:
         validator: Optional[Callable] = None,
         keyboard_func: Optional[Callable] = None,
         prompt_func: Optional[Callable] = None,
-        data_key: Optional[str] = None,
         filter_type: str = "TEXT",
         filter_handlers: Optional[List[Tuple]] = None,
+        sub_chain=None,
+        trigger_keywords: Optional[List[str]] = None,
+        end_keywords: Optional[List[str]] = None,
     ):
         """
         添加会话步骤
@@ -240,9 +150,11 @@ class ConversationChain:
             validator: 验证用户输入的函数，若未提供则不做验证
             keyboard_func: 生成回复键盘的函数，若未提供则不使用键盘
             prompt_func: 生成提示消息的函数
-            data_key: 存储用户响应的数据键，若未提供则使用步骤名称
             filter_type: 消息过滤器类型，可选 "TEXT", "PHOTO", "DOCUMENT", "ALL", "MEDIA", "CUSTOM"
             filter_handlers: 自定义过滤器和处理函数列表，仅当 filter_type="CUSTOM" 时使用
+            sub_chain: 子链，用于在步骤中嵌套另一个会话链
+            trigger_keywords: 触发子链的关键词列表
+            end_keywords: 结束子链的关键词列表
         """
         step = ConversationStep(
             name=name,
@@ -250,9 +162,11 @@ class ConversationChain:
             validator=validator,
             keyboard_func=keyboard_func,
             prompt_func=prompt_func,
-            data_key=data_key,
             filter_type=filter_type,
             filter_handlers=filter_handlers,
+            sub_chain=sub_chain,
+            trigger_keywords=trigger_keywords,
+            end_keywords=end_keywords,
         )
 
         # 设置步骤ID
@@ -277,10 +191,12 @@ class ConversationChain:
             validator=template.validator,
             keyboard_func=template.keyboard_func,
             prompt_func=template.prompt_func,
-            data_key=template.data_key,
             filter_type=template.filter_type,
             filter_handlers=template.filter_handlers,
-            auto_execute=template.auto_execute,  # 确保auto_execute属性被正确传递
+            auto_execute=template.auto_execute,
+            sub_chain=template.sub_chain,
+            trigger_keywords=template.trigger_keywords,
+            end_keywords=template.end_keywords,
         )
 
         # 应用覆盖
@@ -302,10 +218,12 @@ class ConversationChain:
         validator: Optional[Callable] = None,
         keyboard_func: Optional[Callable] = None,
         prompt_func: Optional[Callable] = None,
-        data_key: Optional[str] = None,
         filter_type: str = "TEXT",
         filter_handlers: Optional[List[Tuple]] = None,
-        auto_execute: bool = False,  # 新增：是否自动执行而不等待用户输入
+        auto_execute: bool = False,
+        sub_chain=None,
+        trigger_keywords: Optional[List[str]] = None,
+        end_keywords: Optional[List[str]] = None,
     ) -> ConversationStep:
         """
         创建步骤模板，但不添加到链条中
@@ -316,10 +234,12 @@ class ConversationChain:
             validator: 验证用户输入的函数
             keyboard_func: 生成回复键盘的函数
             prompt_func: 生成提示消息的函数
-            data_key: 存储用户响应的数据键
             filter_type: 消息过滤器类型
             filter_handlers: 自定义过滤器和处理函数列表
             auto_execute: 是否自动执行而不等待用户输入，适用于不需要用户交互的步骤
+            sub_chain: 子链，用于在步骤中嵌套另一个会话链
+            trigger_keywords: 触发子链的关键词列表
+            end_keywords: 结束子链的关键词列表
 
         Returns:
             ConversationStep: 步骤模板
@@ -330,10 +250,12 @@ class ConversationChain:
             validator=validator,
             keyboard_func=keyboard_func,
             prompt_func=prompt_func,
-            data_key=data_key,
             filter_type=filter_type,
             filter_handlers=filter_handlers,
-            auto_execute=auto_execute,  # 传递auto_execute参数
+            auto_execute=auto_execute,
+            sub_chain=sub_chain,
+            trigger_keywords=trigger_keywords,
+            end_keywords=end_keywords,
         )
 
     async def _clean_messages(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
@@ -424,7 +346,10 @@ class ConversationChain:
 
         # 发送提示消息
         message = await update.message.reply_text(
-            prompt_text, reply_markup=keyboard, disable_notification=True
+            prompt_text,
+            reply_markup=keyboard,
+            disable_notification=True,
+            parse_mode="HTML",
         )
 
         # 记录消息ID
@@ -433,18 +358,18 @@ class ConversationChain:
         # 检查是否需要自动执行第一个步骤
         if first_step.auto_execute:
             logger.info(f"[{self.name}] 自动执行第一个步骤: {first_step.name}")
-            
+
             # 调用步骤的处理函数，传入一个空字符串作为用户输入
             # 因为是自动执行的步骤，不依赖用户输入
             next_state = await first_step.handle(update, context, "")
-            
+
             if next_state is not None:
                 # 如果处理函数返回了状态，使用它
                 return await self._ensure_message_cleanup(context, chat_id, next_state)
             elif len(self.steps) > 1:
                 # 否则，如果还有下一步，自动转到下一步
                 next_step = self.steps[1]
-                
+
                 # 如果下一步也是自动执行的，则递归处理
                 if next_step.auto_execute:
                     # 递归处理下一个自动执行步骤
@@ -454,16 +379,21 @@ class ConversationChain:
                     # 下一步不是自动执行的，发送提示并返回下一步状态
                     next_prompt = next_step.get_prompt(context)
                     next_keyboard = next_step.get_keyboard(context)
-                    
+
                     next_message = await update.message.reply_text(
-                        next_prompt, reply_markup=next_keyboard, disable_notification=True
+                        next_prompt,
+                        reply_markup=next_keyboard,
+                        disable_notification=True,
+                        parse_mode="HTML",
                     )
                     await self._record_message(context, next_message)
-                    
+
                     return next_step.id
             else:
                 # 没有下一步，会话结束
-                return await self.end_conversation(update, context, message="✅ 操作已完成。")
+                return await self.end_conversation(
+                    update, context, message="✅ 操作已完成。"
+                )
 
         # 不是自动执行的步骤，返回当前步骤ID
         return first_step.id
@@ -474,12 +404,6 @@ class ConversationChain:
         """取消对话的处理函数"""
         # 记录用户的取消命令消息
         await self._record_message(context, update.message)
-
-        # 清理会话数据(保留消息ID列表)
-        for step in self.steps:
-            data_key = f"{self.data_prefix}{step.data_key}"
-            if data_key in context.user_data:
-                del context.user_data[data_key]
 
         # 使用end_conversation结束会话并发送取消消息
         return await self.end_conversation(
@@ -511,11 +435,17 @@ class ConversationChain:
 
         current_step = self.steps[step_index]
         next_step_index = step_index + 1
-        
-        logger.info(f"[{self.name}] 当前步骤: {current_step.name}, auto_execute: {current_step.auto_execute}")
-        logger.info(f"[{self.name}] 下一步索引: {next_step_index}, 总步骤数: {len(self.steps)}")
+
+        logger.info(
+            f"[{self.name}] 当前步骤: {current_step.name}, auto_execute: {current_step.auto_execute}"
+        )
+        logger.info(
+            f"[{self.name}] 下一步索引: {next_step_index}, 总步骤数: {len(self.steps)}"
+        )
         if next_step_index < len(self.steps):
-            logger.info(f"[{self.name}] 下一步: {self.steps[next_step_index].name}, auto_execute: {self.steps[next_step_index].auto_execute}")
+            logger.info(
+                f"[{self.name}] 下一步: {self.steps[next_step_index].name}, auto_execute: {self.steps[next_step_index].auto_execute}"
+            )
 
         # 检查用户是否取消操作 (虽然有专门的取消处理器，但用户也可能直接回复"取消")
         if isinstance(user_input, str) and (
@@ -523,6 +453,155 @@ class ConversationChain:
         ):
             logger.debug(f"[{self.name}] 用户选择取消操作")
             return await self._cancel_handler(update, context)
+
+        # 检查是否在子链中
+        if (
+            self.in_sub_chain_key in context.user_data
+            and context.user_data[self.in_sub_chain_key]
+        ):
+            # 获取当前子链和子链步骤
+            sub_chain = context.user_data.get(self.sub_chain_key)
+            sub_step_index = context.user_data.get(self.sub_chain_step_key, 0)
+
+            if sub_chain and isinstance(sub_step_index, int):
+                logger.info(
+                    f"[{self.name}] 处理子链 '{sub_chain.name}' 中的步骤 {sub_step_index}"
+                )
+
+                # 检查是否需要退出子链
+                if sub_chain.steps[sub_step_index].check_end_keywords(user_input):
+                    logger.info(f"[{self.name}] 检测到结束关键词，退出子链")
+
+                    # 清除子链标记
+                    del context.user_data[self.in_sub_chain_key]
+                    del context.user_data[self.sub_chain_key]
+                    del context.user_data[self.sub_chain_step_key]
+
+                    # 返回到父链的当前步骤
+                    logger.info(
+                        f"[{self.name}] 从子链返回，回到当前步骤: {current_step.name}"
+                    )
+
+                    # 创建当前步骤的提示消息
+                    prompt_text = current_step.get_prompt(context)
+
+                    # 创建当前步骤的键盘
+                    keyboard = current_step.get_keyboard(context)
+
+                    # 发送当前步骤的提示消息
+                    message = await update.message.reply_text(
+                        prompt_text,
+                        reply_markup=keyboard,
+                        disable_notification=True,
+                        parse_mode="HTML",
+                    )
+
+                    # 记录消息ID
+                    await self._record_message(context, message)
+
+                    return current_step.id
+
+                # 处理子链中的步骤
+                sub_step = sub_chain.steps[sub_step_index]
+
+                # 验证用户输入
+                is_valid, error_message = sub_step.validate(user_input, context)
+                if not is_valid:
+                    # 发送错误消息
+                    logger.debug(f"[{self.name}] 子链中用户输入无效: {error_message}")
+                    error_msg = await update.message.reply_text(
+                        error_message or f"❌ 无效的{sub_step.name}，请重新输入。",
+                        reply_markup=ForceReply(selective=True),
+                        disable_notification=True,
+                    )
+
+                    # 记录错误消息
+                    await self._record_message(context, error_msg)
+
+                    # 保持在当前子链状态
+                    return current_step.id
+
+                # 调用子步骤的处理函数
+                logger.info(f"[{self.name}] 调用子链步骤处理函数: {sub_step.name}")
+                result = await sub_step.handle(update, context, user_input)
+                logger.info(f"[{self.name}] 子链步骤处理函数返回结果: {result}")
+
+                # 检查处理函数返回的结果
+                if result is not None:
+                    # 如果处理函数返回了状态，使用它
+                    logger.info(f"[{self.name}] 子链步骤处理函数返回状态: {result}")
+                    return await self._ensure_message_cleanup(context, chat_id, result)
+
+                # 计算子链的下一步
+                sub_next_step_index = sub_step_index + 1
+
+                # 检查是否到达子链末尾
+                if sub_next_step_index >= len(sub_chain.steps):
+                    # 子链结束，回到第一步
+                    logger.info(f"[{self.name}] 子链结束，返回子链第一步")
+                    sub_next_step_index = 0
+
+                # 更新子链当前步骤
+                context.user_data[self.sub_chain_step_key] = sub_next_step_index
+
+                # 获取下一个子步骤
+                sub_next_step = sub_chain.steps[sub_next_step_index]
+
+                # 创建下一步的提示消息
+                prompt_text = sub_next_step.get_prompt(context)
+
+                # 创建下一步的键盘
+                keyboard = sub_next_step.get_keyboard(context)
+
+                # 发送下一步的提示消息
+                message = await update.message.reply_text(
+                    prompt_text,
+                    reply_markup=keyboard,
+                    disable_notification=True,
+                    parse_mode="HTML",
+                )
+
+                # 记录消息ID
+                await self._record_message(context, message)
+
+                # 保持在当前步骤状态，因为我们仍在子链中
+                return current_step.id
+
+        # 检查是否需要进入子链
+        if current_step.sub_chain and current_step.check_trigger_keywords(user_input):
+            logger.info(f"[{self.name}] 检测到触发关键词，进入子链")
+
+            # 标记进入子链
+            context.user_data[self.in_sub_chain_key] = True
+            context.user_data[self.sub_chain_key] = current_step.sub_chain
+            context.user_data[self.sub_chain_step_key] = 0
+
+            # 设置子链的父链引用
+            for step in current_step.sub_chain.steps:
+                step.parent_chain = self
+
+            # 获取子链的第一个步骤
+            sub_first_step = current_step.sub_chain.steps[0]
+
+            # 创建子链第一步的提示消息
+            prompt_text = sub_first_step.get_prompt(context)
+
+            # 创建子链第一步的键盘
+            keyboard = sub_first_step.get_keyboard(context)
+
+            # 发送子链第一步的提示消息
+            message = await update.message.reply_text(
+                prompt_text,
+                reply_markup=keyboard,
+                disable_notification=True,
+                parse_mode="HTML",
+            )
+
+            # 记录消息ID
+            await self._record_message(context, message)
+
+            # 保持在当前步骤状态，因为我们仍在子链中
+            return current_step.id
 
         # 验证用户输入
         is_valid, error_message = current_step.validate(user_input, context)
@@ -540,11 +619,6 @@ class ConversationChain:
 
             # 保持在当前状态
             return current_step.id
-            
-        # 存储用户的有效输入
-        data_key = f"{self.data_prefix}{current_step.data_key}"
-        context.user_data[data_key] = user_input
-        logger.debug(f"[{self.name}] 存储用户输入 '{data_key}': {user_input}")
 
         # 调用当前步骤的处理函数
         logger.info(f"[{self.name}] 调用步骤处理函数: {current_step.name}")
@@ -561,81 +635,98 @@ class ConversationChain:
         if next_step_index < len(self.steps):
             # 获取下一步
             next_step = self.steps[next_step_index]
-            logger.info(f"[{self.name}] 准备进入下一步: {next_step.name}, auto_execute: {next_step.auto_execute}")
-            
+            logger.info(
+                f"[{self.name}] 准备进入下一步: {next_step.name}, auto_execute: {next_step.auto_execute}"
+            )
+
             # 创建下一步的提示消息
             prompt_text = next_step.get_prompt(context)
-            
+
             # 创建下一步的键盘
             keyboard = next_step.get_keyboard(context)
-            
+
             # 发送下一步的提示消息
             message = await update.message.reply_text(
-                prompt_text, reply_markup=keyboard, disable_notification=True
+                prompt_text,
+                reply_markup=keyboard,
+                disable_notification=True,
+                parse_mode="HTML",
             )
-            
+
             # 记录消息ID
             await self._record_message(context, message)
-            
+
             # 检查下一步是否需要自动执行
             if next_step.auto_execute:
                 logger.info(f"[{self.name}] 自动执行下一步: {next_step.name}")
-                
-                # 为自动步骤存储空输入
-                auto_data_key = f"{self.data_prefix}{next_step.data_key}"
-                context.user_data[auto_data_key] = ""
+
                 context.user_data["is_auto_execute"] = True  # 添加自动执行标记
-                
+
                 # 调用下一步的处理函数，传入一个空字符串作为用户输入
                 auto_result = await next_step.handle(update, context, "")
                 logger.info(f"[{self.name}] 自动步骤处理函数返回结果: {auto_result}")
-                
+
                 # 删除自动执行标记
                 if "is_auto_execute" in context.user_data:
                     del context.user_data["is_auto_execute"]
-                
+
                 if auto_result is not None:
                     # 如果处理函数返回了状态，使用它
                     logger.info(f"[{self.name}] 自动步骤返回了特定状态: {auto_result}")
-                    return await self._ensure_message_cleanup(context, chat_id, auto_result)
-                
+                    return await self._ensure_message_cleanup(
+                        context, chat_id, auto_result
+                    )
+
                 # 检查是否还有后续步骤
                 subsequent_step_index = next_step_index + 1
-                logger.info(f"[{self.name}] 后续步骤索引: {subsequent_step_index}, 总步骤数: {len(self.steps)}")
-                
+                logger.info(
+                    f"[{self.name}] 后续步骤索引: {subsequent_step_index}, 总步骤数: {len(self.steps)}"
+                )
+
                 if subsequent_step_index < len(self.steps):
                     # 获取后续步骤
                     subsequent_step = self.steps[subsequent_step_index]
-                    logger.info(f"[{self.name}] 后续步骤: {subsequent_step.name}, auto_execute: {subsequent_step.auto_execute}")
-                    
+                    logger.info(
+                        f"[{self.name}] 后续步骤: {subsequent_step.name}, auto_execute: {subsequent_step.auto_execute}"
+                    )
+
                     # 如果后续步骤也是自动执行的，交给下一轮处理
                     if subsequent_step.auto_execute:
-                        logger.info(f"[{self.name}] 后续步骤也是自动执行的，设置状态为: {subsequent_step.id}")
+                        logger.info(
+                            f"[{self.name}] 后续步骤也是自动执行的，设置状态为: {subsequent_step.id}"
+                        )
                         return subsequent_step.id
-                    
+
                     # 后续步骤不是自动执行的，发送提示并返回
                     logger.info(f"[{self.name}] 后续步骤不是自动执行的，发送提示")
                     subsequent_prompt = subsequent_step.get_prompt(context)
                     subsequent_keyboard = subsequent_step.get_keyboard(context)
-                    
+
                     subsequent_message = await update.message.reply_text(
-                        subsequent_prompt, reply_markup=subsequent_keyboard, disable_notification=True
+                        subsequent_prompt,
+                        reply_markup=subsequent_keyboard,
+                        disable_notification=True,
+                        parse_mode="HTML",
                     )
                     await self._record_message(context, subsequent_message)
-                    
+
                     return subsequent_step.id
                 else:
                     # 没有更多步骤，结束会话
                     logger.info(f"[{self.name}] 没有更多步骤，结束会话")
-                    return await self.end_conversation(update, context, message="✅ 操作已完成。")
-            
+                    return await self.end_conversation(
+                        update, context, message="✅ 操作已完成。"
+                    )
+
             # 不是自动执行的步骤，返回下一步状态
             logger.info(f"[{self.name}] 下一步不是自动执行的，返回状态: {next_step.id}")
             return next_step.id
         else:
             # 没有下一步，结束会话
             logger.info(f"[{self.name}] 没有下一步，结束会话")
-            return await self.end_conversation(update, context, message=f"✅ {self.description or '操作'}已完成。")
+            return await self.end_conversation(
+                update, context, message=f"✅ {self.description or '操作'}已完成。"
+            )
 
     async def _handle_media_group(
         self,
@@ -901,6 +992,7 @@ class ConversationChain:
                         text=prompt_text,
                         reply_markup=keyboard,
                         disable_notification=True,
+                        parse_mode="HTML",
                     )
 
                     # 记录消息ID
@@ -974,26 +1066,25 @@ class ConversationChain:
         logger.debug(f"[{self.name}] 媒体处理期间接收到消息: {message_text}")
 
         # 检查是否是取消命令
-        if (
-            isinstance(message_text, str) 
-            and (message_text.lower() == "❌ 取消" or message_text.lower() == "/cancel")
+        if isinstance(message_text, str) and (
+            message_text.lower() == "❌ 取消" or message_text.lower() == "/cancel"
         ):
             logger.info(f"[{self.name}] 用户在媒体处理期间取消操作: {message_text}")
             # 移除媒体处理标记
             if f"{self.data_prefix}media_processing" in context.user_data:
                 del context.user_data[f"{self.data_prefix}media_processing"]
-            
+
             # 移除媒体任务
             if f"{self.data_prefix}media_task" in context.user_data:
                 task = context.user_data[f"{self.data_prefix}media_task"]
                 if not task.done():
                     task.cancel()
                 del context.user_data[f"{self.data_prefix}media_task"]
-            
+
             # 清空媒体组数据
             if self.media_group_key in context.user_data:
                 context.user_data[self.media_group_key] = {}
-            
+
             # 使用取消处理程序结束会话
             return await self._cancel_handler(update, context)
 
@@ -1085,7 +1176,7 @@ class ConversationChain:
         logger.debug(
             f"[{self.name}] 处理媒体组完成后的新用户输入: {user_input if isinstance(user_input, str) else '非文本输入'}"
         )
-        
+
         # 检查用户是否取消操作
         if isinstance(user_input, str) and (
             user_input.lower() == "❌ 取消" or user_input.lower() == "/cancel"
@@ -1110,11 +1201,6 @@ class ConversationChain:
 
             # 返回下一步状态，让用户重试
             return next_state
-
-        # 存储用户的有效输入
-        data_key = f"{self.data_prefix}{next_step.data_key}"
-        context.user_data[data_key] = user_input
-        logger.debug(f"[{self.name}] 存储用户输入 '{data_key}': {user_input}")
 
         # 调用下一步的处理函数
         logger.debug(f"[{self.name}] 调用下一步处理函数: {next_step.name}")
@@ -1243,22 +1329,6 @@ class ConversationChain:
             persistent=False,
             per_message=self.per_message,
         )
-
-    def get_data(self, context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
-        """获取此会话中收集的所有数据"""
-        result = {}
-        for step in self.steps:
-            data_key = f"{self.data_prefix}{step.data_key}"
-            if data_key in context.user_data:
-                result[step.data_key] = context.user_data[data_key]
-        return result
-
-    def clear_data(self, context: ContextTypes.DEFAULT_TYPE):
-        """清理此会话中收集的所有数据"""
-        for step in self.steps:
-            data_key = f"{self.data_prefix}{step.data_key}"
-            if data_key in context.user_data:
-                del context.user_data[data_key]
 
     def wrap_with_owner_check(
         self, handler: ConversationHandler, check_owner_func: Callable

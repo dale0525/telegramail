@@ -505,7 +505,6 @@ def get_add_account_handler():
         keyboard_func=get_cancel_keyboard,
         prompt_func=lambda context: "请输入您的邮箱地址（例如：example@gmail.com）",
         filter_type="TEXT",
-        data_key="email",
     )
 
     # 添加账户名称步骤
@@ -516,7 +515,6 @@ def get_add_account_handler():
         keyboard_func=get_cancel_keyboard,
         prompt_func=account_utils.get_name_prompt,
         filter_type="TEXT",
-        data_key="name",
     )
 
     # 添加用户名步骤
@@ -527,7 +525,6 @@ def get_add_account_handler():
         keyboard_func=get_cancel_keyboard,
         prompt_func=account_utils.get_username_prompt,
         filter_type="TEXT",
-        data_key="username",
     )
 
     # 添加密码步骤
@@ -538,7 +535,6 @@ def get_add_account_handler():
         keyboard_func=get_cancel_keyboard,
         prompt_func=account_utils.get_password_prompt,
         filter_type="TEXT",
-        data_key="password",
     )
 
     # 添加测试连接步骤
@@ -549,7 +545,6 @@ def get_add_account_handler():
         prompt_func=get_test_connection_prompt,
         keyboard_func=get_test_connection_keyboard,
         filter_type="TEXT",
-        data_key="test_connection",
     )
 
     return account_chain.build()
