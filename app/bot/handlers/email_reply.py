@@ -411,48 +411,7 @@ async def start_reply(
             logger.error(f"发送临时状态消息失败: {e}")
             logger.exception(e)
 
-        # 记录详细日志以便调试
-        first_step_id = reply_chain.steps[0].id if reply_chain.steps else None
-        logger.debug(f"准备进入收件人管理步骤, 第一个步骤ID: {first_step_id}")
-        logger.debug(
-            f"所有步骤IDs: {[s.id for s in reply_chain.steps] if reply_chain.steps else 'None'}"
-        )
-
-        # 在进入第一步前再次确认收件人列表状态
-        recipients = context.user_data.get("reply_recipients", [])
-        logger.debug(f"进入第一步前的收件人列表: {recipients}")
-        if not recipients:
-            logger.warning("警告：收件人列表为空，重新设置默认收件人")
-            context.user_data["reply_recipients"] = [email.sender]
-
-        # 检查第一个步骤的处理函数
-        first_step = reply_chain.steps[0]
-
-        # 进入收件人管理步骤 - 使用步骤ID而非固定常量
-        logger.debug(f"返回第一个步骤ID: {first_step.id}")
-
-        # 添加更多调试信息
-        logger.debug(f"第一步处理函数: {first_step.handler_func}")
-        logger.debug(f"第一步提示函数: {first_step.prompt_func}")
-        logger.debug(f"第一步键盘函数: {first_step.keyboard_func}")
-
-        # 尝试发送第一步的提示消息
-        try:
-            prompt = get_recipients_prompt(context)
-            keyboard = ReplyKeyboardMarkup(
-                [[RECIPIENT_MANAGEMENT_TEXT], [TO_NEXT_STEP_TEXT, "❌ 取消"]],
-                resize_keyboard=True,
-                one_time_keyboard=True,
-            )
-            await update.callback_query.message.reply_text(
-                prompt, reply_markup=keyboard, parse_mode="HTML"
-            )
-            logger.debug("成功发送第一步提示消息")
-        except Exception as e:
-            logger.error(f"发送第一步提示消息失败: {e}")
-            logger.exception(e)
-
-        return first_step.id
+        return None
     except Exception as e:
         logger.error(f"处理回复邮件出错: {e}")
         logger.exception(e)  # 记录完整异常栈

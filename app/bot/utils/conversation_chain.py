@@ -1226,7 +1226,58 @@ class ConversationChain:
 
             # 调用原始处理函数
             next_state = await handler_func(update, context, button_id)
+            
+            # 如果返回None，则模拟与_entry_point_handler相同的行为
+            if next_state is None:
+                # 使用默认行为 - 进入第一个步骤
+                if not self.steps:
+                    logger.error(f"会话链条 '{self.name}' 没有定义任何步骤!")
+                    # 使用end_conversation结束会话
+                    return await self.end_conversation(update, context)
 
+                first_step = self.steps[0]
+                chat_id = update.effective_chat.id
+
+                # 创建提示消息
+                prompt_text = first_step.get_prompt(context)
+
+                # 创建键盘
+                keyboard = first_step.get_keyboard(context)
+
+                # 发送提示消息
+                if hasattr(update.callback_query, 'message') and update.callback_query.message:
+                    message = await update.callback_query.message.reply_text(
+                        prompt_text,
+                        reply_markup=keyboard,
+                        disable_notification=True,
+                        parse_mode="HTML",
+                    )
+                    # 记录消息ID
+                    await self._record_message(context, message)
+                
+                # 检查是否需要自动执行第一个步骤
+                if first_step.auto_execute:
+                    logger.info(f"[{self.name}] 自动执行第一个步骤: {first_step.name}")
+
+                    # 调用步骤的处理函数，传入一个空字符串作为用户输入
+                    auto_next_state = await first_step.handle(update, context, "")
+
+                    if auto_next_state is not None:
+                        # 如果处理函数返回了状态，使用它
+                        return await self._ensure_message_cleanup(context, chat_id, auto_next_state)
+                    elif len(self.steps) > 1:
+                        # 否则，如果还有下一步，自动转到下一步
+                        next_step = self.steps[1]
+                        return next_step.id
+                    else:
+                        # 没有下一步，会话结束
+                        return await self.end_conversation(
+                            update, context, message="✅ 操作已完成。"
+                        )
+                
+                # 不是自动执行的步骤，返回当前步骤ID
+                return first_step.id
+            
             # 确保在返回 ConversationHandler.END 时触发消息清理
             chat_id = update.effective_chat.id
             return await self._ensure_message_cleanup(context, chat_id, next_state)
