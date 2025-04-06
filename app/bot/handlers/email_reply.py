@@ -21,6 +21,7 @@ from app.bot.utils.common_steps import (
     confirm_send_step,
     email_body_step,
     fetch_sent_email_step,
+    get_cancel_keyboard,
 )
 
 # 配置日志
@@ -32,6 +33,7 @@ logger.info("====== 初始化邮件回复模块 ======")
 RECIPIENT_MANAGEMENT_TEXT = "管理收件人"
 REMOVE_RECIPIENT_TEXT = "移除 "
 CONFIRM_RECIPIENT_TEXT = "✅ 确认收件人"
+CONFIRM_CC_TEXT = "✅ 确认抄送人"
 TO_NEXT_STEP_TEXT = "✅ 继续下一步"
 
 # 创建邮件回复的主会话链条
@@ -115,14 +117,14 @@ def get_recipients_keyboard(candidates: Dict[str, List[str]]):
 # 提示信息函数
 def get_reply_options_prompt(context):
     """获取回复选项提示消息"""
-    email_id = context.user_data.get("reply_email_id")
+    email_id = context.user_data.get("compose_email_id")
     if not email_id:
         return "⚠️ 无法获取邮件信息，请重试。"
 
     # 获取邮件和账户信息
     email = get_email_by_id(email_id)
     account = get_email_account_by_id(email.account_id)
-    subject = context.user_data.get("reply_subject", "")
+    subject = context.user_data.get("compose_subject", "")
 
     return (
         f"📤 <b>回复邮件</b>\n\n"
@@ -148,35 +150,45 @@ def get_body_keyboard(context):
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def get_manage_cc_prompt(context):
-    """获取管理抄送提示"""
-    current_cc = context.user_data.get("reply_cc", [])
-    cc_text = ", ".join(current_cc) if current_cc else "暂无"
+def get_cc_prompt(context):
+    """获取抄送管理提示消息"""
+    cc_list = context.user_data.get("compose_cc", [])
+    cc_text = ", ".join(cc_list) if cc_list else "无"
+
+    # 获取邮件主题和账户信息
+    subject = context.user_data.get("compose_subject", "无主题")
+    email_account = context.user_data.get("compose_account_email", "未知账户")
 
     return (
-        f"📋 <b>管理抄送列表</b>\n\n"
-        f"当前抄送: {html.escape(cc_text)}\n\n"
-        f"您可以:\n"
-        f"• 从下方候选列表中选择抄送人\n"
-        f"• 直接输入新的抄送邮箱\n"
-        f"• 输入多个抄送时用逗号分隔\n"
-        f'• 选择完成后点击"确认抄送"'
+        f"📋 <b>抄送管理</b>\n\n"
+        f"<b>账户:</b> {html.escape(email_account)}\n"
+        f"<b>主题:</b> {html.escape(subject)}\n"
+        f"<b>当前抄送:</b> {html.escape(cc_text)}\n\n"
+        f"请选择操作:\n"
+        f"• 管理抄送列表 - 添加或删除抄送人\n"
+        f"• 继续下一步 - 进入密送管理\n"
+        f"• 取消 - 放弃当前回复操作"
     )
 
 
-def get_manage_bcc_prompt(context):
-    """获取管理密送提示"""
-    current_bcc = context.user_data.get("reply_bcc", [])
-    bcc_text = ", ".join(current_bcc) if current_bcc else "暂无"
+def get_bcc_prompt(context):
+    """获取密送管理提示消息"""
+    bcc_list = context.user_data.get("compose_bcc", [])
+    bcc_text = ", ".join(bcc_list) if bcc_list else "无"
+
+    # 获取邮件主题和账户信息
+    subject = context.user_data.get("compose_subject", "无主题")
+    email_account = context.user_data.get("compose_account_email", "未知账户")
 
     return (
-        f"🕶 <b>管理密送列表</b>\n\n"
-        f"当前密送: {html.escape(bcc_text)}\n\n"
-        f"您可以:\n"
-        f"• 从下方候选列表中选择密送人\n"
-        f"• 直接输入新的密送邮箱\n"
-        f"• 输入多个密送时用逗号分隔\n"
-        f'• 选择完成后点击"确认密送"'
+        f"🕶 <b>密送管理</b>\n\n"
+        f"<b>账户:</b> {html.escape(email_account)}\n"
+        f"<b>主题:</b> {html.escape(subject)}\n"
+        f"<b>当前密送:</b> {html.escape(bcc_text)}\n\n"
+        f"请输入密送邮箱地址：\n"
+        f"• 多个邮箱请用逗号分隔\n"
+        f"• 如果不需要密送，请直接回复 '-' 或 '无'\n"
+        f"• 取消 - 放弃当前回复操作"
     )
 
 
@@ -209,12 +221,12 @@ def get_recipients_prompt(context):
         logger.debug("生成收件人管理提示消息")
 
         # 安全获取收件人列表
-        recipients = context.user_data.get("reply_recipients", [])
+        recipients = context.user_data.get("compose_recipients", [])
         recipients_text = ", ".join(recipients) if recipients else "无"
 
         # 获取邮件主题用于显示
-        subject = context.user_data.get("reply_subject", "无主题")
-        email_account = context.user_data.get("reply_account_email", "未知账户")
+        subject = context.user_data.get("compose_subject", "无主题")
+        email_account = context.user_data.get("compose_account_email", "未知账户")
 
         # 构建完整提示消息
         prompt = (
@@ -236,18 +248,6 @@ def get_recipients_prompt(context):
         return "👥 <b>收件人管理</b>\n\n请选择是管理收件人，继续下一步，还是取消操作。"
 
 
-def get_cc_prompt(context):
-    """获取抄送管理提示消息"""
-    cc_list = context.user_data.get("reply_cc", [])
-    cc_text = ", ".join(cc_list) if cc_list else "无"
-
-    return (
-        f"📋 <b>抄送管理</b>\n\n"
-        f"当前抄送: {html.escape(cc_text)}\n\n"
-        f"请选择操作："
-    )
-
-
 def get_cc_keyboard_func(context):
     """抄送管理键盘"""
     keyboard = [
@@ -255,18 +255,6 @@ def get_cc_keyboard_func(context):
         [TO_NEXT_STEP_TEXT, "❌ 取消"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-
-def get_bcc_prompt(context):
-    """获取密送管理提示消息"""
-    bcc_list = context.user_data.get("reply_bcc", [])
-    bcc_text = ", ".join(bcc_list) if bcc_list else "无"
-
-    return (
-        f"🕶 <b>密送管理</b>\n\n"
-        f"当前密送: {html.escape(bcc_text)}\n\n"
-        f"请选择操作："
-    )
 
 
 def get_bcc_keyboard_func(context):
@@ -309,16 +297,16 @@ async def start_reply(
             return ConversationHandler.END
 
         # 存储邮件和账户信息
-        context.user_data["reply_email_id"] = email_id
-        context.user_data["reply_account_id"] = email.account_id
-        context.user_data["reply_account_email"] = account.email
+        context.user_data["compose_email_id"] = email_id
+        context.user_data["compose_account_id"] = email.account_id
+        context.user_data["compose_account_email"] = account.email
         logger.debug(f"设置回复账户: {account.email}")
 
         # 处理回复主题(添加Re:前缀)
         subject = email.subject
         if not subject.lower().startswith("re:"):
             subject = f"Re: {subject}"
-        context.user_data["reply_subject"] = subject
+        context.user_data["compose_subject"] = subject
         logger.debug(f"设置回复主题: {subject}")
 
         # 存储原始消息ID以便回复时引用
@@ -335,16 +323,23 @@ async def start_reply(
         candidates["sender"] = email.sender
         logger.debug(f"原邮件发件人: {email.sender}")
 
-        context.user_data["reply_default_recipient"] = email.sender
+        # 保存原始格式的发件人
+        context.user_data["compose_default_recipient"] = email.sender
+        
+        # 提取纯邮件地址格式
+        clean_sender = email_utils.extract_email_from_complex_format(email.sender)
+        if clean_sender != email.sender:
+            logger.debug(f"清理后的发件人地址: {clean_sender}")
+            
         # 确保收件人列表是有效的列表类型
-        recipients_list = [email.sender]  # 默认收件人
-        context.user_data["reply_recipients"] = recipients_list
-        logger.debug(f"设置默认收件人: {email.sender}")
+        recipients_list = [clean_sender]  # 使用清理后的邮件地址
+        context.user_data["compose_recipients"] = recipients_list
+        logger.debug(f"设置默认收件人(清理后): {clean_sender}")
         logger.debug(f"初始收件人列表: {recipients_list}")
 
         # 记录数据类型，辅助调试
         logger.debug(
-            f"收件人列表类型: {type(context.user_data.get('reply_recipients'))}"
+            f"收件人列表类型: {type(context.user_data.get('compose_recipients'))}"
         )
 
         # 解析其他收件人
@@ -368,24 +363,25 @@ async def start_reply(
                     # 过滤掉自己的邮箱和触发命令
                     cc_list = [cc for cc in all_cc if cc != account.email]
                     candidates["cc"] = cc_list
-                    context.user_data["reply_cc"] = cc_list
+                    context.user_data["compose_cc"] = cc_list
                     logger.debug(f"设置抄送列表: {cc_list}")
                 else:
-                    context.user_data["reply_cc"] = []
+                    context.user_data["compose_cc"] = []
 
                 # 默认密送为空
-                context.user_data["reply_bcc"] = []
+                context.user_data["compose_bcc"] = []
+                logger.debug("初始化密送列表为空")
 
         except Exception as e:
             logger.error(f"解析收件人时出错: {e}")
             logger.exception(e)  # 记录完整异常信息
 
         # 存储候选人列表
-        context.user_data["reply_candidates"] = candidates
+        context.user_data["compose_candidates"] = candidates
         logger.debug(f"候选人列表: {candidates}")
 
         # 初始化附件列表
-        context.user_data["reply_attachments"] = []
+        context.user_data["compose_attachments"] = []
 
         # 回复callback query
         await update.callback_query.answer()
@@ -429,16 +425,10 @@ def get_reply_handler():
     """获取回复邮件的处理器"""
     try:
         # 配置按钮入口点
-        logger.debug("添加按钮入口点: ^reply_email_")
         reply_chain.add_button_entry_point(start_reply, "^reply_email_")
 
-        logger.debug("构建回复邮件处理器 - 开始添加步骤")
-
         # 配置主链步骤
-
         # 第一步：收件人管理（包含子链入口）
-        logger.debug("添加第一步：收件人管理")
-
         reply_chain.add_step(
             name="recipients",
             handler_func=handle_recipients,
@@ -453,7 +443,6 @@ def get_reply_handler():
             trigger_keywords=[RECIPIENT_MANAGEMENT_TEXT],
         )
 
-        logger.debug("配置收件人管理子链步骤")
         recipients_chain.add_step(
             name="manage_recipients",
             handler_func=handle_sub_recipients,
@@ -464,52 +453,56 @@ def get_reply_handler():
             end_keywords=[CONFIRM_RECIPIENT_TEXT],
         )
 
+        # 第二步：抄送人管理（包含子链入口）
+        reply_chain.add_step(
+            name="cc",
+            handler_func=handle_cc,
+            prompt_func=get_cc_prompt,
+            keyboard_func=lambda context: ReplyKeyboardMarkup(
+                [["管理抄送列表"], [TO_NEXT_STEP_TEXT, "❌ 取消"]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+            ),
+            filter_type="TEXT",
+            sub_chain=cc_chain,
+            trigger_keywords=["管理抄送列表"],
+        )
+
+        # 抄送子链配置
+        cc_chain.add_step(
+            name="manage_cc",
+            handler_func=handle_sub_cc,
+            prompt_func=get_sub_cc_prompt,
+            keyboard_func=get_sub_cc_keyboard,
+            validator=validate_sub_cc,
+            filter_type="TEXT",
+            end_keywords=[CONFIRM_CC_TEXT],
+        )
+
+        # 第三步：密送人管理
+        reply_chain.add_step(
+            name="bcc",
+            handler_func=handle_bcc,
+            prompt_func=get_bcc_prompt,
+            keyboard_func=get_cancel_keyboard,
+            validator=validate_bcc,
+            filter_type="TEXT",
+        )
+
         # 第四步：正文编写（使用common_steps中的模板）
-        logger.debug("添加第四步：正文编写")
         reply_chain.add_step_from_template(email_body_step(reply_chain))
 
         # 第五步：处理附件（使用common_steps中的模板）
-        logger.debug("添加第五步：附件处理")
         reply_chain.add_step_from_template(attachment_step(reply_chain))
 
         # 第六步：确认发送（使用common_steps中的模板）
-        logger.debug("添加第六步：确认发送")
         reply_chain.add_step_from_template(confirm_send_step(reply_chain))
 
         # 第七步：获取发送结果（使用common_steps中的模板）
-        logger.debug("添加第七步：获取发送结果")
         reply_chain.add_step_from_template(fetch_sent_email_step(reply_chain))
-
-        # 配置子链步骤
-        # 收件人子链
 
         # 构建并返回处理器
         conversation_handler = reply_chain.build()
-
-        if conversation_handler:
-            logger.info("会话处理器构建成功！")
-
-            # 检查处理器的关键属性
-            logger.debug(f"处理器入口点数量: {len(conversation_handler.entry_points)}")
-            logger.debug(f"处理器状态数量: {len(conversation_handler.states)}")
-            logger.debug(f"处理器回退处理器数量: {len(conversation_handler.fallbacks)}")
-
-            # 验证是否设置了回复按钮处理
-            has_reply_handler = False
-            for entry_point in conversation_handler.entry_points:
-                if hasattr(entry_point, "pattern") and "reply_email" in str(
-                    entry_point.pattern
-                ):
-                    has_reply_handler = True
-                    logger.debug(f"找到回复邮件处理器: {entry_point.pattern}")
-                    break
-
-            if not has_reply_handler:
-                logger.error("严重错误: 未找到reply_email处理入口点!")
-        else:
-            logger.error("严重错误: 会话处理器构建失败，返回None!")
-
-        logger.info("========== 回复邮件处理器构建完成 ==========")
         return conversation_handler
     except Exception as e:
         logger.error(f"构建回复邮件处理器时出错: {e}")
@@ -520,7 +513,7 @@ def get_reply_handler():
 # 收件人子链
 def _get_current_recipients(context):
     """安全获取当前收件人列表"""
-    current_recipients = context.user_data.get("reply_recipients", [])
+    current_recipients = context.user_data.get("compose_recipients", [])
 
     # 类型安全检查
     if not isinstance(current_recipients, list):
@@ -541,7 +534,7 @@ def _get_current_recipients(context):
             current_recipients = []
 
         # 更新上下文数据
-        context.user_data["reply_recipients"] = current_recipients
+        context.user_data["compose_recipients"] = current_recipients
 
     return current_recipients
 
@@ -556,8 +549,8 @@ def get_sub_recipients_prompt(context):
         recipients_text = ", ".join(recipients) if recipients else "暂无"
 
         # 获取邮件信息 - 需确保这些数据在主链和子链之间共享
-        subject = context.user_data.get("reply_subject", "无主题")
-        email_account = context.user_data.get("reply_account_email", "未知账户")
+        subject = context.user_data.get("compose_subject", "无主题")
+        email_account = context.user_data.get("compose_account_email", "未知账户")
         logger.debug(f"邮件信息 - 账户: {email_account}, 主题: {subject}")
 
         # 构建更详细的提示信息
@@ -587,7 +580,7 @@ def get_sub_recipients_keyboard(context):
         logger.debug("生成子链收件人管理键盘")
 
         # 获取候选人列表和当前收件人列表
-        candidates = context.user_data.get("reply_candidates", {})
+        candidates = context.user_data.get("compose_candidates", {})
         logger.debug(f"候选收件人列表: {candidates}")
 
         # 使用安全获取函数
@@ -670,7 +663,7 @@ def validate_recipients(user_input, context):
     )
     if is_valid:
         current_recipients = _get_current_recipients(context)
-        context.user_data["reply_recipients"] = [*current_recipients, *email_list]
+        context.user_data["compose_recipients"] = [*current_recipients, *email_list]
     return is_valid, error_msg
 
 
@@ -685,7 +678,7 @@ def validate_sub_recipients(user_input, context):
 
         if recipient_to_remove in current_recipients:
             current_recipients.remove(recipient_to_remove)
-            context.user_data["reply_recipients"] = current_recipients
+            context.user_data["compose_recipients"] = current_recipients
             logger.debug(
                 f"已移除收件人 {recipient_to_remove}, 当前列表: {current_recipients}"
             )
@@ -742,3 +735,301 @@ async def handle_sub_recipients(
 
     # 返回None，让ConversationChain继续当前子链
     return None
+
+
+# 抄送人子链
+def _get_current_cc(context):
+    """安全获取当前抄送列表"""
+    current_cc = context.user_data.get("compose_cc", [])
+
+    # 类型安全检查
+    if not isinstance(current_cc, list):
+        logger.warning(f"抄送列表类型错误，强制转换: {type(current_cc)}")
+        # 尝试转换为列表
+        try:
+            if isinstance(current_cc, str):
+                if "," in current_cc:
+                    current_cc = [r.strip() for r in current_cc.split(",")]
+                else:
+                    current_cc = [current_cc]
+            else:
+                current_cc = []
+        except Exception as e:
+            logger.error(f"转换抄送列表失败: {e}")
+            current_cc = []
+
+        # 更新上下文数据
+        context.user_data["compose_cc"] = current_cc
+
+    return current_cc
+
+
+def get_sub_cc_prompt(context):
+    """获取抄送列表管理提示"""
+    try:
+        # 获取当前抄送列表
+        cc_list = _get_current_cc(context)
+        logger.debug(f"当前抄送列表(从context.user_data获取): {cc_list}")
+
+        cc_text = ", ".join(cc_list) if cc_list else "暂无"
+
+        # 获取邮件信息
+        subject = context.user_data.get("compose_subject", "无主题")
+        email_account = context.user_data.get("compose_account_email", "未知账户")
+        logger.debug(f"邮件信息 - 账户: {email_account}, 主题: {subject}")
+
+        # 构建提示信息
+        return (
+            f"📋 <b>管理抄送列表</b>\n\n"
+            f"<b>账户:</b> {html.escape(email_account)}\n"
+            f"<b>主题:</b> {html.escape(subject)}\n"
+            f"<b>当前抄送:</b> {html.escape(cc_text)}\n\n"
+            f"您可以:\n"
+            f"• 选择下方的【现有抄送人】进行移除\n"
+            f"• 从【可添加的抄送人】中选择添加\n"
+            f"• 直接输入要添加的抄送邮箱，多个邮箱用英文逗号分隔\n"
+            f'• 完成后点击 "{CONFIRM_CC_TEXT}"'
+        )
+    except Exception as e:
+        logger.error(f"生成子链抄送提示消息出错: {e}")
+        logger.exception(e)  # 记录完整异常栈
+
+        # 返回一个基本提示，避免整个流程因为错误中断
+        return "📋 <b>管理抄送列表</b>"
+
+
+def get_sub_cc_keyboard(context):
+    """获取候选抄送人键盘"""
+    try:
+        # 添加调试日志
+        logger.debug("生成子链抄送管理键盘")
+
+        # 获取候选人列表和当前抄送列表
+        candidates = context.user_data.get("compose_candidates", {})
+        logger.debug(f"候选抄送列表: {candidates}")
+
+        # 使用安全获取函数
+        current_cc = _get_current_cc(context)
+        logger.debug(f"当前抄送列表(从context.user_data获取): {current_cc}")
+
+        # 初始化键盘
+        keyboard = []
+
+        # 分类：当前抄送区域
+        if current_cc:
+            keyboard.append(["--- 当前抄送 ---"])
+            for cc in current_cc:
+                keyboard.append([f"{REMOVE_RECIPIENT_TEXT}{cc}"])
+        else:
+            keyboard.append(["--- 当前没有抄送 ---"])
+
+        # 分类：候选抄送区域
+        all_candidates = set()
+
+        # 添加所有候选人
+        for recipient in candidates.get("recipients", []):
+            all_candidates.add(recipient)
+
+        if "sender" in candidates:
+            all_candidates.add(candidates["sender"])
+
+        for cc in candidates.get("cc", []):
+            all_candidates.add(cc)
+
+        for bcc in candidates.get("bcc", []):
+            all_candidates.add(bcc)
+
+        # 过滤掉已经在当前抄送列表中的邮箱
+        available_candidates = [c for c in all_candidates if c not in current_cc]
+        logger.debug(f"可添加的候选抄送人: {available_candidates}")
+
+        if available_candidates:
+            keyboard.append(["--- 可添加的抄送人 ---"])
+            for candidate in available_candidates:
+                keyboard.append([candidate])
+        else:
+            keyboard.append(["--- 没有可添加的抄送人 ---"])
+
+        # 添加确认和取消按钮
+        keyboard.append([CONFIRM_CC_TEXT])
+        keyboard.append(["❌ 取消"])
+
+        logger.debug(f"生成的键盘布局: {keyboard}")
+
+        return ReplyKeyboardMarkup(
+            keyboard,
+            one_time_keyboard=True,
+            resize_keyboard=True,
+            input_field_placeholder="你也可以在此直接输入要添加的抄送邮箱，多个邮箱用英文逗号分隔",
+        )
+    except Exception as e:
+        logger.error(f"生成子链抄送键盘出错: {e}")
+        logger.exception(e)  # 记录完整异常栈
+
+        # 返回一个简单的应急键盘，避免整个流程因错误中断
+        emergency_keyboard = [[CONFIRM_RECIPIENT_TEXT], ["❌ 取消"]]
+        return ReplyKeyboardMarkup(
+            emergency_keyboard,
+            one_time_keyboard=True,
+            resize_keyboard=True,
+            input_field_placeholder="在此直接输入要添加的抄送邮箱，多个邮箱用英文逗号分隔",
+        )
+
+
+def validate_cc(user_input, context):
+    """验证抄送列表"""
+    is_valid, error_msg, email_list = EmailUtils.validate_email_list(
+        user_input, is_optional=True
+    )
+    if is_valid:
+        current_cc = _get_current_cc(context)
+        context.user_data["compose_cc"] = [*current_cc, *email_list]
+    return is_valid, error_msg
+
+
+def validate_sub_cc(user_input, context):
+    """验证子链抄送"""
+    if user_input == "❌ 取消" or user_input == CONFIRM_CC_TEXT:
+        return True, None
+    # 对于"移除"操作的特殊处理
+    if user_input.startswith(REMOVE_RECIPIENT_TEXT):
+        cc_to_remove = user_input.replace(REMOVE_RECIPIENT_TEXT, "")
+        current_cc = _get_current_cc(context)
+
+        if cc_to_remove in current_cc:
+            current_cc.remove(cc_to_remove)
+            context.user_data["compose_cc"] = current_cc
+            logger.debug(f"已移除抄送人 {cc_to_remove}, 当前列表: {current_cc}")
+            return True, None
+        else:
+            return False, f"⚠️ 抄送列表中没有 {cc_to_remove}"
+
+    # 使用通用验证函数
+    is_valid, error_msg = validate_cc(user_input, context)
+
+    return is_valid, error_msg
+
+
+async def handle_cc(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_input: str
+):
+    """处理主链中的抄送管理步骤"""
+    logger.debug(f"抄送管理主步骤收到输入: {user_input}")
+
+    if user_input == TO_NEXT_STEP_TEXT:
+        # 抄送是可选的，无需验证是否为空
+        return None  # 进入下一步
+
+    # 返回 None 以保持在当前步骤
+    return None
+
+
+async def handle_sub_cc(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_input: str
+) -> int:
+    """
+    抄送子链的处理函数 - 专注于抄送管理的流程和UI交互
+
+    Args:
+        update: Telegram更新对象
+        context: 上下文对象
+        user_input: 用户输入
+
+    Returns:
+        int: 下一步状态ID或特殊标记
+    """
+    # 记录详细的输入信息
+    logger.debug(f"抄送管理处理函数收到输入: '{user_input}'")
+
+    # 获取当前抄送列表供日志和界面显示使用
+    current_cc = _get_current_cc(context)
+    logger.debug(f"当前抄送列表: {current_cc}")
+
+    # 处理不同的用户输入场景
+    if user_input == "❌ 取消":
+        # 用户选择取消，退出对话
+        await update.message.reply_text("已取消操作")
+        return ConversationHandler.END
+
+    elif user_input == CONFIRM_RECIPIENT_TEXT:
+        # 用户确认抄送列表，返回None让ConversationChain处理子链结束
+        logger.debug(f"用户确认抄送列表: {current_cc}")
+        return None
+
+    elif user_input.startswith(REMOVE_RECIPIENT_TEXT):
+        # 已在validate_sub_cc中处理移除操作，这里只是记录结果
+        cc_to_remove = user_input.replace(REMOVE_RECIPIENT_TEXT, "")
+        logger.debug(f"已处理移除抄送人: {cc_to_remove}")
+
+    else:
+        # 用户输入了新的抄送，已在validate_sub_cc中验证和添加
+        logger.debug(f"已处理新增抄送，当前列表: {current_cc}")
+
+    # 返回None，让ConversationChain继续当前子链
+    return None
+
+
+def validate_bcc(user_input, context):
+    """验证密送列表"""
+    # 添加日志记录输入参数
+    logger.debug(f"验证密送人输入: '{user_input}'")
+    logger.debug(f"验证前密送列表: {context.user_data.get('compose_bcc', [])}")
+    logger.debug(f"验证前收件人列表: {context.user_data.get('compose_recipients', [])}")
+
+    is_valid, error_msg, email_list = EmailUtils.validate_email_list(
+        user_input, is_optional=True
+    )
+
+    if is_valid:
+        # 记录验证结果
+        logger.debug(f"密送验证结果 - 有效: True, 邮箱列表: {email_list}")
+
+        # 确保即使用户输入了 "-" 或 "无"，也会存储为空列表
+        context.user_data["compose_bcc"] = email_list
+
+        # 记录更新后的密送列表
+        logger.debug(f"验证后密送列表: {context.user_data.get('compose_bcc', [])}")
+    else:
+        # 记录验证失败的情况
+        logger.warning(f"密送验证失败: {error_msg}")
+
+    return is_valid, error_msg
+
+
+async def handle_bcc(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_input: str
+):
+    """处理密送步骤"""
+    logger.debug(f"密送管理步骤收到输入: {user_input}")
+
+    # 检查并记录当前收件人列表状态
+    recipients = context.user_data.get("compose_recipients", [])
+    bcc_list = context.user_data.get("compose_bcc", [])
+    logger.debug(f"处理密送前 - 收件人: {recipients}, 密送: {bcc_list}")
+
+    # 确保收件人列表不为空
+    if not recipients or len(recipients) == 0:
+        logger.warning("检测到收件人列表为空，尝试恢复")
+        default_recipient = context.user_data.get("compose_default_recipient")
+        if default_recipient:
+            # 获取清理后的地址格式
+            clean_default = email_utils.extract_email_from_complex_format(default_recipient)
+            logger.info(f"从默认收件人恢复(清理后): {clean_default}")
+            
+            context.user_data["compose_recipients"] = [clean_default]
+            
+            # 如果密送列表包含默认收件人，则移除（使用纯地址格式比较）
+            if bcc_list and isinstance(bcc_list, list):
+                clean_default_lower = clean_default.lower()
+                filtered_bcc = []
+                for bcc in bcc_list:
+                    clean_bcc = email_utils.extract_email_from_complex_format(bcc).lower()
+                    if clean_bcc != clean_default_lower:
+                        filtered_bcc.append(bcc)
+                
+                if len(filtered_bcc) != len(bcc_list):
+                    context.user_data["compose_bcc"] = filtered_bcc
+                    logger.info(f"从密送列表中移除默认收件人，更新密送列表: {filtered_bcc}")
+
+    # 验证器已经处理了存储密送列表的逻辑
+    return None  # 进入下一步

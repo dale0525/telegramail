@@ -28,6 +28,8 @@ from app.database.operations import (
     get_email_account_by_id,
     add_reply_to_email,
     save_email_metadata,
+    MessageOperations,
+    get_email_by_id,
 )
 from app.email.smtp_client import SMTPClient
 from app.utils.markdown_to_html import convert_markdown_to_html
@@ -279,10 +281,22 @@ class EmailUtils:
             logger.info(
                 f"附件数量: {len(context.user_data.get('compose_attachments', []))}"
             )
-            logger.info(
-                f"邮件接收人: {context.user_data.get('compose_recipients', [])}"
-            )
-
+            
+            # 详细记录收件人、抄送和密送列表的内容和类型，用于调试
+            recipients = context.user_data.get('compose_recipients', [])
+            cc_list = context.user_data.get('compose_cc', [])
+            bcc_list = context.user_data.get('compose_bcc', [])
+            
+            logger.info(f"收件人列表类型: {type(recipients)}, 内容: {recipients}")
+            logger.info(f"抄送列表类型: {type(cc_list)}, 内容: {cc_list}")
+            logger.info(f"密送列表类型: {type(bcc_list)}, 内容: {bcc_list}")
+            
+            # 检查收件人和密送列表是否有交叉，这可能表明数据错误
+            if isinstance(recipients, list) and isinstance(bcc_list, list):
+                common_emails = set(recipients).intersection(set(bcc_list))
+                if common_emails:
+                    logger.warning(f"警告：收件人和密送列表有重叠: {common_emails}")
+            
             # 该方法会处理邮件发送
             sent_result = await self.send_composed_email(update, context)
 
@@ -299,6 +313,29 @@ class EmailUtils:
             logger.warning(f"未知的确认输入: '{user_input}'，结束会话")
             await self.chain.end_conversation(update, context)
             return ConversationHandler.END
+
+    @staticmethod
+    def extract_email_from_complex_format(complex_format):
+        """
+        从复杂格式(如 "姓名" <email@example.com>)中提取纯邮件地址
+        
+        Args:
+            complex_format: 可能是复杂格式的邮件地址字符串
+            
+        Returns:
+            提取的纯邮件地址或原始字符串（如果不是复杂格式）
+        """
+        if not complex_format:
+            return complex_format
+            
+        if isinstance(complex_format, str):
+            if '<' in complex_format and '>' in complex_format:
+                # 提取尖括号中的邮件地址
+                start = complex_format.find('<') + 1
+                end = complex_format.find('>', start)
+                if start > 0 and end > start:
+                    return complex_format[start:end]
+        return complex_format  # 如果不是复杂格式或不是字符串，原样返回
 
     async def send_composed_email(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -330,6 +367,33 @@ class EmailUtils:
         body_markdown = context.user_data.get("compose_body", "")
         attachments = context.user_data.get("compose_attachments", [])
 
+        # 清理各类收件人地址的格式，提取纯邮件地址
+        # 这样处理既保留了原始格式用于界面显示，又确保SMTP发送正确
+        cleaned_recipients = []
+        for recipient in recipients:
+            cleaned_email = self.extract_email_from_complex_format(recipient)
+            cleaned_recipients.append(cleaned_email)
+            logger.debug(f"清理收件人地址: '{recipient}' -> '{cleaned_email}'")
+        
+        cleaned_cc_list = []
+        if cc_list:
+            for cc in cc_list:
+                cleaned_email = self.extract_email_from_complex_format(cc)
+                cleaned_cc_list.append(cleaned_email)
+                logger.debug(f"清理抄送地址: '{cc}' -> '{cleaned_email}'")
+        
+        cleaned_bcc_list = []
+        if bcc_list:
+            for bcc in bcc_list:
+                cleaned_email = self.extract_email_from_complex_format(bcc)
+                cleaned_bcc_list.append(cleaned_email)
+                logger.debug(f"清理密送地址: '{bcc}' -> '{cleaned_email}'")
+        
+        # 使用清理后的地址列表
+        recipients = cleaned_recipients
+        cc_list = cleaned_cc_list
+        bcc_list = cleaned_bcc_list
+        
         # 添加附件信息的调试日志
         logger.info(f"准备发送邮件，附件数量: {len(attachments)}")
         if attachments:
@@ -359,14 +423,43 @@ class EmailUtils:
         # 确保所有邮箱列表是有效的格式
         # 收件人列表必须非空
         if not recipients:
-            await update.message.reply_text(
-                "⚠️ 发送邮件时出现错误：收件人列表为空。",
-                reply_markup=ReplyKeyboardRemove(),
-                disable_notification=True,
-            )
-            # 结束会话并清理消息
-            await self.chain.end_conversation(update, context)
-            return
+            # 检查是否发生了收件人被错误分配到密送的情况
+            if bcc_list and isinstance(bcc_list, list) and len(bcc_list) > 0:
+                logger.warning(f"检测到收件人列表为空但密送列表不为空: {bcc_list}，尝试修复错误配置")
+                # 查找最初设置的默认收件人
+                default_recipient = context.user_data.get("compose_default_recipient")
+                if default_recipient:
+                    # 清理默认收件人格式
+                    clean_default_recipient = self.extract_email_from_complex_format(default_recipient)
+                    logger.info(f"从默认收件人恢复: {default_recipient} -> {clean_default_recipient}")
+                    recipients = [clean_default_recipient]
+                    # 从密送列表中移除默认收件人（比较纯地址格式）
+                    clean_default_recipient_lower = clean_default_recipient.lower()
+                    filtered_bcc = []
+                    for bcc in bcc_list:
+                        clean_bcc = self.extract_email_from_complex_format(bcc).lower()
+                        if clean_bcc != clean_default_recipient_lower:
+                            filtered_bcc.append(bcc)
+                    if len(filtered_bcc) != len(bcc_list):
+                        bcc_list = filtered_bcc
+                        logger.info(f"从密送列表中移除默认收件人")
+                    # 更新上下文数据
+                    context.user_data["compose_recipients"] = recipients
+                    context.user_data["compose_bcc"] = bcc_list
+                    logger.info(f"修复后 - 收件人: {recipients}, 密送: {bcc_list}")
+                else:
+                    logger.warning("无法找到默认收件人进行恢复")
+                    
+            if not recipients:
+                # 如果修复后收件人列表仍为空
+                await update.message.reply_text(
+                    "⚠️ 发送邮件时出现错误：收件人列表为空。",
+                    reply_markup=ReplyKeyboardRemove(),
+                    disable_notification=True,
+                )
+                # 结束会话并清理消息
+                await self.chain.end_conversation(update, context)
+                return
 
         # 确保收件人列表中的每个地址都是单个有效邮箱
         if isinstance(recipients, str):
@@ -473,9 +566,48 @@ class EmailUtils:
         )
         await self.chain._record_message(context, status_msg)
 
+        # 检查是否是回复邮件，如果是则获取原始邮件内容并添加引用
+        original_quoted_html = ""
+        original_quoted_text = ""
+        
+        reply_original_message_id = context.user_data.get("reply_original_message_id")
+        if reply_original_message_id:
+            logger.info(f"这是一封回复邮件，原始消息ID: {reply_original_message_id}")
+            
+            # 获取邮件ID
+            email_id = MessageOperations.get_email_id_by_telegram_message_id(reply_original_message_id)
+            if email_id:
+                logger.info(f"找到原始邮件ID: {email_id}")
+                
+                # 获取原始邮件内容
+                original_email = get_email_by_id(email_id)
+                
+                if original_email:
+                    logger.info(f"获取到原始邮件: 主题={original_email.subject}, 发件人={original_email.sender}")
+                    
+                    # 创建HTML引用格式
+                    original_quoted_html = self.create_html_quoted_email(original_email)
+                    
+                    # 创建文本引用格式
+                    original_quoted_text = self.create_text_quoted_email(original_email)
+                    
+                    # 如果原始邮件的主题不包含"Re:"，则修改当前邮件主题
+                    if subject and not subject.lower().startswith("re:"):
+                        subject = f"Re: {subject}"
+                        context.user_data["compose_subject"] = subject
+                        logger.info(f"修改邮件主题为: {subject}")
+                else:
+                    logger.warning(f"未找到原始邮件内容，email_id={email_id}")
+            else:
+                logger.warning(f"未找到对应的邮件ID，telegram_message_id={reply_original_message_id}")
+
         # 将Markdown转换为HTML
         try:
             styled_html = convert_markdown_to_html(body_markdown)
+            
+            # 如果有原始邮件引用，添加到HTML内容中
+            if original_quoted_html:
+                styled_html = f"{styled_html}{original_quoted_html}"
         except Exception as e:
             logger.error(f"转换Markdown到HTML失败: {e}")
             logger.error(traceback.format_exc())
@@ -483,6 +615,11 @@ class EmailUtils:
             # 备用处理：使用简单替换
             styled_html = body_markdown.replace("\n", "<br>")
             styled_html = html.escape(styled_html)
+            
+            # 如果有原始邮件引用，也用简单方式添加
+            if original_quoted_html:
+                styled_html = f"{styled_html}{original_quoted_html}"
+                
             styled_html = f"""
             <html>
             <head>
@@ -495,6 +632,10 @@ class EmailUtils:
             </body>
             </html>
             """
+            
+        # 如果有原始邮件引用，添加到纯文本正文中
+        if original_quoted_text:
+            body_markdown = f"{body_markdown}{original_quoted_text}"
 
         # 发送邮件
         from app.email.smtp_client import SMTPClient
@@ -558,8 +699,8 @@ class EmailUtils:
             # 发送邮件
             sent = await smtp_client.send_email(
                 from_addr=account.email,
-                subject=subject,
                 to_addrs=recipients,
+                subject=subject,
                 text_body=body_markdown,
                 html_body=styled_html,
                 cc_addrs=cc_list,
@@ -776,9 +917,24 @@ class EmailUtils:
                     email_id = save_email_metadata(account.id, latest_sent_email)
                     if email_id:
                         logger.info(f"邮件元数据保存成功，ID: {email_id}")
+
+                        # 检查是否是回复邮件，如果是获取原始消息ID
+                        reply_to_message_id = None
+                        if context.user_data.get("reply_original_message_id"):
+                            reply_to_message_id = context.user_data.get(
+                                "reply_original_message_id"
+                            )
+                            logger.info(
+                                f"这是一封回复邮件，原始消息ID: {reply_to_message_id}"
+                            )
+
                         # 向Telegram发送已发送邮件通知
                         await send_sent_email_notification(
-                            context, account.id, latest_sent_email, email_id
+                            context,
+                            account.id,
+                            latest_sent_email,
+                            email_id,
+                            reply_to_message_id=reply_to_message_id,
                         )
 
                         # 发送完成消息
@@ -1022,318 +1178,58 @@ class EmailUtils:
         return quoted_text
 
     @staticmethod
-    async def send_email_with_reply(
-        context: ContextTypes.DEFAULT_TYPE,
-        update: Update,
-        account: Any,
-        subject: str,
-        recipients: List[str],
-        body_markdown: str,
-        cc_list: List[str],
-        bcc_list: List[str],
-        attachments: List[Dict[str, Any]],
-        original_email: Any,
-        reply_to_message_id: Optional[str] = None,
-    ) -> Tuple[bool, Optional[int]]:
-        """
-        发送回复邮件
-
-        Args:
-            context: 应用上下文
-            update: Telegram更新对象
-            account: 邮箱账户对象
-            subject: 邮件主题
-            recipients: 收件人列表
-            body_markdown: 邮件正文（Markdown格式）
-            cc_list: 抄送列表
-            bcc_list: 密送列表
-            attachments: 附件列表
-            original_email: 原始邮件对象
-            reply_to_message_id: 回复的消息ID
-
-        Returns:
-            (成功状态, 新邮件ID)
-        """
-        chat_id = update.effective_chat.id
-
-        # 显示发送状态
-        status_msg = await update.message.reply_text(
-            "📤 正在连接到邮件服务器...", disable_notification=True
-        )
-
-        # 使用Markdown转换为HTML
-        try:
-            styled_html = convert_markdown_to_html(body_markdown)
-        except Exception as e:
-            logger.error(f"转换Markdown到HTML失败: {e}")
-            logger.error(traceback.format_exc())
-
-            # 备用处理：使用简单替换
-            styled_html = html.escape(body_markdown).replace("\n", "<br>")
-            styled_html = f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; line-height: 1.6; }}
-                </style>
-            </head>
-            <body>
-                {styled_html}
-            </body>
-            </html>
-            """
-
-        # 创建引用版本
-        html_quoted_content = create_html_quoted_email(original_email)
-        text_quoted_content = create_text_quoted_email(original_email)
-
-        # 完整HTML邮件内容
-        full_html_body = f"""
-        <div style="font-family:Arial, sans-serif; line-height:1.6;">
-            <div>{styled_html}</div>
-            {html_quoted_content}
-        </div>
-        """
-
-        # 完整文本邮件内容
-        full_text_body = f"{body_markdown}{text_quoted_content}"
-
-        # 创建SMTP客户端
-        smtp_client = SMTPClient(account=account)
-
-        try:
-            # 尝试连接到SMTP服务器
-            connected = await smtp_client.connect()
-
-            if not connected:
-                await status_msg.edit_text(
-                    "⚠️ 连接到邮件服务器失败。\n\n"
-                    "可能的原因：\n"
-                    "1. 服务器地址或端口配置错误\n"
-                    "2. 网络连接问题\n"
-                    "3. 邮件服务器暂时不可用\n\n"
-                    "请稍后再试或检查邮箱设置。",
-                )
-                return False, None
-
-            # 尝试发送邮件
-            await status_msg.edit_text("📤 正在发送邮件内容...")
-
-            # 如果有附件，显示正在处理附件的消息
-            if attachments:
-                await status_msg.edit_text(f"📎 正在处理 {len(attachments)} 个附件...")
-
-            # 准备附件格式
-            smtp_attachments = []
-            if attachments:
-                for att in attachments:
-                    # 检查att是否为字典类型，且包含所需键
-                    if isinstance(att, dict) and all(
-                        key in att for key in ["filename", "content", "mime_type"]
-                    ):
-                        smtp_attachments.append(
-                            {
-                                "filename": att["filename"],
-                                "content": att["content"],
-                                "content_type": att["mime_type"],
-                            }
-                        )
-                    else:
-                        # 记录无效附件信息
-                        logger.error(f"跳过无效附件: {att}")
-
-            # 发送邮件
-            sent = await smtp_client.send_email(
-                from_addr=account.email,
-                subject=subject,
-                to_addrs=recipients,
-                text_body=full_text_body,
-                html_body=full_html_body,
-                cc_addrs=cc_list,
-                bcc_addrs=bcc_list,
-                reply_to=account.email,
-                attachments=smtp_attachments,
-            )
-
-            # 断开连接
-            smtp_client.disconnect()
-
-            if sent:
-                # 成功发送
-                # 确保 recipients 是列表类型
-                recipients_list = recipients
-                if isinstance(recipients, str):
-                    recipients_list = [recipients]
-
-                success_msg_text = (
-                    f"✅ 回复邮件已成功发送！\n\n"
-                    f"📧 从: {account.email}\n"
-                    f"📋 主题: {subject}\n"
-                    f"👥 收件人: {', '.join(recipients_list)}"
-                )
-
-                if cc_list:
-                    success_msg_text += f"\n📝 抄送: {', '.join(cc_list)}"
-
-                if bcc_list:
-                    success_msg_text += f"\n🔒 密送: {', '.join(bcc_list)}"
-
-                if attachments:
-                    # 安全获取附件名称，确保每个附件是字典类型且有filename字段
-                    attachment_names = []
-                    for att in attachments:
-                        if isinstance(att, dict) and "filename" in att:
-                            attachment_names.append(att["filename"])
-                        elif isinstance(att, str):
-                            # 如果是字符串，直接添加
-                            attachment_names.append(att)
-                    attachment_list = ", ".join(attachment_names)
-                    success_msg_text += f"\n📎 附件: {attachment_list}"
-
-                await status_msg.edit_text(success_msg_text)
-
-                # 记录回复信息到数据库
-                if original_email and hasattr(original_email, "id"):
-                    reply_id = add_reply_to_email(
-                        email_id=original_email.id,
-                        reply_text=body_markdown,
-                        reply_date=datetime.now(),
-                        sender=account.email,
-                    )
-
-                    # 尝试获取最新的发送邮件
-                    try:
-                        from app.email.imap_client import IMAPClient
-                        from app.bot.notifications import send_sent_email_notification
-
-                        # 添加重试逻辑
-                        retry_count = 0
-                        max_retries = 3
-
-                        latest_sent_email = None
-                        while retry_count < max_retries and not latest_sent_email:
-                            latest_sent_email = await IMAPClient(
-                                account=account
-                            ).get_latest_sent_email()
-
-                            if not latest_sent_email:
-                                logger.warning(
-                                    f"尝试 {retry_count + 1}/{max_retries} - 未找到最新发送邮件，等待后重试"
-                                )
-                                await asyncio.sleep(2)  # 等待2秒后重试
-                                retry_count += 1
-                            else:
-                                logger.info(
-                                    f"成功获取最新发送邮件: 主题: {latest_sent_email.get('subject', '无主题')}"
-                                )
-
-                        if latest_sent_email:
-                            # 记录最新邮件的收件人信息，用于调试
-                            logger.info(
-                                f"最新发送邮件的原始收件人: {latest_sent_email.get('recipients', [])}"
-                            )
-                            logger.info(f"当前设置的收件人: {recipients_list}")
-
-                            # 我们不再自动修改保存到数据库中的收件人信息
-                            # 而是直接使用我们已知的正确收件人列表
-
-                            # 直接使用我们设置的收件人、抄送和密送，而不是从IMAP获取的
-                            latest_sent_email["recipients"] = recipients_list
-                            latest_sent_email["cc"] = cc_list if cc_list else []
-                            latest_sent_email["bcc"] = bcc_list if bcc_list else []
-
-                            # 保存最新发送邮件的元数据
-                            email_id = save_email_metadata(
-                                account.id, latest_sent_email
-                            )
-                            if email_id:
-                                logger.info(f"邮件元数据保存成功，ID: {email_id}")
-                                # 向Telegram发送已发送邮件通知
-                                await send_sent_email_notification(
-                                    context,
-                                    account.id,
-                                    latest_sent_email,
-                                    email_id,
-                                    reply_to_message_id,
-                                )
-                                return True, email_id
-                            else:
-                                logger.error("保存邮件元数据失败")
-                    except Exception as e:
-                        logger.error(f"获取或处理最新发送邮件时出错: {e}")
-                        logger.error(traceback.format_exc())
-
-                return True, None
-            else:
-                # 发送失败
-                await status_msg.edit_text(
-                    "❌ 邮件发送失败。\n\n"
-                    "可能的原因：\n"
-                    "1. SMTP服务器拒绝了您的邮件\n"
-                    "2. 邮件内容过大\n"
-                    "3. 邮箱权限问题\n\n"
-                    "请检查设置或稍后再试。"
-                )
-                return False, None
-
-        except Exception as e:
-            logger.error(f"发送邮件时出错: {e}")
-            logger.error(traceback.format_exc())
-
-            await status_msg.edit_text(
-                f"❌ 发送邮件时出现错误: {str(e)}\n\n" f"请稍后再试或检查邮箱设置。",
-            )
-            return False, None
-
-        return False, None
-
-    @staticmethod
     def validate_email_list(user_input, is_optional=False):
-        """验证邮箱列表（收件人、抄送或密送）"""
-        # 检查是否为空
-        if not user_input:
-            if is_optional:
-                return True, None, []
-            else:
-                return False, "⚠️ 收件人不能为空，请输入至少一个有效的邮箱地址。", None
+        """通用邮箱列表验证函数，处理各种输入格式"""
+        logger.debug(f"验证邮件列表: 输入='{user_input}', 是否可选={is_optional}")
 
-        # 去除输入两端空白
-        user_input = user_input.strip()
-
-        # 检查是否为特殊标记（"-" 或 "无"）表示空列表
-        if is_optional and user_input in ["-", "无"]:
+        # 检查特殊情况：空输入或跳过标记
+        # 如果是可选的且输入是空字符串、"-"或"无"，返回空列表作为有效结果
+        if is_optional and (
+            user_input is None
+            or user_input.strip() == ""
+            or user_input.strip() in ["-", "无"]
+        ):
+            logger.debug("邮件列表验证：检测到可选字段的跳过指令或空输入，返回空列表")
             return True, None, []
 
-        # 分割邮箱列表，确保即使有多余的空格也能正确处理
-        email_list = []
-        if "," in user_input:
-            # 使用逗号分隔，并过滤掉空项和特殊标记
-            raw_emails = [email.strip() for email in user_input.split(",")]
-            for email in raw_emails:
-                if not email:
-                    continue  # 跳过空项
-                if is_optional and email in ["-", "无"]:
-                    continue  # 跳过特殊标记
-                email_list.append(email)
-        else:
-            # 没有逗号，可能是单个邮箱
-            if user_input and not (is_optional and user_input in ["-", "无"]):
-                email_list = [user_input]
+        # 处理输入为None的情况
+        if user_input is None:
+            logger.debug("邮件列表验证：输入为None，返回错误")
+            return False, "请输入有效的邮箱地址。", []
 
-        # 如果是必填项但列表为空，则返回错误
-        if not is_optional and not email_list:
-            return False, "⚠️ 收件人不能为空，请输入至少一个有效的邮箱地址。", None
+        # 确保输入是字符串类型
+        if not isinstance(user_input, str):
+            logger.warning(f"邮件列表验证：输入类型错误 {type(user_input)}")
+            try:
+                user_input = str(user_input)
+            except Exception as e:
+                logger.error(f"邮件列表验证：转换为字符串失败 {e}")
+                return False, "请输入有效的邮箱地址。", []
+
+        # 如果是可选的且输入仅包含空白，返回空列表
+        if is_optional and user_input.strip() == "":
+            logger.debug("邮件列表验证：检测到可选字段的空白输入，返回空列表")
+            return True, None, []
+
+        # 分割并清理邮箱地址
+        if "," in user_input:
+            # 多个邮箱，用逗号分隔
+            email_list = [addr.strip() for addr in user_input.split(",") if addr.strip()]
+        else:
+            # 单个邮箱
+            email_list = [user_input.strip()]
+
+        logger.debug(f"邮件列表验证：分割后的列表 {email_list}")
 
         # 验证邮箱格式
         invalid_emails = EmailUtils.validate_email_format(email_list)
-
         if invalid_emails:
-            return (
-                False,
-                f"⚠️ 以下邮箱格式无效，请重新输入：\n{', '.join(invalid_emails)}\n\n每个邮箱地址应该形如：name@example.com\n多个邮箱请用逗号分隔",
-                None,
-            )
+            error_msg = f"以下邮箱格式无效: {', '.join(invalid_emails)}"
+            logger.debug(f"邮件列表验证：验证失败 {error_msg}")
+            return False, error_msg, []
 
+        # 如果所有邮箱都有效，返回True和邮箱列表
+        logger.debug(f"邮件列表验证：验证成功，返回列表 {email_list}")
         return True, None, email_list
 
     @staticmethod
