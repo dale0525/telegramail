@@ -248,20 +248,11 @@ def get_recipients_prompt(context):
         return "👥 <b>收件人管理</b>\n\n请选择是管理收件人，继续下一步，还是取消操作。"
 
 
-def get_cc_keyboard_func(context):
-    """抄送管理键盘"""
-    keyboard = [
-        ["管理抄送列表"],
-        [TO_NEXT_STEP_TEXT, "❌ 取消"],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-
-def get_bcc_keyboard_func(context):
+def get_bcc_keyboard(context):
     """密送管理键盘"""
     keyboard = [
-        ["管理密送列表"],
-        [TO_NEXT_STEP_TEXT, "❌ 取消"],
+        [TO_NEXT_STEP_TEXT],
+        ["❌ 取消"],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
@@ -325,12 +316,12 @@ async def start_reply(
 
         # 保存原始格式的发件人
         context.user_data["compose_default_recipient"] = email.sender
-        
+
         # 提取纯邮件地址格式
         clean_sender = email_utils.extract_email_from_complex_format(email.sender)
         if clean_sender != email.sender:
             logger.debug(f"清理后的发件人地址: {clean_sender}")
-            
+
         # 确保收件人列表是有效的列表类型
         recipients_list = [clean_sender]  # 使用清理后的邮件地址
         context.user_data["compose_recipients"] = recipients_list
@@ -484,7 +475,7 @@ def get_reply_handler():
             name="bcc",
             handler_func=handle_bcc,
             prompt_func=get_bcc_prompt,
-            keyboard_func=get_cancel_keyboard,
+            keyboard_func=get_bcc_keyboard,
             validator=validate_bcc,
             filter_type="TEXT",
         )
@@ -976,6 +967,9 @@ def validate_bcc(user_input, context):
     logger.debug(f"验证前密送列表: {context.user_data.get('compose_bcc', [])}")
     logger.debug(f"验证前收件人列表: {context.user_data.get('compose_recipients', [])}")
 
+    if user_input == TO_NEXT_STEP_TEXT:
+        return True, None
+
     is_valid, error_msg, email_list = EmailUtils.validate_email_list(
         user_input, is_optional=True
     )
@@ -1001,35 +995,6 @@ async def handle_bcc(
 ):
     """处理密送步骤"""
     logger.debug(f"密送管理步骤收到输入: {user_input}")
-
-    # 检查并记录当前收件人列表状态
-    recipients = context.user_data.get("compose_recipients", [])
-    bcc_list = context.user_data.get("compose_bcc", [])
-    logger.debug(f"处理密送前 - 收件人: {recipients}, 密送: {bcc_list}")
-
-    # 确保收件人列表不为空
-    if not recipients or len(recipients) == 0:
-        logger.warning("检测到收件人列表为空，尝试恢复")
-        default_recipient = context.user_data.get("compose_default_recipient")
-        if default_recipient:
-            # 获取清理后的地址格式
-            clean_default = email_utils.extract_email_from_complex_format(default_recipient)
-            logger.info(f"从默认收件人恢复(清理后): {clean_default}")
-            
-            context.user_data["compose_recipients"] = [clean_default]
-            
-            # 如果密送列表包含默认收件人，则移除（使用纯地址格式比较）
-            if bcc_list and isinstance(bcc_list, list):
-                clean_default_lower = clean_default.lower()
-                filtered_bcc = []
-                for bcc in bcc_list:
-                    clean_bcc = email_utils.extract_email_from_complex_format(bcc).lower()
-                    if clean_bcc != clean_default_lower:
-                        filtered_bcc.append(bcc)
-                
-                if len(filtered_bcc) != len(bcc_list):
-                    context.user_data["compose_bcc"] = filtered_bcc
-                    logger.info(f"从密送列表中移除默认收件人，更新密送列表: {filtered_bcc}")
 
     # 验证器已经处理了存储密送列表的逻辑
     return None  # 进入下一步
