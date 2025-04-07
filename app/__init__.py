@@ -6,6 +6,8 @@ import os
 from typing import Optional
 from telegram.ext import Application
 
+from app.i18n import set_language, _  # 导入i18n模块
+
 __version__ = "0.1.0"
 
 # 获取环境变量中的日志级别
@@ -15,6 +17,11 @@ log_level = getattr(logging, log_level_str)
 # 配置日志 - 确保app包的日志器设置为正确的级别
 logger = logging.getLogger(__name__)
 logger.setLevel(log_level)
+
+# 设置默认语言
+default_language = os.getenv("DEFAULT_LANGUAGE", "zh_CN")
+set_language(default_language)
+logger.info(f"默认语言已设置为: {default_language}")
 
 # 全局应用实例
 _bot_application = None

@@ -23,6 +23,7 @@ from app.bot.utils.common_steps import (
     fetch_sent_email_step,
     get_cancel_keyboard,
 )
+from app.i18n import _  # 导入国际化翻译函数
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -30,11 +31,12 @@ logger = logging.getLogger(__name__)
 # 模块初始化日志记录
 logger.info("====== 初始化邮件回复模块 ======")
 
-RECIPIENT_MANAGEMENT_TEXT = "管理收件人"
-REMOVE_RECIPIENT_TEXT = "移除 "
-CONFIRM_RECIPIENT_TEXT = "✅ 确认收件人"
-CONFIRM_CC_TEXT = "✅ 确认抄送人"
-TO_NEXT_STEP_TEXT = "✅ 继续下一步"
+# 使用i18n翻译常量文本
+RECIPIENT_MANAGEMENT_TEXT = _("recipient_management")
+REMOVE_RECIPIENT_TEXT = _("remove_recipient")
+CONFIRM_RECIPIENT_TEXT = _("confirm_recipient")
+CONFIRM_CC_TEXT = _("confirm_cc")
+TO_NEXT_STEP_TEXT = _("to_next_step")
 
 # 创建邮件回复的主会话链条
 reply_chain = ConversationChain(
@@ -104,13 +106,13 @@ def get_recipients_keyboard(candidates: Dict[str, List[str]]):
 
     # 添加确认和取消按钮
     keyboard.append([CONFIRM_RECIPIENT_TEXT])
-    keyboard.append(["❌ 取消"])
+    keyboard.append([_("cancel")])
 
     return ReplyKeyboardMarkup(
         keyboard,
         one_time_keyboard=True,
         resize_keyboard=True,
-        input_field_placeholder="选择收件人或输入新的收件人",
+        input_field_placeholder=_("select_recipients"),
     )
 
 
@@ -119,7 +121,7 @@ def get_reply_options_prompt(context):
     """获取回复选项提示消息"""
     email_id = context.user_data.get("compose_email_id")
     if not email_id:
-        return "⚠️ 无法获取邮件信息，请重试。"
+        return _("warning_email_info_not_available")
 
     # 获取邮件和账户信息
     email = get_email_by_id(email_id)
@@ -127,68 +129,68 @@ def get_reply_options_prompt(context):
     subject = context.user_data.get("compose_subject", "")
 
     return (
-        f"📤 <b>回复邮件</b>\n\n"
-        f"<b>账号:</b> {html.escape(account.email)}\n"
-        f"<b>主题:</b> {html.escape(subject)}\n"
-        f"<b>收件人:</b> {html.escape(email.sender)}\n\n"
-        f"请选择操作以继续邮件回复流程：\n"
-        f"• 使用默认收件人 - 直接回复给原邮件发件人\n"
-        f"• 管理收件人/抄送/密送列表 - 自定义接收者\n"
-        f"• 继续编写正文 - 进入邮件正文编写\n"
-        f"• 取消 - 放弃当前回复操作"
+        f"{_('reply_email')}\n\n"
+        f"<b>{_('account')}:</b> {html.escape(account.email)}\n"
+        f"<b>{_('subject')}:</b> {html.escape(subject)}\n"
+        f"<b>{_('recipient')}:</b> {html.escape(email.sender)}\n\n"
+        f"{_('please_select_action')}\n"
+        f"{_('use_default_recipient')}\n"
+        f"{_('manage_recipients_cc_bcc')}\n"
+        f"{_('continue_compose_body')}\n"
+        f"{_('cancel_action')}"
     )
 
 
 def get_body_prompt(context):
     """获取正文输入提示"""
-    return "📝 请输入回复邮件正文：\n\n支持Markdown格式，使用 /cancel 取消操作"
+    return f"{_('please_enter_reply_body')}\n\n{_('markdown_support')}"
 
 
 def get_body_keyboard(context):
     """获取正文输入键盘"""
-    keyboard = [["❌ 取消"]]
+    keyboard = [[_("cancel")]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 def get_cc_prompt(context):
     """获取抄送管理提示消息"""
     cc_list = context.user_data.get("compose_cc", [])
-    cc_text = ", ".join(cc_list) if cc_list else "无"
+    cc_text = ", ".join(cc_list) if cc_list else _("none")
 
     # 获取邮件主题和账户信息
-    subject = context.user_data.get("compose_subject", "无主题")
-    email_account = context.user_data.get("compose_account_email", "未知账户")
+    subject = context.user_data.get("compose_subject", _("no_subject"))
+    email_account = context.user_data.get("compose_account_email", _("unknown_account"))
 
     return (
-        f"📋 <b>抄送管理</b>\n\n"
-        f"<b>账户:</b> {html.escape(email_account)}\n"
-        f"<b>主题:</b> {html.escape(subject)}\n"
-        f"<b>当前抄送:</b> {html.escape(cc_text)}\n\n"
-        f"请选择操作:\n"
-        f"• 管理抄送列表 - 添加或删除抄送人\n"
-        f"• 继续下一步 - 进入密送管理\n"
-        f"• 取消 - 放弃当前回复操作"
+        f"{_('cc_management')}\n\n"
+        f"<b>{_('account')}:</b> {html.escape(email_account)}\n"
+        f"<b>{_('subject')}:</b> {html.escape(subject)}\n"
+        f"<b>{_('current_cc')}:</b> {html.escape(cc_text)}\n\n"
+        f"{_('please_select_cc_action')}\n"
+        f"{_('manage_cc_list')}\n"
+        f"{_('continue_to_next')}\n"
+        f"{_('cancel_current_reply')}"
     )
 
 
 def get_bcc_prompt(context):
     """获取密送管理提示消息"""
     bcc_list = context.user_data.get("compose_bcc", [])
-    bcc_text = ", ".join(bcc_list) if bcc_list else "无"
+    bcc_text = ", ".join(bcc_list) if bcc_list else _("none")
 
     # 获取邮件主题和账户信息
-    subject = context.user_data.get("compose_subject", "无主题")
-    email_account = context.user_data.get("compose_account_email", "未知账户")
+    subject = context.user_data.get("compose_subject", _("no_subject"))
+    email_account = context.user_data.get("compose_account_email", _("unknown_account"))
 
     return (
-        f"🕶 <b>密送管理</b>\n\n"
-        f"<b>账户:</b> {html.escape(email_account)}\n"
-        f"<b>主题:</b> {html.escape(subject)}\n"
-        f"<b>当前密送:</b> {html.escape(bcc_text)}\n\n"
-        f"请输入密送邮箱地址：\n"
-        f"• 多个邮箱请用逗号分隔\n"
-        f"• 如果不需要密送，请直接回复 '-' 或 '无'\n"
-        f"• 取消 - 放弃当前回复操作"
+        f"{_('bcc_management')}\n\n"
+        f"<b>{_('account')}:</b> {html.escape(email_account)}\n"
+        f"<b>{_('subject')}:</b> {html.escape(subject)}\n"
+        f"<b>{_('current_bcc')}:</b> {html.escape(bcc_text)}\n\n"
+        f"{_('please_enter_bcc')}\n"
+        f"{_('multiple_emails_comma')}\n"
+        f"{_('if_no_bcc_needed')}\n"
+        f"{_('cancel_operation')}"
     )
 
 
@@ -203,7 +205,7 @@ async def handle_recipients(
         recipients = _get_current_recipients(context)
         if not recipients:
             alert_msg = await update.message.reply_text(
-                "⚠️ 请至少添加一个收件人后再继续"
+                _("warning_at_least_one_recipient")
             )
             await reply_chain._record_message(context, alert_msg)
             return ConversationHandler.END
@@ -222,22 +224,22 @@ def get_recipients_prompt(context):
 
         # 安全获取收件人列表
         recipients = context.user_data.get("compose_recipients", [])
-        recipients_text = ", ".join(recipients) if recipients else "无"
+        recipients_text = ", ".join(recipients) if recipients else _("none")
 
         # 获取邮件主题用于显示
-        subject = context.user_data.get("compose_subject", "无主题")
-        email_account = context.user_data.get("compose_account_email", "未知账户")
+        subject = context.user_data.get("compose_subject", _("no_subject"))
+        email_account = context.user_data.get("compose_account_email", _("unknown_account"))
 
         # 构建完整提示消息
         prompt = (
-            f"👥 <b>回复邮件 - 收件人管理</b>\n\n"
-            f"<b>账户:</b> {html.escape(email_account)}\n"
-            f"<b>主题:</b> {html.escape(subject)}\n"
-            f"<b>当前收件人:</b> {html.escape(recipients_text)}\n\n"
-            f"请选择操作:\n"
-            f"• 管理收件人列表 - 添加或删除收件人\n"
-            f"• 继续下一步 - 进入抄送管理\n"
-            f"• 取消 - 放弃当前回复操作"
+            f"{_('recipients_management')}\n\n"
+            f"<b>{_('account')}:</b> {html.escape(email_account)}\n"
+            f"<b>{_('subject')}:</b> {html.escape(subject)}\n"
+            f"<b>{_('current_recipients')}:</b> {html.escape(recipients_text)}\n\n"
+            f"{_('please_select_action')}:\n"
+            f"{_('manage_recipients_list')}\n"
+            f"{_('continue_to_next')}\n"
+            f"{_('cancel_operation')}"
         )
 
         logger.debug(f"生成的提示消息: {prompt[:100]}...")
@@ -245,14 +247,14 @@ def get_recipients_prompt(context):
     except Exception as e:
         logger.error(f"生成收件人提示消息出错: {e}")
         # 返回一个基本提示，避免整个流程因为错误中断
-        return "👥 <b>收件人管理</b>\n\n请选择是管理收件人，继续下一步，还是取消操作。"
+        return _("basic_recipient_management_prompt")
 
 
 def get_bcc_keyboard(context):
     """密送管理键盘"""
     keyboard = [
         [TO_NEXT_STEP_TEXT],
-        ["❌ 取消"],
+        [_("cancel")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
@@ -274,7 +276,7 @@ async def start_reply(
         if not email:
             logger.warning(f"找不到邮件ID: {email_id}")
             await update.callback_query.answer(
-                "抱歉，找不到该邮件或已被删除。", show_alert=True
+                _("error_email_not_found"), show_alert=True
             )
             return ConversationHandler.END
 
@@ -283,7 +285,7 @@ async def start_reply(
         if not account:
             logger.warning(f"找不到对应的邮箱账户ID: {email.account_id}")
             await update.callback_query.answer(
-                "抱歉，找不到对应的邮箱账户或账户已被删除。", show_alert=True
+                _("error_account_not_found"), show_alert=True
             )
             return ConversationHandler.END
 
@@ -388,7 +390,7 @@ async def start_reply(
             # 显示临时状态消息以确认bot正在处理
             logger.debug("准备发送临时状态消息...")
             temp_message = await update.callback_query.message.reply_text(
-                "正在准备邮件回复，请稍候...", disable_notification=True
+                _("preparing_email_reply"), disable_notification=True
             )
             logger.debug(f"临时状态消息已发送，消息ID: {temp_message.message_id}")
 
@@ -405,7 +407,7 @@ async def start_reply(
         try:
             # 尝试通知用户
             await update.callback_query.answer(
-                "处理回复邮件时出错，请稍后重试。", show_alert=True
+                _("error_processing_reply"), show_alert=True
             )
         except Exception:
             pass  # 忽略二次错误
@@ -762,11 +764,11 @@ def get_sub_cc_prompt(context):
         cc_list = _get_current_cc(context)
         logger.debug(f"当前抄送列表(从context.user_data获取): {cc_list}")
 
-        cc_text = ", ".join(cc_list) if cc_list else "暂无"
+        cc_text = ", ".join(cc_list) if cc_list else _("none")
 
         # 获取邮件信息
-        subject = context.user_data.get("compose_subject", "无主题")
-        email_account = context.user_data.get("compose_account_email", "未知账户")
+        subject = context.user_data.get("compose_subject", _("no_subject"))
+        email_account = context.user_data.get("compose_account_email", _("unknown_account"))
         logger.debug(f"邮件信息 - 账户: {email_account}, 主题: {subject}")
 
         # 构建提示信息
