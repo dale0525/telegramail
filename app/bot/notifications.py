@@ -11,18 +11,24 @@ from typing import Dict, Optional, Tuple, Any, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaDocument
 from telegram.ext import ContextTypes
 
-from app.database.models import EmailAccount, UserSettings, EmailMessage
+from app.database.models import EmailAccount, EmailMessage
 from app.database.operations import (
-    get_user_settings,
-    get_email_account_by_id,
     get_chat_ids_for_account,
+    get_email_account_by_id,
     get_session,
+    get_attachment_telegram_ids,
+    get_email_by_id,
+    mark_email_as_read,
+    update_attachment_telegram_id,
+    update_email_telegram_message_id,
 )
 from app.utils.text_utils import (
     extract_text_from_html,
     extract_meaningful_summary,
     html_to_markdown,
 )
+from app.utils.config import config
+from app.utils.html_to_image import generate_html_preview
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -335,7 +341,6 @@ async def _send_email_content(
     message_text: str,
     caption_text: str,
     inline_images: Dict,
-    settings: UserSettings,
     disable_notification: bool = False,
     reply_markup=None,
     reply_to_message_id: Optional[int] = None,
@@ -353,7 +358,6 @@ async def _send_email_content(
         message_text: 消息文本
         caption_text: 标题文本
         inline_images: 内联图片
-        settings: 用户设置
         disable_notification: 是否禁用通知
         reply_markup: 回复标记
         reply_to_message_id: 回复消息ID
@@ -399,7 +403,6 @@ async def _send_message_with_attachments(
     body_text: str = "",
     caption_text: str = "",
     inline_images: Dict = {},
-    settings: Optional[UserSettings] = None,
     disable_notification: bool = False,
     reply_markup=None,
     reply_to_message_id: Optional[int] = None,
@@ -417,7 +420,6 @@ async def _send_message_with_attachments(
         body_text: 纯文本内容
         caption_text: 标题文本
         inline_images: 内联图片
-        settings: 用户设置
         disable_notification: 是否禁用通知
         reply_markup: 回复标记
         reply_to_message_id: 回复消息ID
@@ -560,7 +562,6 @@ def _find_reference_telegram_message_id(
 def _prepare_email_message_text(
     notification_type: str,
     email_data: Dict[str, Any],
-    settings: UserSettings,
     account_display_name: str,
     attachments: List[Dict] = None,
 ) -> Tuple[str, str]:
@@ -570,7 +571,6 @@ def _prepare_email_message_text(
     Args:
         notification_type: 通知类型（"new"表示新收到邮件，"sent"表示已发送邮件）
         email_data: 邮件数据
-        settings: 用户设置
         account_display_name: 账户显示名称
         attachments: 附件列表（可选）
 
@@ -592,17 +592,16 @@ def _prepare_email_message_text(
     # 根据通知类型选择不同的处理函数
     if notification_type == "new":
         return _prepare_new_email_message_text(
-            email_data, settings, account_display_name, content_for_message, subject
+            email_data, account_display_name, content_for_message, subject
         )
     else:  # notification_type == "sent"
         return _prepare_sent_email_message_text(
-            email_data, settings, account_display_name, content_for_message, subject
+            email_data, account_display_name, content_for_message, subject
         )
 
 
 def _prepare_new_email_message_text(
     email_data: Dict[str, Any],
-    settings: UserSettings,
     account_display_name: str,
     content_for_message: str,
     subject: str,
@@ -612,7 +611,6 @@ def _prepare_new_email_message_text(
 
     Args:
         email_data: 邮件数据
-        settings: 用户设置
         account_display_name: 账户显示名称
         content_for_message: 处理后的邮件正文内容
         subject: 邮件主题
@@ -641,7 +639,8 @@ def _prepare_new_email_message_text(
 
     # 添加邮件正文
     if content_for_message:
-        preview_length = 1000 if settings.show_full_content else 300
+        # 使用默认值1000（显示完整内容）
+        preview_length = 1000
         truncated_text = extract_meaningful_summary(content_for_message, preview_length)
         safe_text = html.escape(truncated_text)
         message_text += f"\n\n<pre>{safe_text}</pre>"
@@ -678,7 +677,6 @@ def _prepare_new_email_message_text(
 
 def _prepare_sent_email_message_text(
     email_data: Dict[str, Any],
-    settings: UserSettings,
     account_display_name: str,
     content_for_message: str,
     subject: str,
@@ -688,7 +686,6 @@ def _prepare_sent_email_message_text(
 
     Args:
         email_data: 邮件数据
-        settings: 用户设置
         account_display_name: 账户显示名称
         content_for_message: 处理后的邮件正文内容
         subject: 邮件主题
@@ -710,7 +707,8 @@ def _prepare_sent_email_message_text(
     # 提取摘要
     summary = ""
     if content_for_message:
-        preview_length = 1000 if settings.show_full_content else 300
+        # 使用默认值1000（显示完整内容）
+        preview_length = 1000
         summary = extract_meaningful_summary(content_for_message, preview_length)
 
     # 构建通知消息文本（不包含附件信息）
@@ -816,22 +814,11 @@ async def send_email_notification(
 
         # 为每个聊天ID发送通知
         for chat_id in chat_ids:
-            # 获取用户的通知设置
-            settings = get_user_settings(chat_id)
-            if not settings:
-                # 如果没有设置，创建默认设置
-                settings = UserSettings(
-                    chat_id=chat_id,
-                    show_attachments=True,
-                    show_full_content=False,
-                    notify_on_new_email=True,
-                )
-
-            # 如果用户禁用了通知且是新邮件，跳过
-            if notification_type == "new" and not settings.notify_on_new_email:
-                logger.info(f"用户 {chat_id} 已禁用通知，跳过")
-                continue
-
+            # 默认：始终接收新邮件通知
+            # if notification_type == "new" and not DEFAULT_NOTIFY_ON_NEW_EMAIL:
+            #     logger.info(f"用户 {chat_id} 已禁用通知，跳过")
+            #     continue
+            
             # 获取账户显示名称
             account_display_name = account.name if account.name else account.email
 
@@ -839,15 +826,15 @@ async def send_email_notification(
             message_text, caption_text = _prepare_email_message_text(
                 notification_type,
                 email_data,
-                settings,
                 account_display_name,
                 attachments,
             )
 
             # 判断是否有附件
             has_attachments = len(attachments) > 0
-            if notification_type == "new":  # 新邮件还要考虑用户设置
-                has_attachments = has_attachments and settings.show_attachments
+            # 新邮件时默认总是显示附件
+            # if notification_type == "new":  # 新邮件还要考虑用户设置
+            #     has_attachments = has_attachments and DEFAULT_SHOW_ATTACHMENTS
 
             # 创建操作按钮
             reply_markup = None
@@ -884,7 +871,6 @@ async def send_email_notification(
                     message_text,
                     caption_text,
                     inline_images,
-                    settings,
                     disable_notification,
                     reply_markup,
                     converted_reply_id,
@@ -904,7 +890,6 @@ async def send_email_notification(
                     body_text,
                     caption_text=caption_text,
                     inline_images=inline_images,
-                    settings=settings,
                     disable_notification=disable_notification,
                     reply_markup=reply_markup,
                     reply_to_message_id=converted_reply_id,
@@ -912,8 +897,6 @@ async def send_email_notification(
 
             # 如果成功发送消息，更新Telegram消息ID映射
             if sent_message:
-                from app.database.operations import update_email_telegram_message_id
-
                 update_email_telegram_message_id(email_id, str(sent_message.message_id))
 
                 # 如果有附件，保存附件消息ID
@@ -929,26 +912,11 @@ async def send_email_notification(
                         and media_group
                         and len(sent_attachments) == len(media_group)
                     ):
-                        from app.database.operations import (
-                            update_attachment_telegram_id,
+                        update_attachment_telegram_id(
+                            email_id,
+                            attachments[0].get("filename", ""),
+                            str(sent_attachments[0].message_id),
                         )
-
-                        for idx, sent_attachment in enumerate(sent_attachments):
-                            if idx < len(attachments):  # 确保不越界
-                                attachment_filename = attachments[idx].get(
-                                    "filename", ""
-                                )
-                                if attachment_filename:
-                                    # 使用attachments[idx]的filename找到对应的附件
-                                    # 将消息ID保存到telegram_file_id字段
-                                    logger.info(
-                                        f"保存附件消息ID: attachment={attachment_filename}, message_id={sent_attachment.message_id}"
-                                    )
-                                    update_attachment_telegram_id(
-                                        email_id,
-                                        attachment_filename,
-                                        str(sent_attachment.message_id),
-                                    )
 
                     # 清理临时存储
                     recent_sent_attachments_info = None
@@ -961,8 +929,6 @@ async def send_email_notification(
 
         # 成功发送消息后，将邮件标记为已读
         if sent_success:
-            from app.database.operations import mark_email_as_read
-
             mark_email_as_read(email_id)
             notification_type_str = "已发送" if notification_type == "sent" else ""
             logger.info(

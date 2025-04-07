@@ -2,6 +2,8 @@
 Database operations module for TelegramMail.
 """
 import json
+import logging
+import os
 from typing import List, Optional, Union
 from datetime import datetime
 
@@ -9,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 
 from app.database.models import (EmailAccount, EmailAttachment, EmailMessage,
-                              get_session, UserSettings, UserAccountLink, EmailReply, EmailForward)
+                              get_session)
 from app.utils.config import config
 
 
@@ -711,150 +713,6 @@ def get_chat_ids_for_account(account_id: int) -> List[str]:
         return []
 
 
-def get_user_settings(chat_id: str) -> Optional[UserSettings]:
-    """
-    获取用户设置
-    
-    Args:
-        chat_id: Telegram聊天ID
-        
-    Returns:
-        用户设置对象或None
-    """
-    session = get_session()
-    try:
-        return session.query(UserSettings).filter_by(chat_id=chat_id).first()
-    finally:
-        session.close()
-
-
-def create_user_settings(
-    chat_id: str,
-    receive_all_emails: bool = True,
-    receive_important_only: bool = False,
-    show_previews: bool = True,
-    notify_on_new_email: bool = True,
-    notify_with_sound: bool = True,
-    show_full_content: bool = True,
-    show_attachments: bool = True
-) -> Optional[UserSettings]:
-    """
-    创建用户设置
-    
-    Args:
-        chat_id: Telegram聊天ID
-        receive_all_emails: 是否接收所有邮件
-        receive_important_only: 是否只接收重要邮件
-        show_previews: 是否显示邮件预览
-        notify_on_new_email: 是否在收到新邮件时通知
-        notify_with_sound: 是否通知时带有声音
-        show_full_content: 是否显示完整邮件内容
-        show_attachments: 是否显示附件
-        
-    Returns:
-        创建的用户设置对象或None
-    """
-    session = get_session()
-    try:
-        # 检查设置是否已存在
-        existing = session.query(UserSettings).filter_by(chat_id=chat_id).first()
-        if existing:
-            return existing
-        
-        # 创建新设置
-        settings = UserSettings(
-            chat_id=chat_id,
-            receive_all_emails=receive_all_emails,
-            receive_important_only=receive_important_only,
-            show_previews=show_previews,
-            notify_on_new_email=notify_on_new_email,
-            notify_with_sound=notify_with_sound,
-            show_full_content=show_full_content,
-            show_attachments=show_attachments
-        )
-        session.add(settings)
-        session.commit()
-        return settings
-    except SQLAlchemyError as e:
-        session.rollback()
-        print(f"创建用户设置时出错: {e}")
-        return None
-    finally:
-        session.close()
-
-
-def update_user_settings(chat_id: str, **kwargs) -> bool:
-    """
-    更新用户设置
-    
-    Args:
-        chat_id: Telegram聊天ID
-        **kwargs: 要更新的字段
-        
-    Returns:
-        是否成功
-    """
-    session = get_session()
-    try:
-        settings = session.query(UserSettings).filter_by(chat_id=chat_id).first()
-        if not settings:
-            return False
-        
-        # 更新提供的字段
-        for key, value in kwargs.items():
-            if hasattr(settings, key):
-                setattr(settings, key, value)
-        
-        session.commit()
-        return True
-    except SQLAlchemyError as e:
-        session.rollback()
-        print(f"更新用户设置时出错: {e}")
-        return False
-    finally:
-        session.close()
-
-
-def link_account_to_chat_id(account_id: int, chat_id: str) -> bool:
-    """
-    将邮箱账户与聊天ID关联
-    
-    注意：在当前的单用户系统设计中，此函数不被使用，因为系统只使用配置中的OWNER_CHAT_ID。
-    此函数保留用于未来可能的多用户扩展。
-    
-    Args:
-        account_id: 账户ID
-        chat_id: Telegram聊天ID
-        
-    Returns:
-        是否成功
-    """
-    session = get_session()
-    try:
-        # 检查关联是否已存在
-        existing = session.query(UserAccountLink).filter_by(
-            account_id=account_id, chat_id=chat_id
-        ).first()
-        
-        if existing:
-            # 已经存在关联，直接返回成功
-            return True
-        
-        # 创建新的关联
-        link = UserAccountLink(
-            account_id=account_id,
-            chat_id=chat_id
-        )
-        session.add(link)
-        session.commit()
-        return True
-    except SQLAlchemyError as e:
-        session.rollback()
-        print(f"创建账户关联时出错: {e}")
-        return False
-    finally:
-        session.close()
-
 def update_email_telegram_message_id(email_id: int, message_id: str) -> bool:
     """
     更新邮件的Telegram消息ID映射
@@ -906,66 +764,6 @@ def get_emails_with_telegram_ids(limit: int = 100, offset: int = 0) -> List[Emai
         return []
     finally:
         session.close()
-
-def add_reply_to_email(email_id: int, reply_text: str, reply_date: datetime, sender: str) -> Optional[int]:
-    """
-    添加邮件回复记录
-    
-    Args:
-        email_id: 原始邮件ID
-        reply_text: 回复内容
-        reply_date: 回复时间
-        sender: 发送方
-        
-    Returns:
-        回复记录ID或None（如果失败）
-    """
-    try:
-        with get_session() as session:
-            # 创建回复记录
-            reply = EmailReply(
-                email_id=email_id,
-                reply_text=reply_text,
-                reply_date=reply_date,
-                sender=sender
-            )
-            session.add(reply)
-            session.commit()
-            return reply.id
-    except Exception as e:
-        logger.error(f"添加邮件回复记录失败: {e}")
-        return None
-
-def add_forward_from_email(email_id: int, forward_to: str, forward_date: datetime, sender: str, forward_note: str = None) -> Optional[int]:
-    """
-    添加邮件转发记录
-    
-    Args:
-        email_id: 原始邮件ID
-        forward_to: 转发目标地址
-        forward_date: 转发时间
-        sender: 发送方
-        forward_note: 转发附言（可选）
-        
-    Returns:
-        转发记录ID或None（如果失败）
-    """
-    try:
-        with get_session() as session:
-            # 创建转发记录
-            forward = EmailForward(
-                email_id=email_id,
-                forward_to=forward_to,
-                forward_note=forward_note,
-                forward_date=forward_date,
-                sender=sender
-            )
-            session.add(forward)
-            session.commit()
-            return forward.id
-    except Exception as e:
-        logger.error(f"添加邮件转发记录失败: {e}")
-        return None
 
 def get_message_by_message_id(message_id: str, account_id: int) -> Optional[EmailMessage]:
     """

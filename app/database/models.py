@@ -108,12 +108,6 @@ class EmailMessage(Base):
     attachments = relationship(
         "EmailAttachment", back_populates="message", cascade="all, delete-orphan"
     )
-    replies = relationship(
-        "EmailReply", back_populates="email", cascade="all, delete-orphan"
-    )
-    forwards = relationship(
-        "EmailForward", back_populates="email", cascade="all, delete-orphan"
-    )
 
     @property
     def has_attachments(self) -> bool:
@@ -154,90 +148,6 @@ class EmailAttachment(Base):
 
     def __repr__(self):
         return f"<EmailAttachment {self.filename}>"
-
-
-class UserSettings(Base):
-    """
-    Model for user notification settings.
-    """
-
-    __tablename__ = "user_settings"
-
-    id = Column(Integer, primary_key=True)
-
-    # Telegram chat ID
-    chat_id = Column(String(255), nullable=False, unique=True, index=True)
-
-    # Email notification settings
-    receive_all_emails = Column(Boolean, default=True)
-    receive_important_only = Column(Boolean, default=False)
-    show_previews = Column(Boolean, default=True)
-    show_full_content = Column(Boolean, default=True)  # 显示更完整的邮件内容
-    show_attachments = Column(Boolean, default=True)  # 显示附件
-
-    # Notification preferences
-    notify_on_new_email = Column(Boolean, default=True)
-    notify_with_sound = Column(Boolean, default=True)
-
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    def __repr__(self):
-        return f"<UserSettings chat_id={self.chat_id}>"
-
-
-class UserAccountLink(Base):
-    """
-    Model for linking Telegram users to email accounts.
-    """
-
-    __tablename__ = "user_account_links"
-
-    id = Column(Integer, primary_key=True)
-
-    # Telegram chat ID
-    chat_id = Column(String(255), nullable=False, index=True)
-
-    # Email account ID
-    account_id = Column(Integer, ForeignKey("email_accounts.id"), nullable=False)
-
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    def __repr__(self):
-        return f"<UserAccountLink chat_id={self.chat_id}, account_id={self.account_id}>"
-
-
-class EmailReply(Base):
-    """邮件回复记录表"""
-
-    __tablename__ = "email_replies"
-
-    id = Column(Integer, primary_key=True)
-    email_id = Column(Integer, ForeignKey("email_messages.id", ondelete="CASCADE"))
-    reply_text = Column(Text)
-    reply_date = Column(DateTime)
-    sender = Column(String(255))
-
-    # 添加关联关系
-    email = relationship("EmailMessage", back_populates="replies")
-
-
-class EmailForward(Base):
-    """邮件转发记录表"""
-
-    __tablename__ = "email_forwards"
-
-    id = Column(Integer, primary_key=True)
-    email_id = Column(Integer, ForeignKey("email_messages.id", ondelete="CASCADE"))
-    forward_to = Column(String(255))  # 转发目标地址
-    forward_note = Column(Text, nullable=True)  # 转发附言
-    forward_date = Column(DateTime)
-    sender = Column(String(255))
-
-    # 添加关联关系
-    email = relationship("EmailMessage", back_populates="forwards")
 
 
 # Database setup

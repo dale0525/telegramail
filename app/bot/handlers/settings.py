@@ -6,8 +6,6 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from typing import Dict, Any
 
-from app.database.operations import get_user_settings, update_user_settings
-
 # 配置日志
 logger = logging.getLogger(__name__)
 

@@ -7,8 +7,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
 from app.database.operations import (
-    get_email_by_id, get_email_account_by_id, add_reply_to_email,
-    add_forward_from_email
+    get_email_by_id, get_email_account_by_id
 )
 from app.email.smtp_client import SMTPClient
 
@@ -83,18 +82,7 @@ class EmailOperations:
             )
             
             if success:
-                # 记录回复信息到数据库
-                reply_id = add_reply_to_email(
-                    email_id=email_id,
-                    reply_text=reply_text,
-                    reply_date=datetime.now(),
-                    sender=account.email
-                )
-                
-                if reply_id:
-                    return True, f"邮件回复成功发送至 {to_addresses[0]}"
-                else:
-                    return True, f"邮件已发送，但记录回复信息失败"
+                return True, f"邮件回复成功发送至 {to_addresses[0]}"
             else:
                 return False, "发送回复邮件失败"
         
@@ -184,19 +172,7 @@ class EmailOperations:
             )
             
             if success:
-                # 记录转发信息到数据库
-                forward_id = add_forward_from_email(
-                    email_id=email_id,
-                    forward_to=to_address,
-                    forward_note=forward_note,
-                    forward_date=datetime.now(),
-                    sender=account.email
-                )
-                
-                if forward_id:
-                    return True, f"邮件已成功转发至 {to_address}"
-                else:
-                    return True, f"邮件已转发，但记录转发信息失败"
+                return True, f"邮件已成功转发至 {to_address}"
             else:
                 return False, "发送转发邮件失败"
         

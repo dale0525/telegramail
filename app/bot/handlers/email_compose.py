@@ -4,7 +4,7 @@ Email compose handlers for TelegramMail Bot using ConversationChain.
 """
 
 import logging
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
@@ -19,6 +19,7 @@ from app.bot.utils.common_steps import (
 from app.database.operations import AccountOperations
 from app.bot.utils.conversation_chain import ConversationChain
 from app.bot.utils.email_utils import EmailUtils
+from app.i18n import _  # 导入国际化翻译函数
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 compose_chain = ConversationChain(
     name="compose",
     command="compose",
-    description="创建新邮件",
+    description=_("compose_new_email"),
     clean_messages=True,
     clean_delay=1,
 )
@@ -45,22 +46,26 @@ def validate_recipients(user_input, context):
 
 def validate_cc(user_input, context):
     """验证抄送列表"""
+    if user_input == _("to_next_step"):
+        return True, None
     is_valid, error_msg, email_list = EmailUtils.validate_email_list(
         user_input, is_optional=True
     )
     if is_valid:
-        # 确保即使用户输入了 "-" 或 "无"，也会存储为空列表
+        # 存储抄送列表
         context.user_data["compose_cc"] = email_list
     return is_valid, error_msg
 
 
 def validate_bcc(user_input, context):
     """验证密送列表"""
+    if user_input == _("to_next_step"):
+        return True, None
     is_valid, error_msg, email_list = EmailUtils.validate_email_list(
         user_input, is_optional=True
     )
     if is_valid:
-        # 确保即使用户输入了 "-" 或 "无"，也会存储为空列表
+        # 存储密送列表
         context.user_data["compose_bcc"] = email_list
     return is_valid, error_msg
 
@@ -72,7 +77,7 @@ async def start_compose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not accounts:
         await update.message.reply_text(
-            "⚠️ 您还没有添加任何邮箱账户。请先使用 /addaccount 命令添加一个邮箱账户。",
+            _("no_account_warning"),
             disable_notification=True,
         )
         return ConversationHandler.END
@@ -111,47 +116,74 @@ async def handle_recipients(
 
 async def handle_cc(update: Update, context: ContextTypes.DEFAULT_TYPE, user_input):
     """处理用户输入的抄送列表"""
+    # 处理"继续下一步"按钮
+    if user_input == _("to_next_step"):
+        # 如果用户选择"继续下一步"，则设置空列表
+        context.user_data["compose_cc"] = []
+        return None
     # 验证函数已经处理了存储抄送列表
     return None  # 继续会话流程
 
 
 async def handle_bcc(update: Update, context: ContextTypes.DEFAULT_TYPE, user_input):
     """处理用户输入的密送列表"""
+    # 处理"继续下一步"按钮
+    if user_input == _("to_next_step"):
+        # 如果用户选择"继续下一步"，则设置空列表
+        context.user_data["compose_bcc"] = []
+        return None
     # 验证函数已经处理了存储密送列表
     return None  # 继续会话流程
 
 
 # 辅助函数 - 提示消息
 def get_account_prompt(context):
-    return "📧 请选择要使用的发送邮箱："
+    return _("select_sending_account")
 
 
 def get_subject_prompt(context):
-    return "✏️ 请输入邮件主题：\n(使用 /cancel 取消操作)"
+    return _("enter_subject")
 
 
 def get_recipients_prompt(context):
-    return (
-        "👥 请输入收件人邮箱地址：\n- 多个收件人请用逗号分隔\n- 使用 /cancel 取消操作"
-    )
+    return _("enter_recipients")
 
 
 def get_cc_prompt(context):
-    return "📋 请输入抄送(CC)列表：\n- 多个地址请用逗号分隔\n- 如果没有，请直接回复 '-' 或 '无'\n- 使用 /cancel 取消操作"
+    return _("enter_cc")
+
+
+def get_cc_keyboard(context):
+    """获取抄送步骤的键盘"""
+    keyboard = [
+        [_("to_next_step")],
+        [_("cancel")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 
 def get_bcc_prompt(context):
-    return "🔒 请输入密送(BCC)列表：\n- 多个地址请用逗号分隔\n- 如果没有，请直接回复 '-' 或 '无'\n- 使用 /cancel 取消操作"
+    return _("enter_bcc")
+
+
+def get_bcc_keyboard(context):
+    """获取密送步骤的键盘"""
+    keyboard = [
+        [_("to_next_step")],
+        [_("cancel")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 
 def get_compose_handler():
     """获取邮件创建会话处理器"""
     # 配置会话链条
     compose_chain.add_entry_point(start_compose)
+
     email_utils = EmailUtils(chain=compose_chain)
 
     compose_chain.add_step(
-        name="邮箱账户",
+        name=_("email_account"),
         handler_func=handle_account_selection,
         validator=email_utils.does_email_exists,
         keyboard_func=email_utils.get_account_keyboard,
@@ -160,7 +192,7 @@ def get_compose_handler():
     )
 
     compose_chain.add_step(
-        name="邮件主题",
+        name=_("email_subject"),
         handler_func=handle_subject,
         keyboard_func=get_cancel_keyboard,
         prompt_func=get_subject_prompt,
@@ -168,7 +200,7 @@ def get_compose_handler():
     )
 
     compose_chain.add_step(
-        name="收件人",
+        name=_("recipients"),
         handler_func=handle_recipients,
         validator=validate_recipients,
         keyboard_func=get_cancel_keyboard,
@@ -177,19 +209,19 @@ def get_compose_handler():
     )
 
     compose_chain.add_step(
-        name="抄送",
+        name=_("cc"),
         handler_func=handle_cc,
         validator=validate_cc,
-        keyboard_func=get_cancel_keyboard,
+        keyboard_func=get_cc_keyboard,  # 使用自定义键盘
         prompt_func=get_cc_prompt,
         filter_type="TEXT",
     )
 
     compose_chain.add_step(
-        name="密送",
+        name=_("bcc"),
         handler_func=handle_bcc,
         validator=validate_bcc,
-        keyboard_func=get_cancel_keyboard,
+        keyboard_func=get_bcc_keyboard,  # 使用自定义键盘
         prompt_func=get_bcc_prompt,
         filter_type="TEXT",
     )

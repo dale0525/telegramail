@@ -3,11 +3,14 @@ Command handlers for TelegramMail Bot.
 """
 import logging
 import traceback
+import asyncio
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 from app.database.operations import AccountOperations, MessageOperations
 from app.email.email_monitor import get_email_monitor
+from app.i18n import _  # 导入国际化翻译函数
+from app.bot.handlers.utils import delete_message  # 导入删除消息工具函数
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -22,41 +25,23 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not accounts:
         # 用户没有添加邮箱账户，引导添加第一个账户
         keyboard = [
-            [InlineKeyboardButton("添加邮箱账户", callback_data="add_account")]
+            [InlineKeyboardButton(_("add_email_account"), callback_data="add_account")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_html(
-            f"你好，{user.mention_html()}！👋\n\n"
-            f"欢迎使用TelegramMail - 你的Telegram邮件助手。\n\n"
-            f"看起来你还没有添加任何邮箱账户。要开始使用，请先添加一个邮箱账户。\n\n"
-            f"你可以点击下方按钮或使用 /addaccount 命令添加账户。",
+            _("welcome_no_accounts").format(user=user.mention_html()),
             reply_markup=reply_markup
         )
     else:
         # 用户已有邮箱账户，显示正常欢迎消息
         await update.message.reply_html(
-            f"你好，{user.mention_html()}！👋\n\n"
-            f"欢迎使用TelegramMail - 你的Telegram邮件助手。\n\n"
-            f"使用 /help 查看可用命令。"
+            _("welcome_with_accounts").format(user=user.mention_html())
         )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理/help命令"""
-    help_text = (
-        "📬 <b>TelegramMail帮助</b> 📬\n\n"
-        "<b>基本命令：</b>\n"
-        "/start - 启动机器人\n"
-        "/help - 显示此帮助信息\n"
-        "/accounts - 查看已添加的邮箱账户\n"
-        "/addaccount - 添加新邮箱账户\n"
-        "/check - 手动检查新邮件\n\n"
-        "<b>邮件命令：</b>\n"
-        "/compose - 创建新邮件\n\n"
-        "<b>接收通知：</b>\n"
-        "当你收到新邮件时，机器人会自动通知你。\n"
-        "删除Telegram消息将自动删除对应的邮件。"
-    )
+    help_text = _("help_text")
     await update.message.reply_html(help_text)
 
 async def accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -65,19 +50,18 @@ async def accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     if not accounts:
         await update.message.reply_text(
-            "📭 您还没有添加任何邮箱账户。\n"
-            "使用 /addaccount 命令添加新账户。",
+            _("no_accounts_message"),
             disable_notification=True
         )
         return
     
     # 构建账户列表消息
-    accounts_text = "📧 <b>已添加的邮箱账户</b>\n\n"
+    accounts_text = _("accounts_list_header") + "\n\n"
     
     for i, account in enumerate(accounts):
         accounts_text += (
             f"{i+1}. <b>{account.email}</b>\n"
-            f"   名称: {account.name or '未设置'}\n"
+            f"   {_('name')}: {account.name or _('not_set')}\n"
             f"   IMAP: {account.imap_server}:{account.imap_port}\n"
             f"   SMTP: {account.smtp_server}:{account.smtp_port}\n\n"
         )
@@ -88,12 +72,12 @@ async def accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # 为每个账户添加删除按钮
     for account in accounts:
         keyboard.append([
-            InlineKeyboardButton(f"删除 {account.email}", callback_data=f"delete_account_{account.id}")
+            InlineKeyboardButton(f"{_('delete')} {account.email}", callback_data=f"delete_account_{account.id}")
         ])
     
     # 添加"添加新账户"按钮
     keyboard.append([
-        InlineKeyboardButton("添加新账户", callback_data="add_account")
+        InlineKeyboardButton(_("add_new_account"), callback_data="add_account")
     ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -106,14 +90,17 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     if not monitor:
         await update.message.reply_text(
-            "❌ 邮件监听器未启动，无法检查新邮件。",
+            _("error_monitor_not_started"),
             disable_notification=True
         )
         return
     
+    # 保存原始命令消息ID
+    command_message_id = update.message.message_id
+    
     # 发送正在检查的消息
     checking_message = await update.message.reply_text(
-        "🔍 正在检查新邮件...",
+        _("checking_emails"),
         disable_notification=True
     )
     
@@ -121,21 +108,60 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # 执行邮件检查，传入上下文用于发送通知
         new_email_count = await monitor.check_emails(context)
         
-        # 更新消息为检查完成
+        # 删除进度提示消息
+        await context.bot.delete_message(
+            chat_id=update.effective_chat.id,
+            message_id=checking_message.message_id
+        )
+        
+        # 发送新的结果通知
         if new_email_count > 0:
-            await checking_message.edit_text(
-                f"✅ 邮件检查完成！发现 {new_email_count} 封新邮件。"
+            result_message = await update.message.reply_text(
+                _("check_complete_found").format(count=new_email_count)
             )
         else:
-            await checking_message.edit_text(
-                "✅ 邮件检查完成！没有新邮件。"
+            result_message = await update.message.reply_text(
+                _("check_complete_no_emails")
             )
+        
+        # 结果消息发送后，立即删除原始命令消息
+        try:
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=command_message_id
+            )
+        except Exception as e:
+            logger.debug(f"无法删除原始命令消息: {e}")
+        
+        # 3秒后自动删除结果消息
+        context.job_queue.run_once(
+            lambda job_context: delete_message(job_context, update.effective_chat.id, result_message.message_id),
+            3
+        )
     except Exception as e:
         logger.error(f"检查邮件时出错: {e}")
         logger.error(traceback.format_exc())
+        
+        # 出错时更新进度消息为错误消息并延迟删除
         await checking_message.edit_text(
-            f"❌ 检查邮件时出错: {str(e)}"
+            _("error_checking_emails").format(error=str(e))
         )
+        
+        # 3秒后自动删除错误消息和原始命令消息
+        def cleanup_messages(job_context):
+            # 删除错误消息
+            delete_message(job_context, update.effective_chat.id, checking_message.message_id)
+            # 删除原始命令消息
+            try:
+                context.bot.delete_message(
+                    chat_id=update.effective_chat.id, 
+                    message_id=command_message_id
+                )
+            except Exception as e:
+                logger.debug(f"无法删除原始命令消息: {e}")
+        
+        # 设置定时任务
+        context.job_queue.run_once(cleanup_messages, 3)
 
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理设置相关的回调查询"""
@@ -161,12 +187,12 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     elif callback_data == "add_account":
         # 重定向到 addaccount 命令
         await query.message.reply_text(
-            "请使用 /addaccount 命令添加新邮箱账户。",
+            _("use_addaccount_command"),
             disable_notification=True
         )
     else:
         await query.edit_message_text(
-            "抱歉，无法识别的操作。",
+            _("unknown_action"),
             disable_notification=True
         )
 
@@ -185,9 +211,7 @@ async def addaccount_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # 提示用户输入邮箱地址
     message = await update.message.reply_text(
-        "🆕 <b>添加新邮箱账户</b>\n\n"
-        "请输入您的邮箱地址 (例如: example@gmail.com)，\n"
-        "或输入 /cancel 取消操作。",
+        _("add_account_prompt"),
         parse_mode="HTML"
     )
     
@@ -207,8 +231,7 @@ async def reply_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
     # 检查是否是回复消息
     if not update.message or not update.message.reply_to_message:
         await update.message.reply_text(
-            "⚠️ 使用此命令时，您需要回复一条邮件通知消息。\n"
-            "请找到您想回复的邮件通知，回复该消息并发送 /reply 命令。",
+            _("error_reply_needs_message"),
             disable_notification=True
         )
         return
@@ -226,16 +249,13 @@ async def reply_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
                     
                     # 返回一个提示消息
                     await update.message.reply_text(
-                        "⚠️ 邮件回复功能已被禁用或移除。\n",
+                        _("reply_function_disabled"),
                         disable_notification=True
                     )
                     return
     
     # 如果没有找到邮件ID
     await update.message.reply_text(
-        "⚠️ 无法识别此消息对应的邮件。\n"
-        "请确保您回复的是一条包含回复按钮的邮件通知。\n"
-        "或者，您也可以直接点击邮件通知中的「回复」按钮。",
+        _("error_cannot_identify_email"),
         disable_notification=True
     )
-    return
