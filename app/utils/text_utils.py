@@ -4,6 +4,7 @@
 import re
 import logging
 import traceback
+from typing import Dict, List, Tuple
 
 try:
     from pyhtml2md import convert as html2md
@@ -309,6 +310,237 @@ def extract_text_from_html(html_content: str) -> str:
         simple_text = re.sub(r'<[^<>]*>', '', html_content)
         return simple_text.strip()
 
+def extract_important_links(html_content: str) -> List[Dict[str, str]]:
+    """
+    从HTML内容中提取重要链接，特别是按钮和功能性链接。
+    增强对"click here to unsubscribe"这类情况的支持。
+    
+    Args:
+        html_content: HTML内容
+        
+    Returns:
+        重要链接列表，每个链接是包含text和url的字典
+    """
+    if not html_content:
+        return []
+    
+    important_links = []
+    
+    try:
+        # 常见按钮和链接文本模式（中英文）
+        button_patterns = [
+            # 中文常见按钮文本
+            r'查看详情', r'点击查看', r'了解更多', r'查看全文', r'立即查看', 
+            r'立即购买', r'马上抢购', r'点击购买', r'立即注册', r'点击注册',
+            r'确认', r'确定', r'同意', r'接受', r'取消订阅', r'退订', 
+            r'取消', r'下载', r'申请', r'领取', r'激活', r'验证',
+            
+            # 英文常见按钮文本
+            r'View', r'Click here', r'Learn more', r'Read more', r'See details',
+            r'Buy now', r'Purchase', r'Register', r'Sign up', r'Subscribe',
+            r'Confirm', r'Accept', r'Unsubscribe', r'Cancel', r'Download',
+            r'Apply', r'Claim', r'Activate', r'Verify', r'Get started',
+        ]
+        
+        # 链接上下文关键词（通常出现在链接附近）
+        context_keywords = [
+            # 英文
+            'unsubscribe', 'subscribe', 'verify', 'confirm', 'activate', 
+            'view', 'download', 'register', 'sign up', 'login', 'log in',
+            'reset', 'password', 'account', 'profile', 'preferences',
+            # 中文
+            '退订', '订阅', '验证', '确认', '激活', '查看', '下载', '注册', 
+            '登录', '重置', '密码', '账户', '账号', '个人资料', '偏好设置'
+        ]
+        
+        # 特别处理的短语模式 - 专门针对"click here to unsubscribe"这类情况
+        special_phrases = [
+            (r'click\s+here\s+(?:to|and)\s+(unsubscribe|subscribe|verify|confirm|register)', 
+             r'click here to \1'),  # "click here to unsubscribe"
+            (r'(?:please\s+)?(click|tap|press)\s+(?:here|below|this)\s+(?:to|and)\s+(.*?)(?:[\.,]|$)', 
+             r'\1 here to \2'),  # "please click here to reset your password"
+            (r'(?:please\s+)?(点击|点选|按下)(?:这里|此处)\s*(?:以|来)?\s*(.*?)(?:[\.,]|$)', 
+             r'\1\2'),  # "请点击这里以重置密码"
+        ]
+        
+        # 更健壮的链接提取正则表达式，支持不同的引号格式和空格
+        a_tags_patterns = [
+            # 标准格式：href="url"
+            r'<a\s+[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>',
+            # 处理无引号或引号不匹配的情况
+            r'<a\s+[^>]*href=([^\s>\"\']+)[^>]*>(.*?)</a>',
+            # 处理可能的空格或转义字符
+            r'<a\s+[^>]*href\s*=\s*[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>'
+        ]
+        
+        # 合并所有匹配到的链接
+        a_tags = []
+        for pattern in a_tags_patterns:
+            a_tags.extend(re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE))
+        
+        # 去除重复的链接
+        processed_urls = set()
+        
+        for match in a_tags:
+            # 兼容不同匹配结果的格式
+            if isinstance(match, tuple) and len(match) >= 2:
+                url, link_text = match[0], match[1]
+            else:
+                continue  # 跳过无效匹配
+                
+            # 跳过已处理的URL
+            if url in processed_urls:
+                continue
+                
+            # 清理URL（移除前后空格和引号）
+            url = url.strip('\'" \t')
+            
+            # 清理链接文本中的HTML标签
+            clean_text = re.sub(r'<[^>]+>', ' ', link_text).strip()
+            clean_text = re.sub(r'\s+', ' ', clean_text)
+            
+            # 如果链接文本为空，跳过
+            if not clean_text:
+                continue
+                
+            # 检查链接文本是否包含任何重要按钮文本模式
+            is_important = False
+            for pattern in button_patterns:
+                if re.search(pattern, clean_text, re.IGNORECASE):
+                    is_important = True
+                    break
+            
+            # 检查链接是否包含常见的功能性URL特征
+            url_lower = url.lower()
+            if any(keyword in url_lower for keyword in ['unsubscribe', 'view', 'confirm', 'verify', 'download', 'login', 'register', 'signup', 'subscribe', 'cancel', 'auth', 'activate']):
+                is_important = True
+                
+            # 如果是中文URL特征
+            if any(keyword in url_lower for keyword in ['退订', '查看', '确认', '验证', '下载', '登录', '注册', '订阅', '取消', '认证', '激活']):
+                is_important = True
+            
+            # 检查是否是单按钮（文本长度小于15个字符）
+            if len(clean_text) < 15 and re.search(r'\b(click|tap|view|see|read|check|buy|get|sign|subscribe|download|unsubscribe|退订|查看|点击|购买|注册|下载)\b', clean_text, re.IGNORECASE):
+                is_important = True
+            
+            # 提取链接的上下文和段落
+            context_text = ""
+            if is_important or clean_text.lower() in ["click here", "here", "点击这里", "这里"]:
+                # 查找链接所在的段落
+                # 找到包含该链接的<p>标签
+                p_pattern = r'<p[^>]*>(?:(?!<p|</p>).)*?' + re.escape(link_text) + r'(?:(?!<p|</p>).)*?</p>'
+                p_match = re.search(p_pattern, html_content, re.DOTALL | re.IGNORECASE)
+                
+                if p_match:
+                    context_text = p_match.group(0)
+                else:
+                    # 如果找不到完整段落，尝试查找包含该链接的句子
+                    # 找到包含该链接的整个句子（从上一个句号到下一个句号）
+                    sent_pattern = r'[.!?][ \t\n]*(?:[^.!?]*?' + re.escape(link_text) + r'[^.!?]*?[.!?])'
+                    sent_match = re.search(sent_pattern, html_content, re.DOTALL | re.IGNORECASE)
+                    
+                    if sent_match:
+                        context_text = sent_match.group(0).lstrip('.!? \t\n')
+                    else:
+                        # 找不到完整句子，使用链接前后的文本作为上下文
+                        try:
+                            link_index = html_content.find(link_text)
+                            if link_index > -1:
+                                start = max(0, link_index - 150)
+                                end = min(len(html_content), link_index + len(link_text) + 150)
+                                context_text = html_content[start:end]
+                        except:
+                            context_text = ""
+                
+                if context_text:
+                    # 清理上下文文本中的HTML标签
+                    clean_context = re.sub(r'<[^>]+>', ' ', context_text).strip()
+                    clean_context = re.sub(r'\s+', ' ', clean_context)
+                    
+                    # 特别处理的情况：针对"click here to unsubscribe"这类情况
+                    if clean_text.lower() in ["click here", "here", "点击这里", "这里"]:
+                        # 尝试识别特殊短语模式
+                        for pattern, replacement in special_phrases:
+                            context_match = re.search(pattern, clean_context, re.IGNORECASE)
+                            if context_match:
+                                # 提取完整短语作为显示文本
+                                full_phrase = context_match.group(0)
+                                clean_text = full_phrase
+                                is_important = True
+                                break
+                    
+                    # 检查上下文是否包含重要关键词
+                    if not is_important:
+                        for keyword in context_keywords:
+                            if keyword.lower() in clean_context.lower():
+                                is_important = True
+                                # 使用上下文关键句作为链接文本
+                                # 尝试提取包含关键词的句子
+                                keyword_pattern = r'[^.!?]*' + re.escape(keyword) + r'[^.!?]*[.!?]?'
+                                keyword_match = re.search(keyword_pattern, clean_context, re.IGNORECASE)
+                                if keyword_match:
+                                    clean_text = keyword_match.group(0).strip()
+                                else:
+                                    clean_text = clean_context
+                                break
+            
+            # 如果是重要链接，添加到列表
+            if is_important:
+                # 添加协议前缀，如果URL是相对URL
+                if not url.startswith(('http://', 'https://', 'mailto:')):
+                    # 如果URL以//开头（协议相对URL）
+                    if url.startswith('//'):
+                        url = 'https:' + url
+                    # 如果URL以/开头（网站根路径）
+                    elif url.startswith('/'):
+                        # 尝试从HTML内容中推断基本域名
+                        base_match = re.search(r'<base\s+href=["\']([^"\']+)["\']', html_content)
+                        if base_match:
+                            base_url = base_match.group(1)
+                            url = base_url.rstrip('/') + '/' + url.lstrip('/')
+                        else:
+                            # 无法确定基础URL，保持原样
+                            pass
+                    # 其他情况可能是相对于当前页面的路径
+                    else:
+                        # 由于无法确定当前页面URL，保持原样
+                        pass
+                
+                # 记录已处理的URL
+                processed_urls.add(url)
+                
+                # 避免重复添加相同链接
+                if not any(link['url'] == url for link in important_links):
+                    # 如果链接文本太长，可能是包含了太多上下文，进行截断
+                    display_text = clean_text
+                    if len(display_text) > 60:  # 限制显示文本长度
+                        # 尝试找到关键短语
+                        for keyword in context_keywords:
+                            if keyword.lower() in clean_text.lower():
+                                # 找到关键词前后的一小段文本
+                                keyword_index = clean_text.lower().find(keyword.lower())
+                                start = max(0, keyword_index - 20)
+                                end = min(len(clean_text), keyword_index + len(keyword) + 20)
+                                display_text = clean_text[start:end]
+                                if start > 0:
+                                    display_text = "..." + display_text
+                                if end < len(clean_text):
+                                    display_text = display_text + "..."
+                                break
+                    
+                    important_links.append({
+                        'text': display_text,
+                        'url': url
+                    })
+        
+        logger.info(f"从HTML提取了 {len(important_links)} 个重要链接")
+        return important_links
+    
+    except Exception as e:
+        logger.error(f"提取重要链接时出错: {e}")
+        logger.error(traceback.format_exc())
+        return []
+
 def extract_meaningful_summary(text: str, max_length: int) -> str:
     """
     提取文本的有意义摘要，优先保留开头和重要句子。
@@ -382,4 +614,70 @@ def extract_meaningful_summary(text: str, max_length: int) -> str:
     elif len(summary) < len(text):
         summary += "..."
     
-    return summary.strip() 
+    return summary.strip()
+
+def extract_email_content_with_links(html_content: str, max_length: int = 1000) -> Tuple[str, List[Dict[str, str]]]:
+    """
+    从HTML邮件中提取有意义的内容摘要和重要链接。
+    
+    Args:
+        html_content: HTML邮件内容
+        max_length: 文本摘要的最大长度限制
+        
+    Returns:
+        提取的纯文本摘要和重要链接列表的元组
+    """
+    # 提取纯文本内容
+    plain_text = html_to_plain_text(html_content) if html_content else ""
+    
+    # 提取重要链接
+    important_links = extract_important_links(html_content)
+    
+    # 提取文本摘要
+    text_summary = extract_meaningful_summary(plain_text, max_length)
+    
+    return text_summary, important_links
+
+# 测试函数，用于验证链接提取功能
+def test_extract_important_links():
+    """
+    测试链接提取功能，包括基本链接和上下文相关链接。
+    
+    Returns:
+        测试结果字典，包含提取的链接
+    """
+    # 创建测试HTML，包含各种链接样式
+    test_html = """
+    <html>
+    <body>
+        <p>Welcome to our newsletter!</p>
+        
+        <!-- 普通按钮链接 -->
+        <p>Please <a href="https://example.com/confirm">Confirm your subscription</a> to continue.</p>
+        
+        <!-- "click here" + 上下文 类型链接 -->
+        <p>If you no longer wish to receive these emails, <a href="https://example.com/unsubscribe">click here</a> to unsubscribe.</p>
+        
+        <!-- 中文退订链接 -->
+        <p>如果您不想再收到此类邮件，请<a href="https://example.cn/unsubscribe">点击这里</a>退订。</p>
+        
+        <!-- 带图标的链接 -->
+        <p><a href="https://example.com/download"><img src="download.png"> Download your document</a></p>
+        
+        <!-- 普通非重要链接 -->
+        <p>Visit our <a href="https://example.com">website</a> for more information.</p>
+        
+        <!-- URL中包含关键词的链接 -->
+        <p><a href="https://example.com/reset-password">Reset your password</a></p>
+    </body>
+    </html>
+    """
+    
+    # 提取链接
+    links = extract_important_links(test_html)
+    
+    # 返回测试结果
+    return {
+        "extracted_links": links,
+        "total_links": len(links)
+    } 

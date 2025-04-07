@@ -72,7 +72,7 @@ async def accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # 为每个账户添加删除按钮
     for account in accounts:
         keyboard.append([
-            InlineKeyboardButton(f"{_('delete')} {account.email}", callback_data=f"delete_account_{account.id}")
+            InlineKeyboardButton(f"{_('delete_account')} {account.email}", callback_data=f"delete_account_{account.id}")
         ])
     
     # 添加"添加新账户"按钮

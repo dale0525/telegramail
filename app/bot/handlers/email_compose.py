@@ -183,7 +183,7 @@ def get_compose_handler():
     email_utils = EmailUtils(chain=compose_chain)
 
     compose_chain.add_step(
-        name=_("email_account"),
+        name=_("email_account_field"),
         handler_func=handle_account_selection,
         validator=email_utils.does_email_exists,
         keyboard_func=email_utils.get_account_keyboard,

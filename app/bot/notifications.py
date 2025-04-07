@@ -7,28 +7,27 @@ import logging
 import traceback
 from datetime import datetime
 from typing import Dict, Optional, Tuple, Any, List
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaDocument
 from telegram.ext import ContextTypes
 
-from app.database.models import EmailAccount, EmailMessage
+from app.database.models import EmailMessage
 from app.database.operations import (
     get_chat_ids_for_account,
     get_email_account_by_id,
     get_session,
-    get_attachment_telegram_ids,
-    get_email_by_id,
     mark_email_as_read,
     update_attachment_telegram_id,
     update_email_telegram_message_id,
 )
 from app.utils.text_utils import (
-    extract_text_from_html,
     extract_meaningful_summary,
     html_to_markdown,
+    extract_email_content_with_links,
+    extract_important_links,
 )
-from app.utils.config import config
-from app.utils.html_to_image import generate_html_preview
+from app.i18n import _  # 导入国际化翻译函数
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -118,7 +117,7 @@ def _prepare_attachment_caption(filename: str, size_bytes: Optional[int] = None)
     file_icon = _get_file_icon(filename)
 
     # 构建简洁附件说明文本 - 不再显示文件名和大小（因为Telegram会自动显示）
-    caption = f"{file_icon} 邮件附件"
+    caption = _("attachment_caption").format(icon=file_icon)
 
     return caption
 
@@ -432,7 +431,7 @@ async def _send_message_with_attachments(
         return await _send_text_message(
             context,
             chat_id,
-            message_text + "\n\n⚠️ <i>附件处理失败。</i>",
+            message_text + _("attachment_processing_failed"),
             disable_notification,
             reply_markup,
             reply_to_message_id,
@@ -441,7 +440,7 @@ async def _send_message_with_attachments(
     # 添加附件提示到消息末尾
     attachments_count = len(media_group)
     if attachments_count > 0:
-        attachment_notice = f"\n\n📎 <b>此邮件包含 {attachments_count} 个附件</b>"
+        attachment_notice = _("email_has_attachments").format(count=attachments_count)
         message_text += attachment_notice
         # 如果caption_text有值，也添加附件提示
         if caption_text:
@@ -504,7 +503,7 @@ async def _send_message_with_attachments(
         return await _send_text_message(
             context,
             chat_id,
-            message_text + "\n\n⚠️ <i>由于技术原因，无法发送附件。</i>",
+            message_text + _("attachment_sending_failed"),
             disable_notification,
             reply_markup,
             reply_to_message_id,
@@ -559,186 +558,126 @@ def _find_reference_telegram_message_id(
         session.close()
 
 
-def _prepare_email_message_text(
-    notification_type: str,
-    email_data: Dict[str, Any],
-    account_display_name: str,
-    attachments: List[Dict] = None,
-) -> Tuple[str, str]:
+def _extract_and_prepare_email_content(
+    email_data: Dict[str, Any], 
+    account_display_name: str, 
+    notification_type: str = "new",
+    max_length: int = 1000
+) -> Tuple[str, str, List[Dict[str, str]]]:
     """
-    统一准备邮件消息文本，无论是否有附件。
-
+    从邮件中提取内容并准备显示文本，同时提取重要链接。
+    
     Args:
-        notification_type: 通知类型（"new"表示新收到邮件，"sent"表示已发送邮件）
         email_data: 邮件数据
         account_display_name: 账户显示名称
-        attachments: 附件列表（可选）
-
+        notification_type: 通知类型 ("new" 或 "sent")
+        max_length: 文本摘要的最大长度
+        
     Returns:
-        消息文本和标题文本的元组
+        元组 (消息文本, 标题文本, 重要链接列表)
     """
-    subject = email_data.get("subject", "无主题")
-    body_text = email_data.get("body_text", "")
+    subject = email_data.get("subject", _("no_subject"))
     html_content = email_data.get("body_html", "")
-
-    # 提取邮件正文
-    content_for_message = body_text
-    if not content_for_message and html_content:
-        content_for_message = html_to_markdown(html_content, as_plain_text=True)
-        logger.info(
-            f"从HTML内容提取纯文本用于消息显示，长度: {len(content_for_message)}"
-        )
-
-    # 根据通知类型选择不同的处理函数
-    if notification_type == "new":
-        return _prepare_new_email_message_text(
-            email_data, account_display_name, content_for_message, subject
-        )
-    else:  # notification_type == "sent"
-        return _prepare_sent_email_message_text(
-            email_data, account_display_name, content_for_message, subject
-        )
-
-
-def _prepare_new_email_message_text(
-    email_data: Dict[str, Any],
-    account_display_name: str,
-    content_for_message: str,
-    subject: str,
-) -> Tuple[str, str]:
-    """
-    准备新收到邮件的消息文本。
-
-    Args:
-        email_data: 邮件数据
-        account_display_name: 账户显示名称
-        content_for_message: 处理后的邮件正文内容
-        subject: 邮件主题
-
-    Returns:
-        消息文本和标题文本的元组
-    """
+    body_text = email_data.get("body_text", "")
+    
+    # 使用新函数提取邮件内容和重要链接
+    content_for_message, important_links = "", []
+    if html_content:
+        content_for_message, important_links = extract_email_content_with_links(html_content, max_length)
+    elif body_text:
+        content_for_message = extract_meaningful_summary(body_text, max_length)
+    
     # 处理新收到邮件的情况
-    sender_email = email_data.get("sender_email", "")
-    sender_name = email_data.get("sender_name", "")
-    sender = email_data.get("sender", "未知发件人")
+    if notification_type == "new":
+        sender_email = email_data.get("sender_email", "")
+        sender_name = email_data.get("sender_name", "")
+        sender = email_data.get("sender", _("unknown_account"))
 
-    # 准备发件人信息
-    sender_display = sender
-    if sender_name and sender_email:
-        sender_display = f"{sender_name} <{sender_email}>"
-    elif sender_email:
-        sender_display = sender_email
+        # 准备发件人信息
+        sender_display = sender
+        if sender_name and sender_email:
+            sender_display = f"{sender_name} <{sender_email}>"
+        elif sender_email:
+            sender_display = sender_email
 
-    message_text = (
-        f"📧 <b>{html.escape(subject)}</b>\n\n"
-        f"<b>发件人:</b> {html.escape(sender_display)}\n"
-        f"<b>日期:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        f"<b>账号:</b> #{html.escape(account_display_name)}\n"
-    )
+        # 使用国际化字符串构建消息
+        message_text = (
+            _("new_email_notification").format(subject=html.escape(subject)) + "\n\n" +
+            _("email_from").format(sender=html.escape(sender_display)) + "\n" +
+            _("email_date").format(date=datetime.now().strftime('%Y-%m-%d %H:%M')) + "\n" +
+            _("email_account").format(account=html.escape(account_display_name))
+        )
 
-    # 添加邮件正文
-    if content_for_message:
-        # 使用默认值1000（显示完整内容）
-        preview_length = 1000
-        truncated_text = extract_meaningful_summary(content_for_message, preview_length)
-        safe_text = html.escape(truncated_text)
-        message_text += f"\n\n<pre>{safe_text}</pre>"
+        # 添加邮件正文
+        if content_for_message:
+            safe_text = html.escape(content_for_message)
+            message_text += f"\n\n<pre>{safe_text}</pre>"
 
-        # 如果正文被截断，添加提示
-        if len(truncated_text) < len(content_for_message):
-            message_text += "\n<i>邮件内容较长，仅显示部分内容...</i>"
-    else:
-        message_text += "\n\n<i>此邮件没有文本内容。</i>"
+            # 如果正文被截断，添加提示
+            if len(content_for_message) < (len(body_text) if body_text else (len(html_content) if html_content else 0)):
+                message_text += f"\n{_('email_content_truncated')}"
+        else:
+            message_text += f"\n\n{_('email_no_content')}"
 
-    # 准备标题文本 (用于发送预览图片时)
-    header_lines = message_text.split("\n")
-    # 确保提取的行数足够包含所有头部信息
-    caption_text = "\n".join(header_lines[:6])
+        # 如果有重要链接，添加到消息中
+        if important_links:
+            message_text += f"\n\n{_('important_links')}"
+            
+        # 准备标题文本 (用于发送预览图片时)
+        header_lines = message_text.split("\n")
+        # 确保提取的行数足够包含所有头部信息
+        caption_text = "\n".join(header_lines[:6])
 
-    # 添加部分正文内容到标题文本
-    if content_for_message:
-        # 计算剩余可用字符数 (Telegram caption限制为1024字符)
-        remaining_chars = 850 - len(caption_text)
-        if remaining_chars > 100:
-            # 提取摘要
-            preview_text = extract_meaningful_summary(
-                content_for_message, remaining_chars
-            )
-            # 确保HTML标签被转义
-            safe_preview = html.escape(preview_text)
-            caption_text += f"\n\n<pre>{safe_preview}</pre>"
+        # 添加部分正文内容到标题文本
+        if content_for_message:
+            # 计算剩余可用字符数 (Telegram caption限制为1024字符)
+            remaining_chars = 850 - len(caption_text)
+            if remaining_chars > 100:
+                # 提取摘要
+                preview_text = extract_meaningful_summary(content_for_message, remaining_chars)
+                # 确保HTML标签被转义
+                safe_preview = html.escape(preview_text)
+                caption_text += f"\n\n<pre>{safe_preview}</pre>"
 
-    # 添加指导用户查看完整内容的说明
-    caption_text += "\n\n<i>\U0001f4f8 查看预览图片获取完整内容</i>"
+        # 添加指导用户查看完整内容的说明
+        caption_text += f"\n\n{_('view_full_content')}"
 
-    return message_text, caption_text
-
-
-def _prepare_sent_email_message_text(
-    email_data: Dict[str, Any],
-    account_display_name: str,
-    content_for_message: str,
-    subject: str,
-) -> Tuple[str, str]:
-    """
-    准备已发送邮件的消息文本。
-
-    Args:
-        email_data: 邮件数据
-        account_display_name: 账户显示名称
-        content_for_message: 处理后的邮件正文内容
-        subject: 邮件主题
-
-    Returns:
-        消息文本和标题文本的元组
-    """
     # 处理已发送邮件的情况
-    recipients = email_data.get("recipients", [])
-
-    # 准备发送者信息（邮件的发送者是自己）
-    sender_display = f"➡️ 发自: {account_display_name}"
-
-    # 准备收件人信息
-    escaped_recipients = [html.escape(r) for r in recipients]
-    recipients_text = "，".join(escaped_recipients)
-    recipients_display = f"📨 发给: {recipients_text}"
-
-    # 提取摘要
-    summary = ""
-    if content_for_message:
-        # 使用默认值1000（显示完整内容）
-        preview_length = 1000
-        summary = extract_meaningful_summary(content_for_message, preview_length)
-
-    # 构建通知消息文本（不包含附件信息）
-    message_text = (
-        f"<b>{html.escape(subject)}</b>\n"
-        f"{sender_display}\n"
-        f"{recipients_display}\n\n"
-    )
-
-    # 添加邮件摘要
-    if summary:
-        safe_text = html.escape(summary)
-        message_text += f"<pre>{safe_text}</pre>"
-
-        # 如果正文被截断，添加提示
-        if len(summary) < len(content_for_message):
-            message_text += "\n<i>邮件内容较长，仅显示部分内容...</i>"
     else:
-        message_text += "<i>此邮件没有文本内容。</i>"
+        recipients = email_data.get("recipients", [])
 
-    # 构建引导命令文本
-    guide_text = "\n\n➡️ 已发送邮件"
+        # 准备收件人信息
+        escaped_recipients = [html.escape(r) for r in recipients]
+        recipients_text = "，".join(escaped_recipients)
+        
+        # 构建通知消息文本（不包含附件信息）
+        message_text = (
+            f"<b>{html.escape(subject)}</b>\n" +
+            _("email_sent_from").format(account=html.escape(account_display_name)) + "\n" +
+            _("email_sent_to").format(recipients=recipients_text) + "\n\n"
+        )
 
-    # 准备标题文本，包含邮件关键信息和引导文本
-    caption_text = message_text + guide_text
+        # 添加邮件摘要
+        if content_for_message:
+            safe_text = html.escape(content_for_message)
+            message_text += f"<pre>{safe_text}</pre>"
 
-    # 附加引导命令文本到消息文本
-    message_text += guide_text
+            # 如果正文被截断，添加提示
+            if len(content_for_message) < (len(body_text) if body_text else (len(html_content) if html_content else 0)):
+                message_text += f"\n{_('email_content_truncated')}"
+        else:
+            message_text += _("email_no_content")
 
-    return message_text, caption_text
+        # 构建引导命令文本
+        guide_text = f"\n\n{_('email_sent_notification')}"
+
+        # 准备标题文本，包含邮件关键信息和引导文本
+        caption_text = message_text + guide_text
+
+        # 附加引导命令文本到消息文本
+        message_text += guide_text
+
+    return message_text, caption_text, important_links
 
 
 async def send_email_notification(
@@ -799,7 +738,7 @@ async def send_email_notification(
                     logger.info("未找到引用邮件的Telegram消息ID")
 
         # 取出邮件数据
-        subject = email_data.get("subject", "无主题")
+        subject = email_data.get("subject", _("no_subject"))
         body_text = email_data.get("body_text", "")
         html_content = email_data.get("body_html", "")
 
@@ -814,42 +753,71 @@ async def send_email_notification(
 
         # 为每个聊天ID发送通知
         for chat_id in chat_ids:
-            # 默认：始终接收新邮件通知
-            # if notification_type == "new" and not DEFAULT_NOTIFY_ON_NEW_EMAIL:
-            #     logger.info(f"用户 {chat_id} 已禁用通知，跳过")
-            #     continue
-            
             # 获取账户显示名称
             account_display_name = account.name if account.name else account.email
 
-            # 统一准备邮件消息文本
-            message_text, caption_text = _prepare_email_message_text(
-                notification_type,
+            # 统一准备邮件消息文本和重要链接
+            message_text, caption_text, important_links = _extract_and_prepare_email_content(
                 email_data,
                 account_display_name,
-                attachments,
+                notification_type,
             )
 
             # 判断是否有附件
             has_attachments = len(attachments) > 0
-            # 新邮件时默认总是显示附件
-            # if notification_type == "new":  # 新邮件还要考虑用户设置
-            #     has_attachments = has_attachments and DEFAULT_SHOW_ATTACHMENTS
 
-            # 创建操作按钮
-            reply_markup = None
+            # 创建基本操作按钮
+            keyboard = []
             if include_reply_buttons:
-                keyboard = [
-                    [
-                        InlineKeyboardButton(
-                            "↩️ 回复", callback_data=f"reply_email_{email_id}"
-                        ),
-                        InlineKeyboardButton(
-                            "🗑️ 删除", callback_data=f"delete_email_{email_id}"
-                        ),
-                    ]
+                action_buttons = [
+                    InlineKeyboardButton(
+                        _("reply"), callback_data=f"reply_email_{email_id}"
+                    ),
+                    InlineKeyboardButton(
+                        _("delete_email"), callback_data=f"delete_email_{email_id}"
+                    ),
                 ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
+                keyboard.append(action_buttons)
+            
+            # 添加重要链接按钮 (每个链接一行)
+            for link in important_links:
+                link_text = link.get('text', _("view_link"))
+                
+                # 清理和优化链接文本（移除HTML实体、多余空格等）
+                link_text = link_text.replace('&nbsp;', ' ')
+                link_text = re.sub(r'\s+', ' ', link_text).strip()
+                
+                # 首字母大写，使链接文本看起来更美观
+                if link_text and link_text[0].islower():
+                    link_text = link_text[0].upper() + link_text[1:]
+                
+                # 确保链接文本长度合适（Telegram按钮最佳长度约为25-30个字符）
+                if len(link_text) > 30:
+                    # 保留链接文本的开头部分（更重要）
+                    if len(link_text) > 60:
+                        # 对于非常长的文本，尝试提取核心短语
+                        for keyword in ['unsubscribe', 'subscribe', 'verify', 'confirm', 'download', 
+                                       'login', 'register', 'password', '退订', '验证', '确认', '下载', '登录']:
+                            if keyword in link_text.lower():
+                                keyword_index = link_text.lower().find(keyword)
+                                start = max(0, keyword_index - 10)
+                                end = min(len(link_text), keyword_index + len(keyword) + 10)
+                                link_text = link_text[start:end]
+                                if start > 0:
+                                    link_text = "..." + link_text
+                                if end < len(link_text):
+                                    link_text = link_text + "..."
+                                break
+                    
+                    # 如果文本仍然太长，简单截断
+                    if len(link_text) > 30:
+                        link_text = link_text[:27] + "..."
+                
+                link_button = [InlineKeyboardButton(link_text, url=link.get('url'))]
+                keyboard.append(link_button)
+                
+            # 创建按钮标记
+            reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
             # 处理reply_to_message_id
             converted_reply_id = (
@@ -970,4 +938,31 @@ async def send_sent_email_notification(
         disable_notification=True,
         include_reply_buttons=True,
         reply_to_message_id=reply_to_message_id,
+    )
+
+
+def _prepare_email_message_text(
+    notification_type: str,
+    email_data: Dict[str, Any],
+    account_display_name: str,
+    attachments: List[Dict] = None,
+) -> Tuple[str, str, List[Dict[str, str]]]:
+    """
+    统一准备邮件消息文本，无论是否有附件。
+
+    Args:
+        notification_type: 通知类型（"new"表示新收到邮件，"sent"表示已发送邮件）
+        email_data: 邮件数据
+        account_display_name: 账户显示名称
+        attachments: 附件列表（可选）
+
+    Returns:
+        消息文本、标题文本和重要链接的元组
+    """
+    # 使用新的提取函数
+    return _extract_and_prepare_email_content(
+        email_data=email_data,
+        account_display_name=account_display_name,
+        notification_type=notification_type,
+        max_length=1000
     )
