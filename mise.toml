@@ -1,8 +1,11 @@
 [tools]
-python = "3.12"
+python = "3.10"
 
 [env]
 _.python.venv = { path = ".venv", create = true }
 
 [tasks.dev]
-run = "python run.py"
+run = "python -m app.main"
+
+[tasks.pip]
+run = "pip install -r requirements.txt"

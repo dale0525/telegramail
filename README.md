@@ -19,24 +19,24 @@ TelegramMail 是一个基于 Telegram Bot 的邮件收发工具，让你可以�
 ## 功能
 
 - [x] 添加多个邮箱
-- [x] 接收邮件并转发到 Telegram
-- [x] 删除邮件
-- [x] 撰写新邮件
-- [x] 撰写邮件正文支持 Markdown
-- [x] 定时获取邮件
-- [x] 手动刷新邮件
-- [x] 回复邮件
+- [ ] 接收邮件并转发到 Telegram
+- [ ] 删除邮件
+- [ ] 撰写新邮件
+- [ ] 撰写邮件正文支持 Markdown
+- [ ] 定时获取邮件
+- [ ] 手动刷新邮件
+- [ ] 回复邮件
 - [ ] 转发邮件
 - [ ] 配置单个邮箱需要接收的文件夹
 - [ ] 获取所有邮件
 - [ ] 为每个邮箱设置签名，支持 Markdown
 - [ ] 添加邮箱后立即启动邮箱设置
-- [ ] 通过 Telegram 配置邮箱设置
+- [x] 通过 Telegram 配置邮箱设置
 - [ ] 邮件信息中显示邮箱所在文件夹
 - [ ] 使用 LLM 判断邮件标签
 - [ ] 使用 LLM 写邮件
 - [ ] 搜索邮件
-- [x] 从邮件中提取重要链接
+- [ ] 从邮件中提取重要链接
 - [ ] 反向代理查看邮件完整 html
 
 ## 已知问题
@@ -69,7 +69,7 @@ TelegramMail 是一个基于 Telegram Bot 的邮件收发工具，让你可以�
 5. 编辑 `.env` 文件，填入你的 Telegram Bot Token和Telegram ID:
    ```
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-   OWNER_CHAT_ID=your_telegram_id_here
+   TELEGRAM_UID=your_telegram_id_here
    ```
 6. 使用 Docker Compose 启动:
    ```bash

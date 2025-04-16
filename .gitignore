@@ -175,5 +175,5 @@ cython_debug/
 
 .DS_Store
 .vscode/
-telegramail.db
-projectbrief.md
+.cursor/
+data/

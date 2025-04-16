@@ -1,0 +1,200 @@
+import re
+from app.i18n import _
+from app.bot.common_components import create_yes_no_keyboard
+from app.email_utils.common_providers import COMMON_PROVIDERS
+from app.utils.logger import Logger
+
+logger = Logger().get_logger(__name__)
+
+# --- Helper function ---
+
+
+def check_common_provider(context: dict, email: str):
+    """Checks if the email domain matches a common provider and updates context."""
+    domain = email.split("@")[-1].lower()
+    matched_provider = None
+    for provider in COMMON_PROVIDERS:
+        provider_name_lower = provider["name"].lower()
+        # Basic matching logic (can be refined)
+        if (
+            provider_name_lower in domain
+            or any(d in domain for d in provider.get("domains", []))
+            or provider["smtp_server"].split(".")[-2]
+            in domain  # Check common part of server names
+            or provider["imap_server"].split(".")[-2] in domain
+        ):
+            matched_provider = provider
+            break
+
+    if matched_provider:
+        provider_name = matched_provider["name"]
+        logger.info(
+            f"Common provider found for {email}: {provider_name}. Applying settings."
+        )
+        context["use_common_provider"] = True
+        context["common_provider_name"] = provider_name
+        # Pre-fill context based on common provider
+        context["smtp_server"] = matched_provider["smtp_server"]
+        context["smtp_port"] = matched_provider["smtp_port"]
+        context["smtp_ssl"] = matched_provider["smtp_ssl"]
+        context["imap_server"] = matched_provider["imap_server"]
+        context["imap_port"] = matched_provider["imap_port"]
+        context["imap_ssl"] = matched_provider["imap_ssl"]
+    else:
+        logger.info(
+            f"No common provider found for {email}. Proceeding with manual input."
+        )
+        context["use_common_provider"] = False
+    # Return value isn't strictly needed if context is modified directly, but good practice
+    return context
+
+
+# --- Conversation Step Definitions ---
+
+# Note: The 'optional' flag and skip logic depends on the Conversation class implementation.
+# We assume here that sending an empty message or a specific command like /skip
+# will trigger skipping the step if 'optional' is True.
+
+ADD_ACCOUNT_STEPS = [
+    {
+        "text": f"📧 {_('add_account_input_email')}",
+        "key": "email",
+        "validate": lambda x: (
+            bool(re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", x)),
+            _("add_account_invalid_email"),
+        ),
+        # Check common provider *after* email validation
+        "post_process": lambda context, email: check_common_provider(context, email),
+    },
+    {
+        "text": _("add_account_input_password"),
+        "key": "password",
+        "is_sensitive": True,  # Mark password as sensitive for potential masking/deletion
+    },
+    {
+        "text": _("add_account_input_smtp_server"),
+        "key": "smtp_server",
+        "skip": lambda context: context.get("use_common_provider", False),
+    },
+    {
+        "text": _("add_account_input_smtp_port"),
+        "key": "smtp_port",
+        "validate": lambda x: (
+            x.isdigit() and 0 < int(x) < 65536,
+            _("add_account_invalid_port"),
+        ),
+        "process": int,
+        "skip": lambda context: context.get("use_common_provider", False),
+    },
+    {
+        "text": _("add_account_smtp_ssl"),
+        "key": "smtp_ssl",
+        "reply_markup": create_yes_no_keyboard(),
+        "validate": lambda x: (
+            x.lower() in [_("yes").lower(), _("no").lower()],
+            _("invalid_yes_no"),
+        ),
+        "process": lambda data: data.lower() == _("yes").lower(),
+        "skip": lambda context: context.get("use_common_provider", False),
+    },
+    {
+        "text": _("add_account_input_imap_server"),
+        "key": "imap_server",
+        "skip": lambda context: context.get("use_common_provider", False),
+    },
+    {
+        "text": _("add_account_input_imap_port"),
+        "key": "imap_port",
+        "validate": lambda x: (
+            x.isdigit() and 0 < int(x) < 65536,
+            _("add_account_invalid_port"),
+        ),
+        "process": int,
+        "skip": lambda context: context.get("use_common_provider", False),
+    },
+    {
+        "text": _("add_account_imap_ssl"),
+        "key": "imap_ssl",
+        "reply_markup": create_yes_no_keyboard(),
+        "validate": lambda x: (
+            x.lower() in [_("yes").lower(), _("no").lower()],
+            _("invalid_yes_no"),
+        ),
+        "process": lambda data: data.lower() == _("yes").lower(),
+        "skip": lambda context: context.get("use_common_provider", False),
+    },
+    {
+        "text": _("add_account_input_alias"),
+        "key": "alias",
+    },
+]
+
+
+# Steps for editing an existing account
+# We use lambdas for text to access the current context (ctx) which holds existing values
+EDIT_ACCOUNT_STEPS = [
+    {
+        # Password: Show placeholder, always ask if they want to update.
+        "text": lambda ctx: f"{_('edit_account_password')} ({_('current')}: ******).\n{_('send_new_or_skip')}",
+        "key": "password",
+        "optional": True,  # Allow skipping to keep the old password
+        "is_sensitive": True,
+    },
+    {
+        "text": lambda ctx: f"{_('edit_account_smtp_server')} ({_('current')}: {ctx.get('smtp_server', 'N/A')}).\n{_('send_new_or_skip')}",
+        "key": "smtp_server",
+        "optional": True,
+    },
+    {
+        "text": lambda ctx: f"{_('edit_account_smtp_port')} ({_('current')}: {ctx.get('smtp_port', 'N/A')}).\n{_('send_new_or_skip')}",
+        "key": "smtp_port",
+        "validate": lambda x: (
+            x.isdigit() and 0 < int(x) < 65536,
+            _("add_account_invalid_port"),
+        ),
+        "process": int,
+        "optional": True,
+    },
+    {
+        "text": lambda ctx: f"{_('edit_account_smtp_ssl')} ({_('current')}: {ctx.get('smtp_ssl', 'N/A')}).\n{_('select_yes_no_or_skip')}",
+        "key": "smtp_ssl",
+        "reply_markup": create_yes_no_keyboard(),
+        "validate": lambda x: (
+            x.lower() in [_("yes").lower(), _("no").lower()],
+            _("invalid_yes_no"),
+        ),
+        "process": lambda data: data.lower() == _("yes").lower(),
+        "optional": True,
+    },
+    {
+        "text": lambda ctx: f"{_('edit_account_imap_server')} ({_('current')}: {ctx.get('imap_server', 'N/A')}).\n{_('send_new_or_skip')}",
+        "key": "imap_server",
+        "optional": True,
+    },
+    {
+        "text": lambda ctx: f"{_('edit_account_imap_port')} ({_('current')}: {ctx.get('imap_port', 'N/A')}).\n{_('send_new_or_skip')}",
+        "key": "imap_port",
+        "validate": lambda x: (
+            x.isdigit() and 0 < int(x) < 65536,
+            _("add_account_invalid_port"),
+        ),
+        "process": int,
+        "optional": True,
+    },
+    {
+        "text": lambda ctx: f"{_('edit_account_imap_ssl')} ({_('current')}: {ctx.get('imap_ssl', 'N/A')}).\n{_('select_yes_no_or_skip')}",
+        "key": "imap_ssl",
+        "reply_markup": create_yes_no_keyboard(),
+        "validate": lambda x: (
+            x.lower() in [_("yes").lower(), _("no").lower()],
+            _("invalid_yes_no"),
+        ),
+        "process": lambda data: data.lower() == _("yes").lower(),
+        "optional": True,
+    },
+    {
+        "text": lambda ctx: f"{_('edit_account_alias')} ({_('current')}: {ctx.get('alias', 'N/A')}).\n{_('send_new_or_skip')}",
+        "key": "alias",
+        "optional": True,
+    },
+]

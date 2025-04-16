@@ -1,14 +1,11 @@
-version: '3'
+version: "3"
 
 services:
-  telegramail:
-    build: .
-    container_name: telegramail
-    restart: unless-stopped
-    volumes:
-      - ./.env:/app/.env
-      - ./data:/app/data
-    ports:
-      - "5000:5000"
-    environment:
-      - TZ=Asia/Shanghai
+    telegramail:
+        build: .
+        container_name: telegramail
+        restart: unless-stopped
+        volumes:
+            - ./.env:/app/.env
+        environment:
+            - TZ=Asia/Shanghai

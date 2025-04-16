@@ -1,74 +1,104 @@
 """
 Main entry point for TelegramMail application.
 """
-import logging
+
+import asyncio
 import os
 import sys
-from pathlib import Path
 from dotenv import load_dotenv
+from app.utils.logger import Logger
+from aiotdlib import Client, ClientSettings
+from aiotdlib.api import UpdateNewMessage, API, BotCommand, UpdateNewCallbackQuery
+from app.bot.handlers.start import start_command_handler
+from app.bot.handlers.help import help_command_handler
+from app.bot.handlers.inline_button_callback import inline_button_callback_handler
 
-from app.bot_async import run_polling
-from app.database.models import init_db
-
-# 加载环境变量
-load_dotenv()
-
-# 从配置中读取日志级别
-log_level_str = os.getenv("LOG_LEVEL", "INFO")
-log_level = getattr(logging, log_level_str)
-
-# 设置日志
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
-    level=logging.WARNING  # 默认级别为WARNING，这样第三方库只会显示WARNING及以上级别的日志
+from app.bot.handlers.accounts import (
+    accounts_management_command_handler,
 )
+from app.bot.handlers.message import message_handler
+from app.i18n import _
 
-# 为应用自身的日志设置指定的级别
-app_logger = logging.getLogger("app")
-app_logger.setLevel(log_level)
+load_dotenv()
+logger = Logger().get_logger(__name__)
 
-# 为主模块设置日志记录器
-logger = logging.getLogger(__name__)
 
-# 使用过滤器来过滤掉不需要的包的日志
-class PackageFilter(logging.Filter):
-    """
-    过滤特定包的日志
-    """
-    def filter(self, record):
-        # 只允许app包的日志和__main__日志通过
-        return record.name.startswith("app.") or record.name == "__main__" or record.name == "app"
+async def main():
+    api_id = os.environ.get("TELEGRAM_API_ID")
+    api_hash = os.environ.get("TELEGRAM_API_HASH")
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# 添加过滤器到根日志处理器
-for handler in logging.root.handlers:
-    handler.addFilter(PackageFilter())
-
-def main():
-    """主函数，启动Telegram Bot应用程序"""
-    # 加载环境变量
-    load_dotenv()
-    
-    # 获取Telegram Bot令牌
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        logger.error("未设置TELEGRAM_BOT_TOKEN环境变量")
+    if not api_id or not api_hash or not bot_token:
+        logger.debug("No TELEGRAM_API_ID or TELEGRAM_API_HASH or TELEGRAM_BOT_TOKEN")
         sys.exit(1)
-    
-    # 初始化数据库
-    logger.info("检查并初始化数据库...")
-    try:
-        init_db()
-        logger.info("数据库初始化完成")
-    except Exception as e:
-        logger.error(f"初始化数据库时发生错误: {e}")
-        sys.exit(1)
-    
-    try:
-        # 运行机器人（轮询模式）
-        run_polling(token)
-    except Exception as e:
-        logger.error(f"运行机器人时发生错误: {e}")
-        sys.exit(1)
+
+    bot = Client(
+        settings=ClientSettings(
+            api_id=int(api_id),
+            api_hash=api_hash,
+            bot_token=bot_token,
+            files_directory=os.path.join(os.path.dirname(__file__), "data"),
+        )
+    )
+
+    # register /start command
+    @bot.bot_command_handler(command="start")
+    async def on_start_command(client: Client, update: UpdateNewMessage):
+        await client.api.delete_messages(
+            chat_id=update.message.chat_id,
+            message_ids=[update.message.id],
+            revoke=True,
+        )
+        await start_command_handler(client, update)
+
+    # register /help command
+    @bot.bot_command_handler(command="help")
+    async def on_help_command(client: Client, update: UpdateNewMessage):
+        await client.api.delete_messages(
+            chat_id=update.message.chat_id,
+            message_ids=[update.message.id],
+            revoke=True,
+        )
+        await help_command_handler(client, update)
+
+    # register /accounts command
+    @bot.bot_command_handler(command="accounts")
+    async def on_accounts_command(client: Client, update: UpdateNewMessage):
+        await client.api.delete_messages(
+            chat_id=update.message.chat_id,
+            message_ids=[update.message.id],
+            revoke=True,
+        )
+        await accounts_management_command_handler(client, update)
+
+    # register message handler for all non-command messages
+    async def on_update_new_message(client: Client, update: UpdateNewMessage):
+        # Run the message handler in a background task to avoid blocking
+        asyncio.create_task(message_handler(client, update))
+
+    bot.add_event_handler(
+        on_update_new_message,
+        update_type=API.Types.UPDATE_NEW_MESSAGE,
+    )
+
+    # register button callback
+    async def on_inline_button_callback(client: Client, update: UpdateNewCallbackQuery):
+        await inline_button_callback_handler(client, update)
+
+    bot.add_event_handler(
+        on_inline_button_callback, update_type=API.Types.UPDATE_NEW_CALLBACK_QUERY
+    )
+
+    async with bot:
+        await bot.api.set_commands(
+            [
+                BotCommand(command="start", description=_("command_desc_start")),
+                BotCommand(command="help", description=_("command_desc_help")),
+                BotCommand(command="accounts", description=_("command_desc_accounts")),
+            ]
+        )
+        await bot.idle()
+
 
 if __name__ == "__main__":
-    main() 
+    asyncio.run(main())
