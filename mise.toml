@@ -9,3 +9,6 @@ run = "python -m app.main"
 
 [tasks.pip]
 run = "pip install -r requirements.txt"
+
+[tasks.i18n]
+run = "python scripts/check_i18n.py"

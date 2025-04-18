@@ -6,12 +6,12 @@ import asyncio
 import os
 import sys
 from dotenv import load_dotenv
+from app.bot.handlers.callback import callback_handler
 from app.utils.logger import Logger
 from aiotdlib import Client, ClientSettings
 from aiotdlib.api import UpdateNewMessage, API, BotCommand, UpdateNewCallbackQuery
 from app.bot.handlers.start import start_command_handler
 from app.bot.handlers.help import help_command_handler
-from app.bot.handlers.inline_button_callback import inline_button_callback_handler
 
 from app.bot.handlers.accounts import (
     accounts_management_command_handler,
@@ -82,11 +82,11 @@ async def main():
     )
 
     # register button callback
-    async def on_inline_button_callback(client: Client, update: UpdateNewCallbackQuery):
-        await inline_button_callback_handler(client, update)
+    async def callback_query_handler(client: Client, update: UpdateNewCallbackQuery):
+        await callback_handler(client, update)
 
     bot.add_event_handler(
-        on_inline_button_callback, update_type=API.Types.UPDATE_NEW_CALLBACK_QUERY
+        callback_query_handler, update_type=API.Types.UPDATE_NEW_CALLBACK_QUERY
     )
 
     async with bot:

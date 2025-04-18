@@ -3,8 +3,6 @@ from app.bot.conversation import Conversation
 from app.email_utils.account_manager import AccountManager
 from app.utils.logger import Logger
 from app.bot.handlers.access import validate_admin
-from app.bot.common_components import create_yes_no_keyboard
-from app.email_utils.common_providers import COMMON_PROVIDERS
 
 # Import the step definitions
 from .account_steps import ADD_ACCOUNT_STEPS, EDIT_ACCOUNT_STEPS
@@ -16,8 +14,6 @@ from aiotdlib.api import (
     InlineKeyboardButton,
     InlineKeyboardButtonTypeCallback,
     UpdateNewCallbackQuery,
-    KeyboardButton,
-    ReplyMarkupShowKeyboard,
 )
 
 logger = Logger().get_logger(__name__)

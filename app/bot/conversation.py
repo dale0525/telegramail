@@ -101,6 +101,12 @@ class Conversation:
         self.user_id = user_id
         self.steps = steps
         self.context = context or {}
+        if "client" not in self.context:
+            self.context["client"] = self.client
+        if "chat_id" not in self.context:
+            self.context["chat_id"] = self.chat_id
+        if "user_id" not in self.context:
+            self.context["user_id"] = self.user_id
         self.current_step = 0
         self.state = ConversationState.IDLE
         self.messages: List[int] = (
@@ -121,14 +127,14 @@ class Conversation:
         await self._send_current_step()
 
     async def _send_current_step(self) -> None:
-        """send hint text of current step, handling skips and dynamic text"""
+        """send hint text of current step, handling skips, actions, and dynamic text"""
         if self.current_step >= len(self.steps):
             await self._finish()
             return
 
         step = self.steps[self.current_step]
 
-        # --- Skip Logic --- (Keep existing skip logic)
+        # --- Skip Logic ---
         if "skip" in step and callable(step["skip"]):
             if step["skip"](self.context):
                 logger.debug(
@@ -139,25 +145,138 @@ class Conversation:
                 return
         # --- End Skip Logic ---
 
-        # --- Resolve Step Text ---
-        step_text_value = step["text"]
-        if callable(step_text_value):
+        # --- Action Step Logic (e.g., Verification) ---
+        if "action" in step and callable(step["action"]):
+            action_func = step["action"]
+            pre_action_message_key = step.get("pre_action_message_key")
+            delete_pre_action = step.get("delete_pre_action_message", True)
+            success_message_key = step.get("success_message_key")
+            logger.debug(
+                f"Executing action step {self.current_step} (key: {step.get('key', 'action')})"
+            )
+
+            pre_action_message_id = None
+            if pre_action_message_key:
+                try:
+                    pre_action_message = await self.client.send_text(
+                        chat_id=self.chat_id,
+                        text=_(pre_action_message_key),
+                        disable_notification=True,
+                    )
+                    pre_action_message_id = pre_action_message.id
+                    self.messages.append(pre_action_message_id)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to send pre-action message '{pre_action_message_key}': {e}"
+                    )
+                    # Decide if this error should terminate? For now, continue to action.
+
             try:
-                # Call the function, passing the current context
-                step_text_value = step_text_value(self.context)
+                # Execute the action
+                result = action_func(self.context)
+                if asyncio.iscoroutine(result):
+                    success, message = await result
+                else:
+                    success, message = (
+                        result  # Assume sync actions return tuple directly
+                    )
+
+                # Handle result
+                if success:
+                    logger.info(f"Action step {self.current_step} successful.")
+                    if success_message_key:
+                        try:
+                            # Maybe make success message auto-delete? Using send_and_delete for now.
+                            await send_and_delete_message(
+                                client=self.client,
+                                chat_id=self.chat_id,
+                                text=_(success_message_key),
+                                delete_after_seconds=3,  # Auto-delete after 3s
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to send success message '{success_message_key}': {e}"
+                            )
+                    # Move to the next step
+                    self.current_step += 1
+                    await self._send_current_step()
+                    return
+                else:
+                    # Action failed
+                    logger.warning(
+                        f"Action step {self.current_step} failed. Reason: {message}"
+                    )
+                    if step.get("terminate_on_fail", False):
+                        fail_message_key = step.get("fail_message_key", "error_generic")
+                        final_error_message = f"{_(fail_message_key)}\n{message}"
+                        logger.warning(
+                            f"Terminating conversation due to failed action step {self.current_step}."
+                        )
+                        await self.cancel(
+                            send_message=True, custom_message=final_error_message
+                        )
+                        return  # Stop processing further steps
+                    else:
+                        # Action failed but we continue (maybe store error in context?)
+                        # self.context[f"{step.get('key', 'action')}_error"] = message
+                        logger.warning(
+                            f"Action step {self.current_step} failed but terminate_on_fail is False. Continuing."
+                        )
+                        # Move to the next step even if action failed but didn't terminate
+                        self.current_step += 1
+                        await self._send_current_step()
+                        return
+
             except Exception as e:
                 logger.error(
-                    f"Error evaluating dynamic text for step {self.current_step}: {e}"
+                    f"Error executing action for step {self.current_step}: {e}",
+                    exc_info=True,
                 )
-                # Fallback or cancel? For now, fallback to a generic error message
-                step_text_value = _("error_generating_step_text")  # Need this i18n key
-        # Ensure it's a string after potential evaluation
-        if not isinstance(step_text_value, str):
-            logger.error(
-                f"Step text for step {self.current_step} resolved to non-string: {type(step_text_value)}"
-            )
-            step_text_value = _("error_generating_step_text")
-        # --- End Resolve Step Text ---
+
+                # Terminate on unexpected exception in action?
+                if step.get(
+                    "terminate_on_fail", True
+                ):  # Default to terminate on unexpected exception
+                    logger.warning(
+                        f"Terminating conversation due to unexpected error in action step {self.current_step}."
+                    )
+                    await self.cancel(
+                        send_message=True, custom_message=_("error_generic")
+                    )
+                    return
+                else:
+                    # Log and continue if possible
+                    logger.warning(
+                        f"Unexpected error in action step {self.current_step} but terminate_on_fail is False. Continuing."
+                    )
+                    self.current_step += 1
+                    await self._send_current_step()
+                    return
+        # --- End Action Step Logic ---
+
+        # --- Resolve Step Text (Only for non-action steps) ---
+        # If it's an action step, we usually don't send text, handled above.
+        # If the step doesn't have 'action', proceed to send text.
+        if not ("action" in step and callable(step["action"])):
+            step_text_value = step["text"]
+            if callable(step_text_value):
+                try:
+                    # Call the function, passing the current context
+                    step_text_value = step_text_value(self.context)
+                except Exception as e:
+                    logger.error(
+                        f"Error evaluating dynamic text for step {self.current_step}: {e}"
+                    )
+                    # Fallback or cancel? For now, fallback to a generic error message
+                    step_text_value = _(
+                        "error_generating_step_text"
+                    )  # Need this i18n key
+                # Ensure it's a string after potential evaluation
+                if not isinstance(step_text_value, str):
+                    logger.error(
+                        f"Step text for step {self.current_step} resolved to non-string: {type(step_text_value)}"
+                    )
+                    step_text_value = _("error_generating_step_text")
 
         reply_markup = step.get("reply_markup")
 
@@ -408,7 +527,9 @@ class Conversation:
         await self.clean_messages()
         Conversation.remove_conversation(self.chat_id, self.user_id)
 
-    async def cancel(self, send_message: bool = False) -> None:
+    async def cancel(
+        self, send_message: bool = False, custom_message: Optional[str] = None
+    ) -> None:
         """cancel the conversation and call handlers"""
         if self.state != ConversationState.ACTIVE:
             return
@@ -431,10 +552,12 @@ class Conversation:
                 )
 
         if send_message:
+            # Use custom message if provided, otherwise default cancellation message
+            message_to_send = custom_message or _("operation_cancelled")
             await send_and_delete_message(
                 client=self.client,
                 chat_id=self.chat_id,
-                text=_("operation_cancelled"),
+                text=message_to_send,
                 delete_after_seconds=3,
             )
 
@@ -464,7 +587,3 @@ class Conversation:
     def get_context(self) -> Dict[str, Any]:
         """get context of current conversation"""
         return self.context.copy()
-
-    async def delete_message_after_delay(self, message_id: int, delay: int):
-        # ... (existing delete_message_after_delay logic)
-        pass

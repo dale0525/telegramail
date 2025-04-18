@@ -13,6 +13,7 @@ async def start_command_handler(client: Client, update: UpdateNewMessage):
     """handle /start command"""
     if not validate_admin(update):
         return
+
     account_manager = AccountManager.get_instance()
     if len(account_manager.accounts) <= 0:
         await send_and_delete_message(

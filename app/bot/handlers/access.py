@@ -2,6 +2,7 @@ import os
 from aiotdlib.api import UpdateNewMessage
 
 ADMIN_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "admin.txt")
+PHONE_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "phone.txt")
 
 
 def validate_admin(update: UpdateNewMessage) -> bool:
@@ -19,7 +20,13 @@ def add_admin(user_id: int | str):
     with open(ADMIN_FILE, "w+") as f:
         f.write(str(user_id))
 
+
 def get_admin():
     """get the bot admin"""
+    if not os.path.exists(ADMIN_FILE):
+        return None
     with open(ADMIN_FILE, "r") as f:
-        return f.read()
+        admin_id = f.read()
+        if admin_id == "":
+            return None
+        return int(admin_id)

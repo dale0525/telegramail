@@ -1,8 +1,17 @@
 import re
+
+# Remove Client and asyncio imports if no longer needed elsewhere in the file
+import asyncio
+
+# from aiotdlib import Client
 from app.i18n import _
 from app.bot.common_components import create_yes_no_keyboard
 from app.email_utils.common_providers import COMMON_PROVIDERS
+from app.email_utils.verification import verify_account_credentials
 from app.utils.logger import Logger
+
+# Import the new utility functions
+from app.bot.utils import get_email_folder_id, get_group_id
 
 logger = Logger().get_logger(__name__)
 
@@ -54,6 +63,15 @@ def check_common_provider(context: dict, email: str):
 # Note: The 'optional' flag and skip logic depends on the Conversation class implementation.
 # We assume here that sending an empty message or a specific command like /skip
 # will trigger skipping the step if 'optional' is True.
+
+# Verification step definition using the new generic action step configuration
+VERIFICATION_STEP = {
+    "action": verify_account_credentials,  # Use the original sync function
+    "pre_action_message_key": "verifying_account_wait",  # Message before action
+    "success_message_key": "account_verification_success",  # Optional: Message on success
+    "terminate_on_fail": True,
+    "fail_message_key": "account_verification_failed_message",
+}
 
 ADD_ACCOUNT_STEPS = [
     {
@@ -127,6 +145,21 @@ ADD_ACCOUNT_STEPS = [
         "text": _("add_account_input_alias"),
         "key": "alias",
     },
+    # Add verification step at the end
+    VERIFICATION_STEP,
+    {
+        # Step to create the supergroup
+        "action": lambda ctx: get_group_id(
+            client=ctx["client"],
+            user_id=ctx["chat_id"],  # Assuming user's chat_id is the user_id
+            email=ctx["email"],
+            alias=ctx["alias"],
+        ),
+        "pre_action_message_key": "group_creating",
+        "success_message_key": "group_create_success",
+        "fail_message_key": "group_create_fail",
+        "terminate_on_fail": True,
+    },
 ]
 
 
@@ -197,4 +230,6 @@ EDIT_ACCOUNT_STEPS = [
         "key": "alias",
         "optional": True,
     },
+    # Add verification step at the end
+    VERIFICATION_STEP,
 ]

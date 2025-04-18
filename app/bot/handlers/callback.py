@@ -21,9 +21,7 @@ from app.bot.utils import answer_callback
 logger = Logger().get_logger(__name__)
 
 
-async def inline_button_callback_handler(
-    client: Client, update: UpdateNewCallbackQuery
-):
+async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
     """handle button callback, routing to Conversation if active"""
     chat_id = update.chat_id
     user_id = update.sender_user_id

@@ -6,8 +6,8 @@ COMMON_PROVIDERS = [
     {
         "name": "Gmail",
         "smtp_server": "smtp.gmail.com",
-        "smtp_port": 587,  # Use 465 for SSL, 587 for TLS
-        "smtp_ssl": True,  # Gmail typically uses STARTTLS on port 587
+        "smtp_port": 465,  # Use 465 for SSL, 587 for TLS
+        "smtp_ssl": True,
         "imap_server": "imap.gmail.com",
         "imap_port": 993,
         "imap_ssl": True,
