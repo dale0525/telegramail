@@ -1,26 +1,17 @@
 import json
 import os
 from typing import Dict, List, Optional, Any
-from app.utils.logger import Logger
+from app.utils import Logger
+from app.utils.decorators import Singleton
 
 logger = Logger().get_logger(__name__)
 
-ACCOUNTS_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "accounts.json"
-)
+ACCOUNTS_FILE = os.path.join(os.getcwd(), "data", "accounts.json")
 
 
+@Singleton
 class AccountManager:
     """Email accounts manager"""
-
-    _instance = None
-
-    @classmethod
-    def get_instance(cls) -> "AccountManager":
-        """get singleton instance"""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
 
     def __init__(self):
         """init class"""

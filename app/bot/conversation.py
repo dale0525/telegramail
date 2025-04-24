@@ -11,7 +11,7 @@ from aiotdlib.api import (
     UpdateNewCallbackQuery,
 )
 from app.i18n import _
-from app.utils.logger import Logger
+from app.utils import Logger
 from app.bot.utils import answer_callback, send_and_delete_message
 
 logger = Logger().get_logger(__name__)
@@ -40,7 +40,7 @@ class Conversation:
         return cls._instances.get(key)
 
     @classmethod
-    def create_conversation(
+    async def create_conversation(
         cls,
         client: Client,
         chat_id: int,
@@ -53,7 +53,7 @@ class Conversation:
 
         # if there's already a conversation, cancel it
         if key in cls._instances:
-            cls._instances[key].cancel()
+            await cls._instances[key].cancel()  # Await the cancel coroutine
 
         instance = cls(client, chat_id, user_id, steps, context or {})
         cls._instances[key] = instance

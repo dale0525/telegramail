@@ -2,7 +2,7 @@ from aiotdlib import Client
 from aiotdlib.api import UpdateNewMessage
 from app.bot.conversation import Conversation
 from app.bot.handlers.access import validate_admin
-from app.utils.logger import Logger
+from app.utils import Logger
 
 logger = Logger().get_logger(__name__)
 
@@ -13,7 +13,11 @@ async def message_handler(client: Client, update: UpdateNewMessage):
     logger.debug(f"receive message: {update}")
     if not validate_admin(update):
         return
-    if not update.message.content.text:
+    if (
+        not update.message.content
+        or not hasattr(update.message.content, "text")
+        or not update.message.content.text
+    ):
         return  # ignore non-texts
 
     chat_id = update.message.chat_id

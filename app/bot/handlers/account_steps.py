@@ -8,7 +8,7 @@ from app.i18n import _
 from app.bot.common_components import create_yes_no_keyboard
 from app.email_utils.common_providers import COMMON_PROVIDERS
 from app.email_utils.verification import verify_account_credentials
-from app.utils.logger import Logger
+from app.utils import Logger
 
 # Import the new utility functions
 from app.bot.utils import get_email_folder_id, get_group_id
@@ -150,8 +150,6 @@ ADD_ACCOUNT_STEPS = [
     {
         # Step to create the supergroup
         "action": lambda ctx: get_group_id(
-            client=ctx["client"],
-            user_id=ctx["chat_id"],  # Assuming user's chat_id is the user_id
             email=ctx["email"],
             alias=ctx["alias"],
         ),
@@ -159,6 +157,14 @@ ADD_ACCOUNT_STEPS = [
         "success_message_key": "group_create_success",
         "fail_message_key": "group_create_fail",
         "terminate_on_fail": True,
+    },
+    {
+        # Step to create the supergroup
+        "action": lambda ctx: get_email_folder_id(),
+        "pre_action_message_key": "group_creating",
+        "success_message_key": "group_create_success",
+        "fail_message_key": "group_create_fail",
+        "terminate_on_fail": False,
     },
 ]
 

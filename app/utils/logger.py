@@ -1,26 +1,48 @@
-# 日志记录器，单例，使用logging库，默认级别为 .env 中的 LOG_LEVEL 配置
-
 import logging
 import os
+from app.utils.decorators import Singleton
+from dotenv import load_dotenv
 
 
+class LoggerWrapper:
+    """
+    Wrapper for standard logging.Logger that sets exc_info=True by default for error method.
+    """
+
+    def __init__(self, logger):
+        self.logger = logger
+
+    def error(self, msg, *args, exc_info=True, **kwargs):
+        """
+        Log an error message with exception info by default
+        """
+        return self.logger.error(msg, *args, exc_info=exc_info, **kwargs)
+
+    def __getattr__(self, name):
+        """
+        Delegate all other methods to the wrapped logger
+        """
+        return getattr(self.logger, name)
+
+
+@Singleton
 class Logger:
-    _instance = None
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls, *args, **kwargs)
-        return cls._instance
-
     def __init__(self):
+        load_dotenv()
         self.default_log_level = os.getenv("LOG_LEVEL", "INFO")
+        print(self.default_log_level)
+        # Set root logger level to WARNING by default
+        # This affects third-party libraries unless they configure their own loggers
         logging.basicConfig(
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            # level=logging.DEBUG,
-            level=logging.WARNING,
+            level=logging.WARNING,  # Default level for all loggers initially
         )
 
     def get_logger(self, name):
+        """
+        Get a logger instance with the level set by LOG_LEVEL environment variable.
+        """
         logger = logging.getLogger(name)
+        # Set the level specifically for this logger, overriding the root logger's default
         logger.setLevel(getattr(logging, self.default_log_level))
-        return logger
+        return LoggerWrapper(logger)

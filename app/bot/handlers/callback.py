@@ -8,7 +8,7 @@ from aiotdlib.api import (
     FormattedText,
     LinkPreviewOptions,
 )
-from app.utils.logger import Logger
+from app.utils import Logger
 from app.i18n import _
 from app.bot.conversation import Conversation, ConversationState
 from app.bot.handlers.accounts import (
@@ -182,7 +182,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
             )
 
         # Perform the deletion
-        account_manager = AccountManager.get_instance()
+        account_manager = AccountManager()
         success = account_manager.remove_account(email)
 
         # Prepare the result message and keyboard
@@ -231,7 +231,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
             logger.warning(f"Failed to answer 'back_to_accounts' callback query: {e}")
 
         # Fetch accounts again to rebuild the list
-        account_manager = AccountManager.get_instance()
+        account_manager = AccountManager()
         accounts = account_manager.get_all_accounts()
         message_id = update.message_id
 

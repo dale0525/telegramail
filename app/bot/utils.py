@@ -1,16 +1,21 @@
 from aiotdlib import Client
 from aiotdlib.api import Update
 import asyncio, os, signal, json
-from app.utils.logger import Logger
+from app.bot.bot_client import BotClient
+from app.user.user_client import UserClient
+from app.utils import Logger
 from typing import Optional
 from aiotdlib.api import (
-    ChatAdministratorRights,
-    ChatMemberStatusAdministrator,
     ChatFolder,
     ChatFolderIcon,
     Chat,
+    ChatFolderName,
+    FormattedText,
+    InputFileLocal,
+    InputChatPhotoStatic,
 )
 from app.i18n import _
+from app.bot.handlers.access import get_groups, save_groups
 
 logger = Logger().get_logger(__name__)
 
@@ -106,58 +111,65 @@ def setup_signal_handlers(client: Client, loop: asyncio.AbstractEventLoop):
         )
 
 
-# --- Telegram Specific Actions ---
+async def _ensure_groups_in_folder(folder: ChatFolder):
+    groups = get_groups()
+    if groups is None:
+        return
+    client = UserClient().client
+    edited_folder = folder.model_copy()
+    groups_in_folder = edited_folder
+    for email, group_id in groups.items():
+        if group_id not in groups_in_folder:
+            groups_in_folder.append(group_id)
+    try:
+        await client.api.edit_chat_folder(
+            chat_folder_id=folder.id, folder=edited_folder
+        )
+    except Exception as e:
+        logger.error(f"Failed to edit chat folder: {e}")
 
-# Default admin rights for new supergroups
-DEFAULT_ADMIN_RIGHTS = ChatAdministratorRights(
-    can_manage_chat=True,
-    can_change_info=True,
-    can_post_messages=True,
-    can_edit_messages=True,
-    can_delete_messages=True,
-    can_invite_users=True,
-    can_restrict_members=True,
-    can_pin_messages=True,
-    can_promote_members=False,  # Usually bots/users shouldn't promote others by default
-    can_manage_video_chats=True,
-    is_anonymous=False,
-)
 
-
-async def _create_chat_folder(
-    client: Client, folder_name: str, icon_name: str = "Work"
-) -> ChatFolder:
+async def _create_email_folder(folder_name: str, icon_name: str = "Work") -> ChatFolder:
     """
     Create a new chat folder.
     """
     try:
-        folder = await client.api.create_chat_folder(
-            ChatFolder(name=folder_name, icon=ChatFolderIcon(name=icon_name))
+        groups = get_groups()
+        if groups is None:
+            return None
+        client = UserClient().client
+        folder_info = await client.api.create_chat_folder(
+            ChatFolder(
+                name=ChatFolderName(text=FormattedText(text=folder_name, entities=[])),
+                icon=ChatFolderIcon(name=icon_name),
+                pinned_chat_ids=[],
+                included_chat_ids=list(groups.values()),
+                excluded_chat_ids=[],
+                color_id=-1,
+            )
         )
+        folder = await client.api.get_chat_folder(folder_info.id)
         return folder
     except Exception as e:
         logger.error(f"Failed to create chat folder '{folder_name}': {e}")
         return None
 
 
-async def get_email_folder_id(client: Client) -> tuple[bool, str, Optional[int]]:
+async def get_email_folder_id() -> tuple[bool, str, Optional[int]]:
     """
     Get folder id of "Email". If not exists, create one.
-
-    Args:
-        client: The aiotdlib client instance.
 
     Returns:
         Returns:
         Tuple (success: bool, message: str, folder_id: Optional[int])
         folder_id is the ID if creation was successful, otherwise None.
     """
+    client = UserClient().client
     folder_name = "Email"
     folder_id = None
+    folder = None
     # get folder id from data/folder.txt
-    folder_file_path = os.path.join(
-        os.path.dirname(__file__), "..", "data", "folder.txt"
-    )
+    folder_file_path = os.path.join(os.getcwd(), "data", "folder.txt")
     if os.path.exists(folder_file_path):
         with open(folder_file_path, "r") as f:
             folder_id = int(f.read().strip())
@@ -165,6 +177,7 @@ async def get_email_folder_id(client: Client) -> tuple[bool, str, Optional[int]]
     if folder_id and folder_id > 0:
         try:
             folder = await client.api.get_chat_folder(folder_id)
+            await _ensure_groups_in_folder(folder=folder)
         except Exception as e:
             logger.error(
                 f"Failed to get chat folder '{folder_name}' with ID {folder_id}: {e}"
@@ -172,64 +185,58 @@ async def get_email_folder_id(client: Client) -> tuple[bool, str, Optional[int]]
             folder = None
 
     if not folder:
-        folder = await _create_chat_folder(client, folder_name)
+        folder = await _create_email_folder(folder_name=folder_name)
         if folder:
+            await _ensure_groups_in_folder(folder=folder)
             folder_id = folder.id
             with open(folder_file_path, "w+") as f:
                 f.write(str(folder_id))
 
     if folder_id:
-        return True, _("folder_create_success"), folder_id
+        return True, _("folder_create_success")
     else:
-        return False, _("folder_create_fail"), None
+        return False, _("folder_create_fail")
 
 
-async def _create_super_group(
-    client: Client, user_id: int, name: str, desc: str, folder_id: Optional[int] = None
-) -> Chat:
+async def _create_super_group(name: str, desc: str) -> Chat:
     """
     Create a super group with given name and desc.
     The group is a forum.
 
     Args:
-        client: The aiotdlib client instance.
         name: Group title. Should be email alias
         desc: Group description. Should be email address
-        folder_id: The folder the group should be in
-        user_id: admin user id
 
     Returns:
         The group as Chat object.
     """
+    client = UserClient().client
     group = await client.api.create_new_supergroup_chat(
         title=name, is_forum=True, description=desc, message_auto_delete_time=0
     )
-    if folder_id:
-        folder = await client.api.get_chat_folder(folder_id)
-        folder.included_chat_ids.append(group.id)
-        await client.api.edit_chat_folder(chat_folder_id=folder_id, folder=folder)
-    bot_id = await client.get_my_id()
-    logger.debug(f"bot id is {bot_id}")
-    await client.api.add_chat_members(chat_id=group.id, user_ids=[bot_id, user_id])
+    photo_path = None
+    if "@gmail.com" in desc:
+        photo_path = os.path.join(os.getcwd(), "app", "resources", "icons", "gmail.jpg")
+    if photo_path:
+        await client.api.set_chat_photo(
+            chat_id=group.id,
+            photo=InputChatPhotoStatic(photo=InputFileLocal(path=photo_path)),
+        )
+    bot_id = await BotClient().client.get_my_id()
+    await client.api.add_chat_members(chat_id=group.id, user_ids=[bot_id])
     return group
 
 
 async def get_group_id(
-    client: Client,
-    user_id: int,
     email: str,
-    folder_id: Optional[int] = None,
     alias: Optional[str] = None,
 ) -> tuple[bool, str, Optional[int]]:
     """
     Get group id of the email account. If not exists, create one.
 
     Args:
-        client: The aiotdlib client instance.
-        folder_id: the folder the group should be in
         email: email address
         alias: email acocunt alias
-        user_id: admin user id
 
     Returns:
         Tuple (success: bool, message: str, group_id: Optional[int])
@@ -238,33 +245,28 @@ async def get_group_id(
 
     group_id = None
     group = None
-
-    # get group id from data/group.txt
-    group_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "group.txt")
-    if os.path.exists(group_file_path):
-        with open(group_file_path, "r") as f:
-            groups = json.load(f)
-            if email in groups:
-                group_id = groups[email]
+    groups = get_groups()
+    if groups is None:
+        groups = {}
+    else:
+        if email in groups:
+            group_id = groups[email]
 
     if group_id and group_id > 0:
         try:
+            client = UserClient().client
             group = await client.api.get_chat(group_id)
         except Exception as e:
             logger.error(f"Failed to get group {group_id}: {e}")
-            group = None
 
     if not group:
-        group = await _create_super_group(
-            client=client, user_id=user_id, name=alias, desc=email
-        )
+        group = await _create_super_group(name=alias, desc=email)
         if group:
             group_id = group.id
             groups[email] = group_id
-            with open(group_file_path, "w+") as f:
-                json.dump(groups, f)
+            save_groups(groups)
 
     if group_id:
-        return True, _("group_create_success"), group_id
+        return True, _("group_create_success")
     else:
-        return False, _("group_create_fail"), None
+        return False, _("group_create_fail")

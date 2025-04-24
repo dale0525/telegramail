@@ -1,7 +1,7 @@
 from app.i18n import _
 from app.bot.conversation import Conversation
 from app.email_utils.account_manager import AccountManager
-from app.utils.logger import Logger
+from app.utils import Logger
 from app.bot.handlers.access import validate_admin
 
 # Import the step definitions
@@ -27,7 +27,7 @@ async def accounts_management_command_handler(client: Client, update: UpdateNewM
     # user_id = update.message.sender_id.user_id # Not used currently
 
     # get all email accounts
-    account_manager = AccountManager.get_instance()
+    account_manager = AccountManager()
     accounts = account_manager.get_all_accounts()
 
     # build accounts list message
@@ -83,7 +83,9 @@ async def add_account_handler(
     # Use the imported steps
     steps = ADD_ACCOUNT_STEPS
 
-    conversation = Conversation.create_conversation(client, chat_id, user_id, steps)
+    conversation = await Conversation.create_conversation(
+        client, chat_id, user_id, steps
+    )
 
     # when conversation ends
     async def on_complete(context):
@@ -92,12 +94,21 @@ async def add_account_handler(
         # The context should already contain the correct server/port/ssl values
 
         # add account using the full context
-        account_manager = AccountManager.get_instance()
-        # Remove the flags used only during conversation
-        context.pop("use_common_provider", None)
-        context.pop("common_provider_name", None)
+        account_manager = AccountManager()
 
-        success = account_manager.add_account(context)
+        success = account_manager.add_account(
+            {
+                "email": context["email"],
+                "password": context["password"],
+                "smtp_server": context["smtp_server"],
+                "smtp_port": context["smtp_port"],
+                "smtp_ssl": context["smtp_ssl"],
+                "imap_server": context["imap_server"],
+                "imap_port": context["imap_port"],
+                "imap_ssl": context["imap_ssl"],
+                "alias": context["alias"],
+            }
+        )
 
         if success:
             alias = context.get(
@@ -139,7 +150,7 @@ async def edit_account_conversation_starter(
         await client.send_text(chat_id, _("error_starting_edit_missing_email"))
         return
 
-    account_manager = AccountManager.get_instance()
+    account_manager = AccountManager()
     current_account_data = account_manager.get_account(email)
 
     if not current_account_data:
@@ -176,7 +187,7 @@ async def edit_account_conversation_starter(
     steps = EDIT_ACCOUNT_STEPS
 
     # Create conversation, passing existing data as the initial context
-    conversation = Conversation.create_conversation(
+    conversation = await Conversation.create_conversation(
         client,
         chat_id,
         user_id,
@@ -250,7 +261,7 @@ async def remove_account_command_handler(client: Client, update: UpdateNewMessag
     user_id = update.message.sender_id.user_id
 
     # 获取所有账户
-    account_manager = AccountManager.get_instance()
+    account_manager = AccountManager()
     accounts = account_manager.get_all_accounts()
 
     if not accounts:
@@ -276,7 +287,9 @@ async def remove_account_command_handler(client: Client, update: UpdateNewMessag
     ]
 
     # 创建对话实例
-    conversation = Conversation.create_conversation(client, chat_id, user_id, steps)
+    conversation = await Conversation.create_conversation(
+        client, chat_id, user_id, steps
+    )
 
     # 注册完成处理程序
     async def on_complete(context):

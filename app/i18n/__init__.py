@@ -1,8 +1,9 @@
 import os
 import json
-from typing import Dict, Optional
+import re
+from typing import Dict, Optional, Any
 from dotenv import load_dotenv
-from app.utils.logger import Logger
+from app.utils import Logger
 
 logger = Logger().get_logger(__name__)
 load_dotenv()
@@ -65,16 +66,17 @@ def set_language(lang_code: str) -> bool:
     return False
 
 
-def _(key: str, lang_code: Optional[str] = None) -> str:
+def _(key: str, lang_code: Optional[str] = None, **kwargs) -> str:
     """
-    get translations
+    get translations with placeholder replacement
 
     Args:
         key: translation key
         lang_code: language code. if set to None, current_language is used
+        **kwargs: variables for placeholder replacement
 
     Returns:
-        str: translated text. if not found, key is returned
+        str: translated text with placeholders replaced. if not found, key is returned
     """
     lang = lang_code or current_language
 
@@ -84,7 +86,15 @@ def _(key: str, lang_code: Optional[str] = None) -> str:
     if lang not in translations or key not in translations[lang]:
         return key
 
-    return translations[lang][key]
+    text = translations[lang][key]
+    
+    # Replace placeholders if kwargs are provided
+    if kwargs:
+        for key, value in kwargs.items():
+            placeholder = "{" + key + "}"
+            text = text.replace(placeholder, str(value))
+    
+    return text
 
 
 # load default language translation when initialized

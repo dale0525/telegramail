@@ -16,12 +16,16 @@ i18n_dir = project_root / "app" / "i18n"
 # Define the directory containing source code to scan.
 app_dir = project_root / "app"
 
-# Regular expression to find i18n usage like _('key') or _("key")
-# It captures the key within the quotes.
-i18n_func_pattern = re.compile(r'_\([\'"](.+?)[\'"]\)')
+# Regular expression to find i18n usage like _('key') and _('key', param=value)
+# This pattern captures the key within quotes regardless of whether parameters follow
+i18n_func_pattern = re.compile(r'_\([\'"](.+?)[\'"](,|\))')
+
 # Regular expression to find i18n usage in dicts like "some_key": "i18n_key"
 # Corrected: Use [\'"] to match either single or double quote.
 i18n_dict_pattern = re.compile(r'[\'"](\w+_key)[\'"]\s*:\s*[\'"](.+?)[\'"]')
+
+# Regular expression to find placeholders in translation strings: {name}
+placeholder_pattern = re.compile(r'\{([a-zA-Z0-9_]+)\}')
 
 def load_json_data(file_path):
     """Loads data from a JSON file."""
@@ -50,26 +54,51 @@ def save_json_data(file_path, data):
     except IOError as e:
         print(f"Error saving file {file_path}: {e}")
 
-def find_used_keys(directory):
-    """Finds all i18n keys used in Python files within a directory, ignoring comments."""
-    # Recursively scans a directory for .py files.
-    # Extracts i18n keys using multiple predefined regex patterns, skipping lines starting with '#'.
-    # Returns a set of unique keys found in the code.
+def find_used_keys_and_params(directory):
+    """
+    Finds all i18n keys used in Python files within a directory, 
+    along with their parameters, ignoring comments.
+    """
+    # Returns a set of keys and a dict of key -> params
     used_keys = set()
+    key_params = defaultdict(set)  # Store parameters used with each key
+    
+    # Read all python files once to collect all usage examples for testing
+    i18n_usage_examples = []
+    
     for filepath in Path(directory).rglob('*.py'):
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
-                # content = f.read() # Removed reading whole file
-                for line in f: # Read line by line
+                for line_num, line in enumerate(f, 1):  # Read line by line
                     stripped_line = line.strip()
                     # Skip empty lines and lines that start with a comment marker '#'
                     if not stripped_line or stripped_line.startswith('#'):
                         continue
-
+                    
+                    # Store all lines containing i18n usage for debugging
+                    if '_(' in line:
+                        i18n_usage_examples.append((filepath, line_num, line))
+                        
                     # --- Apply patterns only to non-comment lines ---
-                    # Find matches using the _('key') pattern in the current line
+                    # Find matches using the _('key') or _('key', param=value) pattern
                     func_matches = i18n_func_pattern.findall(line)
-                    used_keys.update(func_matches) # Add found keys to the set
+                    
+                    # For each key, extract it and its parameters
+                    for match in func_matches:
+                        key = match[0]
+                        used_keys.add(key)
+                        
+                        # Extract parameters by searching for param=value patterns
+                        # after the key but before the closing parenthesis
+                        key_quoted = re.escape(f"'{key}'") + "|" + re.escape(f'"{key}"')
+                        full_call_pattern = re.compile(rf'_\(({key_quoted})(.*?)\)')
+                        full_call_match = full_call_pattern.search(line)
+                        
+                        if full_call_match and full_call_match.group(2) and '=' in full_call_match.group(2):
+                            params_text = full_call_match.group(2)
+                            param_matches = re.findall(r'([a-zA-Z0-9_]+)\s*=', params_text)
+                            for param in param_matches:
+                                key_params[key].add(param)
 
                     # Find matches using the "..._key": "value" pattern in the current line
                     dict_matches = i18n_dict_pattern.findall(line)
@@ -78,7 +107,71 @@ def find_used_keys(directory):
 
         except Exception as e:
             print(f"Error reading file {filepath}: {e}")
-    return used_keys
+    
+    # Debug: print all i18n calls found with parameters
+    for key, params in key_params.items():
+        if params:
+            print(f"Key '{key}' used with parameters: {params}")
+
+    return used_keys, key_params
+
+def check_placeholders(i18n_data_map, key_params):
+    """
+    Checks if all placeholders in translations match parameters used in code.
+    Returns a list of warnings.
+    """
+    warnings = []
+    
+    # For each translation file
+    for file_path, translations in i18n_data_map.items():
+        lang_code = file_path.stem  # Get language code from filename (e.g., 'en_US')
+        
+        # Check each translated string
+        for key, translation in translations.items():
+            # Skip empty translations
+            if not translation:
+                continue
+            
+            # Find all placeholders in the translation
+            placeholders_in_translation = placeholder_pattern.findall(translation)
+            
+            # Skip keys without placeholders
+            if not placeholders_in_translation:
+                continue
+                
+            # Check if the key is used in code with parameters
+            params_used_in_code = key_params.get(key, set())
+            
+            # Check for placeholders in translation that aren't in code
+            missing_in_code = set(placeholders_in_translation) - params_used_in_code
+            if missing_in_code:
+                warnings.append(
+                    f"[{lang_code}] '{key}' has placeholders {missing_in_code} that are not used in code"
+                )
+            
+            # Check for parameters in code that aren't in translation
+            missing_in_translation = params_used_in_code - set(placeholders_in_translation)
+            if missing_in_translation:
+                warnings.append(
+                    f"[{lang_code}] '{key}' is missing placeholders for parameters {missing_in_translation}"
+                )
+    
+    return warnings
+
+def analyze_i18n_file(file_path):
+    """Analyze a single i18n file for placeholder usage"""
+    data = load_json_data(file_path)
+    placeholders_by_key = {}
+    
+    for key, translation in data.items():
+        if not translation:
+            continue
+            
+        placeholders = placeholder_pattern.findall(translation)
+        if placeholders:
+            placeholders_by_key[key] = placeholders
+    
+    return placeholders_by_key
 
 if __name__ == "__main__":
     print(f"Loading i18n data from {i18n_dir}...")
@@ -100,9 +193,18 @@ if __name__ == "__main__":
 
     print(f"\nFound {len(all_defined_keys)} unique defined keys across {len(i18n_files)} JSON file(s).")
 
+    # Analyze placeholders in each file
+    print("\nAnalyzing translation files for placeholders...")
+    for file_path in i18n_files:
+        lang_code = file_path.stem
+        placeholders_by_key = analyze_i18n_file(file_path)
+        print(f" -> {lang_code}: Found {len(placeholders_by_key)} keys with placeholders")
+        for key, placeholders in placeholders_by_key.items():
+            print(f"    - '{key}': {placeholders}")
+
     print(f"\nScanning '{app_dir}' for used i18n keys...")
     # Find all keys actually used in the source code using both patterns
-    used_keys_in_code = find_used_keys(app_dir)
+    used_keys_in_code, key_params = find_used_keys_and_params(app_dir)
     print(f"Found {len(used_keys_in_code)} used keys in code.")
 
     # --- Key Management ---
@@ -139,6 +241,16 @@ if __name__ == "__main__":
             made_changes = True
     else:
         print("\nNo undefined keys to add.")
+
+    # 3. Check placeholders
+    print("\nChecking placeholders in translations...")
+    placeholder_warnings = check_placeholders(i18n_data_map, key_params)
+    if placeholder_warnings:
+        print("\nPlaceholder warnings:")
+        for warning in placeholder_warnings:
+            print(f"⚠️  {warning}")
+    else:
+        print("No placeholder issues found.")
 
     # --- Save Changes ---
     if made_changes:
