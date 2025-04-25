@@ -9,8 +9,8 @@ from app.i18n import _
 from app.utils import Logger
 from app.database import DBManager
 from app.user.user_client import UserClient
-from app.bot.handlers.access import get_groups
 from app.utils.decorators import retry_on_fail
+from app.data import DataManager
 from app.email_utils import summarize_email
 from aiotdlib.api import (
     FormattedText,
@@ -417,7 +417,7 @@ class EmailTelegramSender:
         """
         try:
             # Get group ID for this email account
-            groups = get_groups()
+            groups = DataManager().get_groups()
             if not groups or email_data["email_account"] not in groups:
                 logger.error(
                     f"No group found for email account: {email_data['email_account']}"

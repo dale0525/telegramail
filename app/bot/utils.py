@@ -15,7 +15,7 @@ from aiotdlib.api import (
     InputChatPhotoStatic,
 )
 from app.i18n import _
-from app.bot.handlers.access import get_groups, save_groups
+from app.data import DataManager
 
 logger = Logger().get_logger(__name__)
 
@@ -111,30 +111,35 @@ def setup_signal_handlers(client: Client, loop: asyncio.AbstractEventLoop):
         )
 
 
-async def _ensure_groups_in_folder(folder: ChatFolder):
-    groups = get_groups()
+async def _ensure_groups_in_folder(folder_id: int):
+    groups = DataManager().get_groups()
     if groups is None:
         return
     client = UserClient().client
+    folder = await client.api.get_chat_folder(chat_folder_id=folder_id)
     edited_folder = folder.model_copy()
-    groups_in_folder = edited_folder
+    groups_in_folder = edited_folder.included_chat_ids
     for email, group_id in groups.items():
         if group_id not in groups_in_folder:
             groups_in_folder.append(group_id)
+    bot_info = await BotClient().client.api.get_me()
+    bot_id = bot_info.id
+    if bot_id not in groups_in_folder:
+        groups_in_folder.append(bot_id)
     try:
+        logger.debug(f"editing existing folder: {edited_folder}")
         await client.api.edit_chat_folder(
-            chat_folder_id=folder.id, folder=edited_folder
+            chat_folder_id=folder_id, folder=edited_folder
         )
     except Exception as e:
         logger.error(f"Failed to edit chat folder: {e}")
 
 
-async def _create_email_folder(folder_name: str, icon_name: str = "Work") -> ChatFolder:
-    """
-    Create a new chat folder.
-    """
+async def _create_email_folder(
+    folder_name: str, icon_name: str = "Work"
+) -> Optional[int]:
     try:
-        groups = get_groups()
+        groups = DataManager().get_groups()
         if groups is None:
             return None
         client = UserClient().client
@@ -148,49 +153,34 @@ async def _create_email_folder(folder_name: str, icon_name: str = "Work") -> Cha
                 color_id=-1,
             )
         )
-        folder = await client.api.get_chat_folder(folder_info.id)
-        return folder
+        return folder_info.id
     except Exception as e:
         logger.error(f"Failed to create chat folder '{folder_name}': {e}")
         return None
 
 
-async def get_email_folder_id() -> tuple[bool, str, Optional[int]]:
+async def get_email_folder_id() -> tuple[bool, str]:
     """
     Get folder id of "Email". If not exists, create one.
 
     Returns:
         Returns:
-        Tuple (success: bool, message: str, folder_id: Optional[int])
-        folder_id is the ID if creation was successful, otherwise None.
+        Tuple (success: bool, message: str)
     """
-    client = UserClient().client
     folder_name = "Email"
-    folder_id = None
-    folder = None
-    # get folder id from data/folder.txt
-    folder_file_path = os.path.join(os.getcwd(), "data", "folder.txt")
-    if os.path.exists(folder_file_path):
-        with open(folder_file_path, "r") as f:
-            folder_id = int(f.read().strip())
+    folder_id = DataManager().get_folder_id()
+    logger.debug(folder_id)
 
-    if folder_id and folder_id > 0:
+    if folder_id:
         try:
-            folder = await client.api.get_chat_folder(folder_id)
-            await _ensure_groups_in_folder(folder=folder)
+            await _ensure_groups_in_folder(folder_id=folder_id)
         except Exception as e:
-            logger.error(
-                f"Failed to get chat folder '{folder_name}' with ID {folder_id}: {e}"
-            )
-            folder = None
-
-    if not folder:
-        folder = await _create_email_folder(folder_name=folder_name)
-        if folder:
-            await _ensure_groups_in_folder(folder=folder)
-            folder_id = folder.id
-            with open(folder_file_path, "w+") as f:
-                f.write(str(folder_id))
+            logger.error(f"failed to add all groups to email folder: {e}")
+    else:
+        folder_id = await _create_email_folder(folder_name=folder_name)
+        if folder_id:
+            await _ensure_groups_in_folder(folder_id=folder_id)
+            DataManager().save_folder_id(folder_id=folder_id)
 
     if folder_id:
         return True, _("folder_create_success")
@@ -198,7 +188,7 @@ async def get_email_folder_id() -> tuple[bool, str, Optional[int]]:
         return False, _("folder_create_fail")
 
 
-async def _create_super_group(name: str, desc: str) -> Chat:
+async def _create_super_group(name: str, desc: str, provider_name: str = None) -> Chat:
     """
     Create a super group with given name and desc.
     The group is a forum.
@@ -206,6 +196,7 @@ async def _create_super_group(name: str, desc: str) -> Chat:
     Args:
         name: Group title. Should be email alias
         desc: Group description. Should be email address
+        provider_name: Email provider name for setting appropriate icon
 
     Returns:
         The group as Chat object.
@@ -214,14 +205,51 @@ async def _create_super_group(name: str, desc: str) -> Chat:
     group = await client.api.create_new_supergroup_chat(
         title=name, is_forum=True, description=desc, message_auto_delete_time=0
     )
+
+    # Initialize photo path
     photo_path = None
-    if "@gmail.com" in desc:
-        photo_path = os.path.join(os.getcwd(), "app", "resources", "icons", "gmail.jpg")
-    if photo_path:
-        await client.api.set_chat_photo(
-            chat_id=group.id,
-            photo=InputChatPhotoStatic(photo=InputFileLocal(path=photo_path)),
-        )
+
+    # Check if provider name is provided
+    if provider_name:
+        # Map provider names to icon filenames
+        provider_icons = {
+            "Gmail": "gmail.jpg",
+            "Outlook/Hotmail": "outlook.jpg",
+            "Yahoo Mail": "yahoo.jpg",
+            "ProtonMail": "proton.jpg",
+            "iCloud": "icloud.jpg",
+            "Zoho Mail": "zoho.jpg",
+            "QQ Mail": "qq.jpg",
+            "NetEase (163/126)": "163.jpg",
+            "Tencent Exmail": "wework.jpg",
+            "Alibaba Mail": "alimail.jpg",
+            "Yandex": "yandex.jpg",
+        }
+
+        # Get the icon filename if available for this provider
+        icon_filename = provider_icons.get(provider_name)
+        if icon_filename:
+            photo_path = os.path.join(
+                os.getcwd(), "app", "resources", "icons", icon_filename
+            )
+            if not os.path.exists(photo_path):
+                logger.debug(
+                    f"Icon file {photo_path} not found for provider {provider_name}"
+                )
+                photo_path = None
+
+    # Set the photo if we found one
+    if photo_path and os.path.exists(photo_path):
+        try:
+            await client.api.set_chat_photo(
+                chat_id=group.id,
+                photo=InputChatPhotoStatic(photo=InputFileLocal(path=photo_path)),
+            )
+            logger.debug(f"Set group icon to {photo_path} for {desc}")
+        except Exception as e:
+            logger.error(f"Failed to set chat photo: {e}")
+
+    # Add bot to the group
     bot_id = await BotClient().client.get_my_id()
     await client.api.add_chat_members(chat_id=group.id, user_ids=[bot_id])
     return group
@@ -230,22 +258,23 @@ async def _create_super_group(name: str, desc: str) -> Chat:
 async def get_group_id(
     email: str,
     alias: Optional[str] = None,
-) -> tuple[bool, str, Optional[int]]:
+    provider_name: Optional[str] = None,
+) -> tuple[bool, str]:
     """
     Get group id of the email account. If not exists, create one.
 
     Args:
         email: email address
-        alias: email acocunt alias
+        alias: email account alias
+        provider_name: Provider name for icon selection
 
     Returns:
-        Tuple (success: bool, message: str, group_id: Optional[int])
-        group_id is the ID if creation was successful, otherwise None.
+        Tuple (success: bool, message: str)
     """
 
     group_id = None
     group = None
-    groups = get_groups()
+    groups = DataManager().get_groups()
     if groups is None:
         groups = {}
     else:
@@ -260,11 +289,13 @@ async def get_group_id(
             logger.error(f"Failed to get group {group_id}: {e}")
 
     if not group:
-        group = await _create_super_group(name=alias, desc=email)
+        group = await _create_super_group(
+            name=alias, desc=email, provider_name=provider_name
+        )
         if group:
             group_id = group.id
             groups[email] = group_id
-            save_groups(groups)
+            DataManager().save_groups(groups)
 
     if group_id:
         return True, _("group_create_success")

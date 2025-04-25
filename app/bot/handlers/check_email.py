@@ -1,13 +1,14 @@
 from aiotdlib import Client
 from aiotdlib.api import UpdateNewMessage
 import asyncio
-from app.bot.handlers.access import validate_admin, get_groups
+from app.bot.handlers.access import validate_admin
 from app.bot.utils import send_and_delete_message
 from app.i18n import _
 from app.utils import Logger
 from app.email_utils.imap_client import IMAPClient
 from app.email_utils.account_manager import AccountManager
 from app.bot.conversation import Conversation
+from app.data import DataManager
 
 logger = Logger().get_logger(__name__)
 
@@ -17,7 +18,7 @@ async def check_command_handler(client: Client, update: UpdateNewMessage):
     if not validate_admin(update):
         return
     chat_id = update.message.chat_id
-    groups = get_groups()
+    groups = DataManager().get_groups()
     stop = False
     if groups:
         for email, group_id in groups.items():
@@ -158,10 +159,10 @@ async def fetch_emails_action(context: dict, email: str) -> tuple[bool, str]:
 async def _fetch_email_for_account(email: str) -> tuple[str, int, str]:
     """
     Fetch emails for a single account
-    
+
     Args:
         email: Email address to fetch from
-        
+
     Returns:
         Tuple of (email address, email count, error message)
         Error message is empty if successful
@@ -194,14 +195,14 @@ async def fetch_all_emails_action(context: dict) -> tuple[bool, str]:
         for account in accounts:
             email = account["email"]
             fetch_tasks.append(_fetch_email_for_account(email))
-            
+
         # Run all fetch tasks concurrently
         results = await asyncio.gather(*fetch_tasks)
-        
+
         # Process results
         total_count = 0
         emails_info = {}
-        
+
         for email, count, error in results:
             if error:
                 emails_info[email] = f"Error: {error}"

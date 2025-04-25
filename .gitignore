@@ -176,4 +176,4 @@ cython_debug/
 .DS_Store
 .vscode/
 .cursor/
-data/
+/data/

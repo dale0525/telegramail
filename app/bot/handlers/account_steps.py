@@ -5,10 +5,11 @@ import asyncio
 
 # from aiotdlib import Client
 from app.i18n import _
-from app.bot.common_components import create_yes_no_keyboard
+from app.bot.common_components import create_yes_no_keyboard, create_providers_keyboard
 from app.email_utils.common_providers import COMMON_PROVIDERS
 from app.email_utils.verification import verify_account_credentials
 from app.utils import Logger
+from app.bot.handlers.check_email import fetch_emails_action
 
 # Import the new utility functions
 from app.bot.utils import get_email_folder_id, get_group_id
@@ -58,6 +59,51 @@ def check_common_provider(context: dict, email: str):
     return context
 
 
+def handle_provider_selection(context: dict, selection: str):
+    """
+    Handles the selection of an email provider template or custom option.
+
+    Args:
+        context: The conversation context dictionary
+        selection: The provider name selected by the user
+
+    Returns:
+        Updated context dictionary
+    """
+    # Check if user selected "Custom"
+    if selection.lower() == _("add_addcount_provider_custom").lower():
+        logger.info("User selected custom email provider configuration.")
+        context["use_common_provider"] = False
+        return context
+
+    # Find the matching provider in COMMON_PROVIDERS
+    matched_provider = None
+    for provider in COMMON_PROVIDERS:
+        if provider["name"] == selection:
+            matched_provider = provider
+            break
+
+    if matched_provider:
+        provider_name = matched_provider["name"]
+        logger.info(f"User selected predefined provider: {provider_name}.")
+        context["use_common_provider"] = True
+        context["common_provider_name"] = provider_name
+        context["selected_provider"] = True
+
+        # Pre-fill context based on selected provider
+        context["smtp_server"] = matched_provider["smtp_server"]
+        context["smtp_port"] = matched_provider["smtp_port"]
+        context["smtp_ssl"] = matched_provider["smtp_ssl"]
+        context["imap_server"] = matched_provider["imap_server"]
+        context["imap_port"] = matched_provider["imap_port"]
+        context["imap_ssl"] = matched_provider["imap_ssl"]
+    else:
+        logger.warning(f"Provider '{selection}' not found in common providers list.")
+        context["use_common_provider"] = False
+
+    return context
+
+
 # --- Conversation Step Definitions ---
 
 # Note: The 'optional' flag and skip logic depends on the Conversation class implementation.
@@ -75,14 +121,29 @@ VERIFICATION_STEP = {
 
 ADD_ACCOUNT_STEPS = [
     {
+        "text": _("add_account_select_provider"),
+        "key": "provider_selection",
+        "reply_markup": create_providers_keyboard(),
+        "validate": lambda x: (
+            x == _("add_addcount_provider_custom")
+            or any(p["name"] == x for p in COMMON_PROVIDERS),
+            _("add_account_invalid_provider"),
+        ),
+        "post_process": handle_provider_selection,
+    },
+    {
         "text": f"📧 {_('add_account_input_email')}",
         "key": "email",
         "validate": lambda x: (
             bool(re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", x)),
             _("add_account_invalid_email"),
         ),
-        # Check common provider *after* email validation
-        "post_process": lambda context, email: check_common_provider(context, email),
+        # Only check common provider if not already selected
+        "post_process": lambda context, email: (
+            check_common_provider(context, email)
+            if not context.get("selected_provider", False)
+            else context
+        ),
     },
     {
         "text": _("add_account_input_password"),
@@ -152,6 +213,7 @@ ADD_ACCOUNT_STEPS = [
         "action": lambda ctx: get_group_id(
             email=ctx["email"],
             alias=ctx["alias"],
+            provider_name=ctx.get("common_provider_name"),
         ),
         "pre_action_message_key": "group_creating",
         "success_message_key": "group_create_success",
@@ -164,6 +226,14 @@ ADD_ACCOUNT_STEPS = [
         "pre_action_message_key": "group_creating",
         "success_message_key": "group_create_success",
         "fail_message_key": "group_create_fail",
+        "terminate_on_fail": False,
+    },
+    {
+        # Step to check for new emails
+        "action": lambda ctx: fetch_emails_action(ctx, ctx["email"]),
+        "pre_action_message_key": "fetching_emails_wait",
+        "success_message_key": "initial_email_check_success",
+        "fail_message_key": "initial_email_check_fail",
         "terminate_on_fail": False,
     },
 ]

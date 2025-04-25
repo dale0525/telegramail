@@ -4,7 +4,6 @@ from aiotdlib.api import UpdateNewMessage
 
 ADMIN_FILE = os.path.join(os.getcwd(), "data", "admin.txt")
 TEMP_PHONE_FILE = os.path.join(os.getcwd(), "data", "temp_phone.txt")
-GROUP_FILE_PATH = os.path.join(os.getcwd(), "data", "group.txt")
 
 
 def validate_admin(update: UpdateNewMessage) -> bool:
@@ -98,16 +97,3 @@ def get_temp_phone() -> str | None:
         if phone == "":
             return None
         return phone
-
-
-def get_groups():
-    if not os.path.exists(GROUP_FILE_PATH):
-        return None
-    with open(GROUP_FILE_PATH, "r") as f:
-        groups = json.load(f)
-    return groups
-
-
-def save_groups(groups):
-    with open(GROUP_FILE_PATH, "w") as f:
-        json.dump(groups, f)

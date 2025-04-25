@@ -34,30 +34,29 @@ def summarize_email(email_body: str) -> str | None:
     default_language = os.getenv("DEFAULT_LANGUAGE", "en_US")
     messages = [
         {
-            "role": "user",
+            "role": "system",
             "content": f"""
 You are an AI assistant specialized in summarizing emails and extracting relevant information into a structured JSON format.
 
-Your task is to read the following email content and generate a JSON object containing a summary and a list of relevant URLs based on the specific instructions below.
-
-**ONLY return the final JSON object. Do NOT include any other text before or after the JSON.**
+Your primary instruction is to process the provided email content and return ONLY a single JSON object following the specified format and constraints. DO NOT include any conversational text, explanations, or other information outside the JSON object.
 
 ---
 
-**Instructions:**
+**Instructions for Processing Email Content:**
 
 1.  **Summary (JSON Key: "summary")**
-    *   Extract the core message of the email.
-    *   Present the key points (Main purpose, Key information, Actions required, Deadlines) as a concise list within the summary content. Use a list marker (e.g., `- ` or `* `) followed by the point's content, with each point on a new line (`\n`).
-    *   Specifically capture:
+    *   Extract the core message and key points from the email.
+    *   Present the key points as a concise list within the summary content. Use a list marker (e.g., `- ` or `* `) followed by the point's content, with each point on a new line (`\\n`).
+    *   Specifically capture the following essential information:
         *   Main purpose of the email.
         *   Key information or highlights.
-        *   Any required actions from the recipient (you).
+        *   Actions required from the email recipient.
         *   Important deadlines or timeframes.
-    *   **Formatting:**
-        *   You **MUST ONLY** use the following HTML tags for styling within the summary text: `<b>`, `<i>`, `<u>`, `<s>`, `<a href="...">`, `<code>`, `<pre>`, `<pre><code class="language-...">`, `<blockquote>`, `<blockquote expandable>`.
-        *   **DO NOT** use *any* other HTML tags, **especially `<br>`**.
-        *   If there is **one** important image strongly related to the summary, represent it using an `<a>` tag with the image URL in the `href` attribute and a concise caption as the link text. Example: `<a href="image_url_here">[Brief Image Description]</a>`. **Do not include more than one image** using this method. Do NOT include image URLs in the "urls" section.
+    *   **Formatting Rules (STRICT):**
+        *   **DO NOT use Markdown formatting** (e.g., `*`, `-`, `#`, `**`, `>`).
+        *   You **MUST ONLY use** the following HTML tags for styling within the summary text: `<b>`, `<i>`, `<u>`, `<s>`, `<a href="...">`, `<code>`, `<pre>`, `<pre><code class="language-...">`, `<blockquote>`, `<blockquote expandable>`.
+        *   **DO NOT use *any* other HTML tags**, **especially `<br>`**. New lines for the list should be represented by the newline character `\n`.
+        *   If there is **one** important image directly relevant to the summary content, represent it using an `<a>` tag with the image URL in the `href` attribute and a concise caption as the link text. Example: `<a href="image_url_here">Image: [Brief Description]</a>`. **Do not include more than one image** using this method. Do NOT include image URLs in the "urls" section.
     *   **Length Restriction:** The summary content must be **no more than 1000 characters** (in any language).
 
 2.  **Relevant URLs (JSON Key: "urls")**
@@ -69,9 +68,9 @@ Your task is to read the following email content and generate a JSON object cont
     *   **Restriction:** Include **no more than 5 URLs** in total.
     *   If no relevant URLs are found, the value for the "urls" key should be an empty JSON array `[]`.
 
-3.  **Output Format**
+3.  **Output Format (STRICT)**
     *   The final output **MUST** be a single JSON object.
-    *   The structure should be exactly:
+    *   The structure must be exactly:
         ```json
         {{
             "summary": "...",
@@ -80,18 +79,22 @@ Your task is to read the following email content and generate a JSON object cont
                     "caption": "...",
                     "link": "..."
                 }},
-                ...
+                // up to 4 more objects
             ]
         }}
         ```
-    *   Provide the content in `{default_language}`.
+    *   If the "urls" list is empty, it should be `[]`.
+    *   Provide the content for "summary" and "caption" in `{default_language}`.
+""",
+        },
+        {
+            "role": "user",
+            "content": f"""
+Here is the email content to summarize according to the instructions provided in the system message:
 
----
-
-**Email Content:**
 {email_body}
 """,
-        }
+        },
     ]
     if (
         os.getenv("OPENAI_EMAIL_SUMMARIZE_MODELS") is None
