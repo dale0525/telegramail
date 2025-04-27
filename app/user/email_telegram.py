@@ -542,6 +542,18 @@ class EmailTelegramSender:
                 await self.send_html_as_file(
                     group_id, thread_id, email_data["body_html"], html_filename
                 )
+            elif email_data.get("body_text"):
+                # split email body into chunks of 4096 characters
+                email_body_chunks = [
+                    email_data["body_text"][i : i + 4000]
+                    for i in range(0, len(email_data["body_text"]), 4000)
+                ]
+                for chunk in email_body_chunks:
+                    await self.send_text_message(
+                        chat_id=group_id,
+                        text=chunk,
+                        thread_id=thread_id,
+                    )
 
             # 7. Send attachments if any
             if email_data.get("attachments"):
