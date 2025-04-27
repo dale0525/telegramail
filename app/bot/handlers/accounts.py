@@ -1,3 +1,4 @@
+from app.bot.handlers.check_email import check_specific_email
 from app.i18n import _
 from app.bot.conversation import Conversation
 from app.email_utils.account_manager import AccountManager
@@ -40,7 +41,7 @@ async def accounts_management_command_handler(client: Client, update: UpdateNewM
             # Use alias if available, otherwise use email
             button_text = account.get("alias") or account["email"]
             # Encode email into callback data, prefixed for routing
-            callback_data = f"manage_account:{account['email']}".encode("utf-8")
+            callback_data = f"manage_account:{account['id']}".encode("utf-8")
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
@@ -95,20 +96,20 @@ async def add_account_handler(
 
         # add account using the full context
         account_manager = AccountManager()
+        account = {
+            "email": context["email"],
+            "password": context["password"],
+            "smtp_server": context["smtp_server"],
+            "smtp_port": context["smtp_port"],
+            "smtp_ssl": context["smtp_ssl"],
+            "imap_server": context["imap_server"],
+            "imap_port": context["imap_port"],
+            "imap_ssl": context["imap_ssl"],
+            "alias": context["alias"],
+            "tg_group_id": context["tg_group_id"],
+        }
 
-        success = account_manager.add_account(
-            {
-                "email": context["email"],
-                "password": context["password"],
-                "smtp_server": context["smtp_server"],
-                "smtp_port": context["smtp_port"],
-                "smtp_ssl": context["smtp_ssl"],
-                "imap_server": context["imap_server"],
-                "imap_port": context["imap_port"],
-                "imap_ssl": context["imap_ssl"],
-                "alias": context["alias"],
-            }
-        )
+        success = account_manager.add_account(account)
 
         if success:
             alias = context.get(
@@ -119,6 +120,12 @@ async def add_account_handler(
             )
             conversation.finish_message_type = "success"
             conversation.finish_message_delete_after = 3
+            await check_specific_email(
+                client=client,
+                chat_id=chat_id,
+                user_id=user_id,
+                account=account,
+            )
         else:
             # Assuming failure means the email already exists based on AccountManager logic
             conversation.finish_message = f"❌ {_('add_account_fail_exists')}"
@@ -141,7 +148,7 @@ async def edit_account_conversation_starter(
     message_id = update.message_id  # Keep track for potential cleanup
     # Extract email from callback data (e.g., "edit_account:user@example.com")
     try:
-        email = update.payload.data.decode("utf-8").split(":", 1)[1]
+        account_id = update.payload.data.decode("utf-8").split(":", 1)[1]
     except (IndexError, UnicodeDecodeError) as e:
         logger.error(
             f"Could not extract email from edit callback data: {update.payload.data}. Error: {e}"
@@ -151,18 +158,18 @@ async def edit_account_conversation_starter(
         return
 
     account_manager = AccountManager()
-    current_account_data = account_manager.get_account(email)
+    current_account_data = account_manager.get_account(id=account_id)
 
     if not current_account_data:
         logger.error(
-            f"Attempted to edit non-existent account: {email} by user {user_id}"
+            f"Attempted to edit non-existent account: {current_account_data['email']} by user {user_id}"
         )
         # Edit the original message to indicate failure
         try:
             await client.api.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"❌ {_('error_edit_account_not_found', email=email)}",
+                text=f"❌ {_('error_edit_account_not_found', email=current_account_data['email'])}",
                 # Add a back button maybe?
                 reply_markup=ReplyMarkupInlineKeyboard(
                     rows=[
@@ -215,19 +222,23 @@ async def edit_account_conversation_starter(
                 updated_data[key] = value
 
         if not updated_data:
-            logger.info(f"Edit conversation for {email} completed with no changes.")
+            logger.info(
+                f"Edit conversation for {current_account_data['email']} completed with no changes."
+            )
             conversation.finish_message = (
-                f"ℹ️ {_('edit_account_no_changes', email=email)}"
+                f"ℹ️ {_('edit_account_no_changes', email=current_account_data['email'])}"
             )
             conversation.finish_message_type = "info"
             conversation.finish_message_delete_after = 3
             return  # Skip saving if no changes
 
-        logger.info(f"Updating account {email} with data: {updated_data}")
-        success = account_manager.update_account(email, updated_data)
+        logger.info(
+            f"Updating account {current_account_data['email']} with data: {updated_data}"
+        )
+        success = account_manager.update_account(id=account_id, updates=updated_data)
 
         if success:
-            alias = updated_data.get("alias", current_account_data.get("alias", email))
+            alias = updated_data.get("alias")
             conversation.finish_message = (
                 f"✅ <b>{alias}</b> {_('edit_account_success')}"
             )
@@ -235,7 +246,9 @@ async def edit_account_conversation_starter(
             conversation.finish_message_delete_after = 3
         else:
             # Update usually shouldn't fail unless there's an I/O error
-            conversation.finish_message = f"❌ {_('edit_account_fail', email=email)}"
+            conversation.finish_message = (
+                f"❌ {_('edit_account_fail', email=current_account_data['email'])}"
+            )
             conversation.finish_message_type = "error"
             conversation.finish_message_delete_after = 5
 
@@ -243,7 +256,9 @@ async def edit_account_conversation_starter(
 
     # Add a handler for cancellation if your Conversation class supports it
     async def on_cancel():
-        logger.info(f"Edit conversation for {email} cancelled by user {user_id}.")
+        logger.info(
+            f"Edit conversation for {current_account_data['email']} cancelled by user {user_id}."
+        )
         # You might want to edit the original message or send a cancellation confirmation
         # For now, let the conversation handle its cleanup.
         pass
@@ -251,65 +266,7 @@ async def edit_account_conversation_starter(
     conversation.on_cancel(on_cancel)
 
     # Start the conversation
-    logger.info(f"Starting edit conversation for account: {email} for user {user_id}")
-    await conversation.start()
-
-
-async def remove_account_command_handler(client: Client, update: UpdateNewMessage):
-    """处理 /remove 命令，引导用户删除邮箱账户"""
-    chat_id = update.message.chat_id
-    user_id = update.message.sender_id.user_id
-
-    # 获取所有账户
-    account_manager = AccountManager()
-    accounts = account_manager.get_all_accounts()
-
-    if not accounts:
-        await client.send_text(chat_id, "❌ 您没有添加任何邮箱账户。")
-        return
-
-    # 构建账户选择消息
-    account_list = "\n".join(
-        [f"{i}. {account['email']}" for i, account in enumerate(accounts, 1)]
+    logger.info(
+        f"Starting edit conversation for account: {current_account_data['email']} for user {user_id}"
     )
-
-    # 定义步骤
-    steps = [
-        {
-            "text": f"📧 <b>删除邮箱账户</b>\n\n当前账户:\n{account_list}\n\n请输入要删除的账户编号:",
-            "key": "account_index",
-            "validate": lambda x: (
-                x.isdigit() and 1 <= int(x) <= len(accounts),
-                "请输入有效的账户编号!",
-            ),
-            "process": lambda x: int(x) - 1,  # 转换为从0开始的索引
-        }
-    ]
-
-    # 创建对话实例
-    conversation = await Conversation.create_conversation(
-        client, chat_id, user_id, steps
-    )
-
-    # 注册完成处理程序
-    async def on_complete(context):
-        index = context["account_index"]
-        email = accounts[index]["email"]
-
-        # 删除账户
-        success = account_manager.remove_account(email)
-
-        # 配置通用结束提示信息和自动删除时间（如 5 秒后自动删除）
-        if success:
-            conversation.finish_message = f"✅ 邮箱账户 <b>{email}</b> 已成功删除!"
-            conversation.finish_message_type = "success"
-            conversation.finish_message_delete_after = 5
-        else:
-            conversation.finish_message = f"❌ 删除邮箱账户失败。"
-            conversation.finish_message_type = "error"
-            conversation.finish_message_delete_after = 5
-
-    conversation.on_finish(on_complete)
-
-    # 开始对话
     await conversation.start()

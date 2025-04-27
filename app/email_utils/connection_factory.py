@@ -3,7 +3,7 @@ import smtplib
 import socket
 import ssl
 from typing import Tuple, Optional, Any, Union
-from app.utils import Logger
+from app.utils import Logger, retry_on_fail
 from app.i18n import _
 
 logger = Logger().get_logger(__name__)
@@ -159,6 +159,7 @@ class ConnectionFactory:
             return False, _("account_verification_failed_imap_other") + f": {e}", None
 
     @staticmethod
+    @retry_on_fail(max_retries=2, retry_delay=1.0, exceptions=TimeoutError)
     def try_smtp_connection(
         server_addr: str,
         port: int,

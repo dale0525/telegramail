@@ -1,12 +1,9 @@
-import json
-import os
 from typing import Dict, List, Optional, Any
 from app.utils import Logger
 from app.utils.decorators import Singleton
+from app.database import DBManager
 
 logger = Logger().get_logger(__name__)
-
-ACCOUNTS_FILE = os.path.join(os.getcwd(), "data", "accounts.json")
 
 
 @Singleton
@@ -14,34 +11,7 @@ class AccountManager:
     """Email accounts manager"""
 
     def __init__(self):
-        """init class"""
-        self.accounts = []
-        self._load_accounts()
-
-        # make sure data folder exists
-        os.makedirs(os.path.dirname(ACCOUNTS_FILE), exist_ok=True)
-
-    def _load_accounts(self) -> None:
-        """load account info from json file"""
-        if not os.path.exists(ACCOUNTS_FILE):
-            self.accounts = []
-            return
-
-        try:
-            with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                self.accounts = data
-        except Exception as e:
-            logger.error(f"Failed to load accounts: {e}")
-            self.accounts = []
-
-    def _save_accounts(self) -> None:
-        """save account info to json file"""
-        try:
-            with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.accounts, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to save accounts: {e}")
+        self.db_manager = DBManager()
 
     def add_account(self, account: Dict[str, Any]) -> bool:
         """
@@ -58,6 +28,7 @@ class AccountManager:
                     - imap_port: IMAP port
                     - imap_ssl: bool, use SSL/TLS for IMAP
                     - alias: alias name of the account
+                    - tg_group_id: telegram group chat id
 
         Returns:
             bool: success or not
@@ -73,82 +44,60 @@ class AccountManager:
             "imap_port",
             "imap_ssl",
             "alias",
+            "tg_group_id",
         ]
         for field in required_fields:
             if field not in account:
                 logger.error(f"Missing required field: {field}")
                 return False
 
+        existing_accounts = self.db_manager.get_accounts()
         # check if the same email addr. exists
-        for existing in self.accounts:
-            if existing["email"] == account["email"]:
-                logger.warning(f"Account with email {account['email']} already exists")
+        for existing in existing_accounts:
+            if (
+                existing["email"] == account["email"]
+                and existing["smtp_server"] == account["smtp_server"]
+            ):
+                logger.warning(
+                    f"Account with email {account['email']} and server {account['smtp_server']} already exists"
+                )
                 return False
 
         # add account
-        self.accounts.append(account)
-        self._save_accounts()
+        if not self.db_manager.add_account(account):
+            logger.error("Failed to add account to database")
+            return False
         return True
 
-    def remove_account(self, email: str) -> bool:
-        """
-        delete email account
+    def remove_account(
+        self,
+        id: Optional[int] = None,
+        email: Optional[str] = None,
+        smtp_server: Optional[str] = None,
+    ) -> bool:
+        return self.db_manager.remove_account(
+            id=id, email=email, smtp_server=smtp_server
+        )
 
-        Args:
-            email: email addr. to delete
-
-        Returns:
-            bool: success or not
-        """
-        for i, account in enumerate(self.accounts):
-            if account["email"] == email:
-                del self.accounts[i]
-                self._save_accounts()
-                return True
-
-        logger.warning(f"Account with email {email} not found")
-        return False
-
-    def get_account(self, email: str) -> Optional[Dict[str, Any]]:
-        """
-        get specified email account
-
-        Args:
-            email: email addr.
-
-        Returns:
-            Optional[Dict[str, Any]]: Email account info. Returns None if email addr. not exists.
-        """
-        for account in self.accounts:
-            if account["email"] == email:
-                return account.copy()
-        return None
+    def get_account(
+        self,
+        id: Optional[int] = None,
+        email: Optional[str] = None,
+        smtp_server: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get an account by ID, email, or email and SMTP server."""
+        return self.db_manager.get_account(id=id, email=email, smtp_server=smtp_server)
 
     def get_all_accounts(self) -> List[Dict[str, Any]]:
-        """
-        get all email accounts
+        return self.db_manager.get_accounts()
 
-        Returns:
-            List[Dict[str, Any]]: a list of all accounts
-        """
-        return [account.copy() for account in self.accounts]
-
-    def update_account(self, email: str, updates: Dict[str, Any]) -> bool:
-        """
-        update email account info
-
-        Args:
-            email: the email addr. to update
-            updates: key-value pairs to update
-
-        Returns:
-            bool: success or not
-        """
-        for account in self.accounts:
-            if account["email"] == email:
-                account.update(updates)
-                self._save_accounts()
-                return True
-
-        logger.warning(f"Account with email {email} not found")
-        return False
+    def update_account(
+        self,
+        updates: Dict[str, Any],
+        id: Optional[int] = None,
+        email: Optional[str] = None,
+        smtp_server: Optional[str] = None,
+    ) -> bool:
+        return self.db_manager.update_account(
+            updates=updates, id=id, email=email, smtp_server=smtp_server
+        )

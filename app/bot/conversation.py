@@ -4,7 +4,6 @@ from enum import Enum, auto
 from aiotdlib import Client
 from aiotdlib.api import (
     UpdateNewMessage,
-    Message,
     ReplyMarkupShowKeyboard,
     KeyboardButton,
     KeyboardButtonTypeText,
@@ -175,11 +174,20 @@ class Conversation:
                 # Execute the action
                 result = action_func(self.context)
                 if asyncio.iscoroutine(result):
-                    success, message = await result
+                    result = await result
+
+                # Check if result contains key value (3-tuple)
+                if isinstance(result, (tuple, list)) and len(result) >= 3:
+                    success, message, key_value = result
+                    # Store key_value in context if step has a key
+                    if "key" in step:
+                        logger.debug(
+                            f"Storing value from action result to context[{step['key']}]"
+                        )
+                        self.context[step["key"]] = key_value
                 else:
-                    success, message = (
-                        result  # Assume sync actions return tuple directly
-                    )
+                    # Backward compatibility for 2-tuple results
+                    success, message = result
 
                 # Handle result
                 if success:

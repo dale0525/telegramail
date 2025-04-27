@@ -30,7 +30,6 @@ class Logger:
     def __init__(self):
         load_dotenv()
         self.default_log_level = os.getenv("LOG_LEVEL", "INFO")
-        print(self.default_log_level)
         # Set root logger level to WARNING by default
         # This affects third-party libraries unless they configure their own loggers
         logging.basicConfig(

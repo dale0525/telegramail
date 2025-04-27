@@ -4,8 +4,6 @@ from aiotdlib.api import (
     InlineKeyboardButton,
     ReplyMarkupInlineKeyboard,
     InlineKeyboardButtonTypeCallback,
-    InputMessageText,
-    FormattedText,
     LinkPreviewOptions,
 )
 from app.utils import Logger
@@ -45,6 +43,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
 
     # --- General Callback Handling (if not handled by conversation) ---
     logger.debug(f"Handling callback as general action for user {user_id}")
+    account_manager = AccountManager()
     if data == "add_account":
         # Answer the callback query *first* to stop the loading animation
         try:
@@ -57,7 +56,9 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
 
     elif data.startswith("manage_account:"):
         # Handle the click on a specific account management button
-        email = data.split(":", 1)[1]
+        account_id = data.split(":", 1)[1]
+        account = account_manager.get_account_by_id(account_id)
+        email = account["email"]
         logger.info(f"User {user_id} requested to manage account: {email}")
 
         # Answer the callback query first
@@ -74,13 +75,13 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
                 InlineKeyboardButton(
                     text=f"✏️ {_('edit_account')}",
                     type=InlineKeyboardButtonTypeCallback(
-                        data=f"edit_account:{email}".encode("utf-8")
+                        data=f"edit_account:{account_id}".encode("utf-8")
                     ),
                 ),
                 InlineKeyboardButton(
                     text=f"🗑️ {_('delete_account')}",
                     type=InlineKeyboardButtonTypeCallback(
-                        data=f"delete_account_confirm:{email}".encode("utf-8")
+                        data=f"delete_account_confirm:{account_id}".encode("utf-8")
                     ),
                 ),
             ],
@@ -106,7 +107,9 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
 
     elif data.startswith("edit_account:"):
         # Start the conversation flow for editing an account
-        email = data.split(":", 1)[1]
+        account_id = data.split(":", 1)[1]
+        account = account_manager.get_account_by_id(account_id)
+        email = account["email"]
         logger.info(f"User {user_id} requested to edit account: {email}")
         try:
             # Answer immediately before starting potentially longer conversation setup
@@ -120,7 +123,9 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
 
     elif data.startswith("delete_account_confirm:"):
         # Ask for confirmation before deleting
-        email = data.split(":", 1)[1]
+        account_id = data.split(":", 1)[1]
+        account = account_manager.get_account_by_id(account_id)
+        email = account["email"]
         logger.info(f"User {user_id} requested confirmation to delete account: {email}")
 
         # Answer the callback query first
@@ -140,14 +145,14 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
                 InlineKeyboardButton(
                     text=f"✅ {_('yes_delete')}",
                     type=InlineKeyboardButtonTypeCallback(
-                        data=f"delete_account_execute:{email}".encode("utf-8")
+                        data=f"delete_account_execute:{account_id}".encode("utf-8")
                     ),
                 ),
                 InlineKeyboardButton(
                     text=f"❌ {_('no_cancel')}",
                     type=InlineKeyboardButtonTypeCallback(
                         # Go back to the manage screen for this email
-                        data=f"manage_account:{email}".encode("utf-8")
+                        data=f"manage_account:{account_id}".encode("utf-8")
                     ),
                 ),
             ]
@@ -167,7 +172,9 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
 
     elif data.startswith("delete_account_execute:"):
         # Execute the deletion
-        email = data.split(":", 1)[1]
+        account_id = data.split(":", 1)[1]
+        account = account_manager.get_account_by_id(account_id)
+        email = account["email"]
         logger.info(f"User {user_id} confirmed deletion for account: {email}")
 
         # Answer the callback query first
@@ -182,8 +189,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
             )
 
         # Perform the deletion
-        account_manager = AccountManager()
-        success = account_manager.remove_account(email)
+        success = account_manager.remove_account(id=account_id)
 
         # Prepare the result message and keyboard
         if success:
@@ -231,7 +237,6 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
             logger.warning(f"Failed to answer 'back_to_accounts' callback query: {e}")
 
         # Fetch accounts again to rebuild the list
-        account_manager = AccountManager()
         accounts = account_manager.get_all_accounts()
         message_id = update.message_id
 
@@ -242,7 +247,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
             message_text += f"<b>{_('select_account_to_manage')}:</b>\n"
             for account in accounts:
                 button_text = account.get("alias") or account["email"]
-                callback_data = f"manage_account:{account['email']}".encode("utf-8")
+                callback_data = f"manage_account:{account['id']}".encode("utf-8")
                 keyboard_rows.append(
                     [
                         InlineKeyboardButton(

@@ -1,3 +1,4 @@
+from typing import Any, Optional
 from aiotdlib import Client
 from aiotdlib.api import UpdateNewMessage
 import asyncio
@@ -8,7 +9,6 @@ from app.utils import Logger
 from app.email_utils.imap_client import IMAPClient
 from app.email_utils.account_manager import AccountManager
 from app.bot.conversation import Conversation
-from app.data import DataManager
 
 logger = Logger().get_logger(__name__)
 
@@ -18,15 +18,19 @@ async def check_command_handler(client: Client, update: UpdateNewMessage):
     if not validate_admin(update):
         return
     chat_id = update.message.chat_id
-    groups = DataManager().get_groups()
+    account_manager = AccountManager()
+    accounts = account_manager.get_all_accounts()
     stop = False
-    if groups:
-        for email, group_id in groups.items():
-            if group_id == chat_id:  # check email for this email account
-                logger.debug(f"check email for {email}")
+    if accounts:
+        for account in accounts:
+            if account["tg_group_id"] == chat_id:
+                logger.debug(f"check email for {account['email']}")
                 stop = True
                 await check_specific_email(
-                    client, chat_id, update.message.sender_id.user_id, email
+                    client=client,
+                    chat_id=chat_id,
+                    user_id=update.message.sender_id.user_id,
+                    account=account,
                 )
                 break
 
@@ -35,7 +39,13 @@ async def check_command_handler(client: Client, update: UpdateNewMessage):
         await check_all_emails(client, chat_id, update.message.sender_id.user_id)
 
 
-async def check_specific_email(client: Client, chat_id: int, user_id: int, email: str):
+async def check_specific_email(
+    client: Client,
+    chat_id: int,
+    user_id: int,
+    account_id: Optional[int] = None,
+    account: Optional[dict[str, Any]] = None,
+):
     """
     check specific email for new emails using conversation
 
@@ -45,11 +55,15 @@ async def check_specific_email(client: Client, chat_id: int, user_id: int, email
         user_id: user id
         email: email to check
     """
+    if account_id is not None and account is None:
+        account_manager = AccountManager()
+        account = account_manager.get_account(id=account_id)
+    email = account["email"]
     steps = [
         {
             "text": f"📧 {_('checking_emails_for')} <b>{email}</b>...",
             "key": "check_start",
-            "action": lambda context: fetch_emails_action(context, email),
+            "action": lambda context: fetch_emails_action(context, account),
             "pre_action_message_key": "fetching_emails_wait",
             "success_message_key": "email_fetch_success",
         }
@@ -132,7 +146,9 @@ async def check_all_emails(client: Client, chat_id: int, user_id: int):
     await conversation.start()
 
 
-async def fetch_emails_action(context: dict, email: str) -> tuple[bool, str]:
+async def fetch_emails_action(
+    context: dict, account: dict[str, Any]
+) -> tuple[bool, str]:
     """
     fetch emails for specific email account
 
@@ -144,7 +160,7 @@ async def fetch_emails_action(context: dict, email: str) -> tuple[bool, str]:
         (success, message) tuple
     """
     try:
-        imap_client = IMAPClient(email)
+        imap_client = IMAPClient(account)
 
         email_count = await imap_client.fetch_unread_emails()
 
@@ -152,11 +168,11 @@ async def fetch_emails_action(context: dict, email: str) -> tuple[bool, str]:
 
         return True, ""
     except Exception as e:
-        logger.error(f"Error fetching emails for {email}: {e}")
+        logger.error(f"Error fetching emails for {account['email']}: {e}")
         return False, str(e)
 
 
-async def _fetch_email_for_account(email: str) -> tuple[str, int, str]:
+async def _fetch_email_for_account(account: dict[str, Any]) -> tuple[str, int, str]:
     """
     Fetch emails for a single account
 
@@ -168,8 +184,9 @@ async def _fetch_email_for_account(email: str) -> tuple[str, int, str]:
         Error message is empty if successful
     """
     try:
-        imap_client = IMAPClient(email)
+        imap_client = IMAPClient(account)
         email_count = await imap_client.fetch_unread_emails()
+        email = account["email"]
         return email, email_count, ""
     except Exception as e:
         logger.error(f"Error fetching emails for {email}: {e}")
@@ -193,8 +210,7 @@ async def fetch_all_emails_action(context: dict) -> tuple[bool, str]:
         # Create fetch tasks for all accounts
         fetch_tasks = []
         for account in accounts:
-            email = account["email"]
-            fetch_tasks.append(_fetch_email_for_account(email))
+            fetch_tasks.append(_fetch_email_for_account(account))
 
         # Run all fetch tasks concurrently
         results = await asyncio.gather(*fetch_tasks)

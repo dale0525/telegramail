@@ -17,7 +17,6 @@ COMMON_PROVIDERS = [
         "smtp_server": "smtp-mail.outlook.com",
         "smtp_port": 587,
         "smtp_ssl": False,
-        "smtp_starttls": True,
         "imap_server": "outlook.office365.com",
         "imap_port": 993,
         "imap_ssl": True,
@@ -44,8 +43,7 @@ COMMON_PROVIDERS = [
         "name": "iCloud",
         "smtp_server": "smtp.mail.me.com",
         "smtp_port": 587,
-        "smtp_ssl": False,
-        "smtp_starttls": True,
+        "smtp_ssl": True,
         "imap_server": "imap.mail.me.com",
         "imap_port": 993,
         "imap_ssl": True,
@@ -122,4 +120,4 @@ COMMON_PROVIDERS = [
         "imap_port": 993,
         "imap_ssl": True,
     },
-] 
+]

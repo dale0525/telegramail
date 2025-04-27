@@ -210,11 +210,8 @@ ADD_ACCOUNT_STEPS = [
     VERIFICATION_STEP,
     {
         # Step to create the supergroup
-        "action": lambda ctx: get_group_id(
-            email=ctx["email"],
-            alias=ctx["alias"],
-            provider_name=ctx.get("common_provider_name"),
-        ),
+        "action": lambda ctx: get_group_id(ctx),
+        "key": "tg_group_id",
         "pre_action_message_key": "group_creating",
         "success_message_key": "group_create_success",
         "fail_message_key": "group_create_fail",
@@ -222,19 +219,12 @@ ADD_ACCOUNT_STEPS = [
     },
     {
         # Step to create the supergroup
-        "action": lambda ctx: get_email_folder_id(),
+        "action": lambda ctx: get_email_folder_id(ctx),
+        "key": "tg_folder_id",
         "pre_action_message_key": "group_creating",
         "success_message_key": "group_create_success",
         "fail_message_key": "group_create_fail",
-        "terminate_on_fail": False,
-    },
-    {
-        # Step to check for new emails
-        "action": lambda ctx: fetch_emails_action(ctx, ctx["email"]),
-        "pre_action_message_key": "fetching_emails_wait",
-        "success_message_key": "initial_email_check_success",
-        "fail_message_key": "initial_email_check_fail",
-        "terminate_on_fail": False,
+        "terminate_on_fail": True,
     },
 ]
 

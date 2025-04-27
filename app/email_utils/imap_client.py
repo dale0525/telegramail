@@ -2,7 +2,8 @@ import email
 import time
 import re
 import sqlite3
-import imaplib  # Import imaplib for specific exceptions
+import imaplib
+from typing import Any  # Import imaplib for specific exceptions
 from app.utils import Logger
 from app.database import DBManager
 from app.email_utils.connection_factory import ConnectionFactory
@@ -11,7 +12,6 @@ from app.email_utils.text import (
     decode_email_subject,
     get_email_body,
 )
-from app.email_utils.account_manager import AccountManager
 from app.utils.decorators import retry_on_fail
 
 logger = Logger().get_logger(__name__)
@@ -20,15 +20,15 @@ logger = Logger().get_logger(__name__)
 class IMAPClient:
     """IMAP client for connecting to email servers and fetching emails"""
 
-    def __init__(self, email_addr: str):
+    def __init__(self, account: dict[str, Any]) -> None:
         """
         Initialize IMAP client for a specific email account
 
         Args:
             email_addr: Email address to connect to
         """
-        self.email_addr = email_addr
-        self.account_info = None
+        self.account_info = account
+        self.email_addr = account["email"]
         self.conn = None
         self.db_manager = DBManager()
 
@@ -40,23 +40,17 @@ class IMAPClient:
             bool: True if connection successful, False otherwise
         """
         try:
-            # Get account info from AccountManager
-            account_manager = AccountManager()
-            account_info = account_manager.get_account(self.email_addr)
-
-            if not account_info:
+            if not self.account_info:
                 logger.error(f"Account information not found for {self.email_addr}")
                 return False
 
-            self.account_info = account_info
-
             # Use ConnectionFactory to create the connection
             success, error_msg, self.conn = ConnectionFactory.try_imap_connection(
-                account_info["imap_server"],
-                account_info["imap_port"],
-                account_info["email"],
-                account_info["password"],
-                account_info["imap_ssl"],
+                self.account_info["imap_server"],
+                self.account_info["imap_port"],
+                self.account_info["email"],
+                self.account_info["password"],
+                self.account_info["imap_ssl"],
             )
 
             if success:
@@ -134,23 +128,37 @@ class IMAPClient:
                     current_time = time.time()
                     if current_time - last_noop_time > noop_interval:
                         try:
-                            logger.debug(f"Sending NOOP to keep connection alive (Email index: {i}).")
+                            logger.debug(
+                                f"Sending NOOP to keep connection alive (Email index: {i})."
+                            )
                             status, _ = self.conn.noop()
                             if status == "OK":
                                 last_noop_time = current_time
                             else:
-                                logger.warning(f"NOOP command failed with status {status}. Attempting reconnect.")
+                                logger.warning(
+                                    f"NOOP command failed with status {status}. Attempting reconnect."
+                                )
                                 self.disconnect()
                                 if not self.connect():
-                                    logger.error("Reconnect failed after NOOP failure, stopping email fetch.")
+                                    logger.error(
+                                        "Reconnect failed after NOOP failure, stopping email fetch."
+                                    )
                                     return processed_count
                                 self.conn.select("INBOX")
                                 last_noop_time = time.time()
-                        except (imaplib.IMAP4.abort, imaplib.IMAP4.error, ConnectionResetError) as e:
-                            logger.warning(f"NOOP failed due to connection error: {e}. Attempting reconnect.")
+                        except (
+                            imaplib.IMAP4.abort,
+                            imaplib.IMAP4.error,
+                            ConnectionResetError,
+                        ) as e:
+                            logger.warning(
+                                f"NOOP failed due to connection error: {e}. Attempting reconnect."
+                            )
                             self.disconnect()
                             if not self.connect():
-                                logger.error("Reconnect failed after NOOP error, stopping email fetch.")
+                                logger.error(
+                                    "Reconnect failed after NOOP error, stopping email fetch."
+                                )
                                 return processed_count
                             self.conn.select("INBOX")
                             last_noop_time = time.time()
@@ -158,7 +166,9 @@ class IMAPClient:
                     # Get UID
                     status, uid_data = self.conn.fetch(email_id, "(UID)")
                     if status != "OK":
-                        logger.error(f"Failed to fetch UID for email {email_id}: {uid_data}")
+                        logger.error(
+                            f"Failed to fetch UID for email {email_id}: {uid_data}"
+                        )
                         continue
 
                     uid_response = uid_data[0].decode("utf-8")
@@ -186,27 +196,23 @@ class IMAPClient:
                     cc = decode_email_address(msg.get("Cc", ""))
                     bcc = decode_email_address(msg.get("Bcc", ""))
                     subject = decode_email_subject(msg.get("Subject", ""))
-                    date = msg.get("Date", "")
+                    email_date = msg.get("Date", "")
 
                     # Get email body
                     body_text, body_html = get_email_body(msg)
 
-                    # Current timestamp
-                    timestamp = int(time.time())
-
                     # Prepare email data
                     email_data = {
-                        "email_account": self.email_addr,
+                        "email_account": self.account_info["id"],
                         "message_id": message_id,
                         "sender": sender,
                         "recipient": recipient,
                         "cc": cc,
                         "bcc": bcc,
                         "subject": subject,
-                        "date": date,
+                        "email_date": email_date,
                         "body_text": body_text,
                         "body_html": body_html,
-                        "timestamp": timestamp,
                         "uid": uid,
                         "raw_email": raw_email,  # Store raw email for later processing
                     }
@@ -214,18 +220,28 @@ class IMAPClient:
                     # Store email data for later processing
                     email_data_list.append(email_data)
 
-                except (imaplib.IMAP4.abort, imaplib.IMAP4.error, ConnectionResetError) as conn_err:
-                    logger.error(f"IMAP connection error processing email {email_id}: {conn_err}. Attempting reconnect.")
+                except (
+                    imaplib.IMAP4.abort,
+                    imaplib.IMAP4.error,
+                    ConnectionResetError,
+                ) as conn_err:
+                    logger.error(
+                        f"IMAP connection error processing email {email_id}: {conn_err}. Attempting reconnect."
+                    )
                     self.disconnect()
                     if not self.connect():
-                        logger.error("Reconnect failed after processing error, stopping email fetch.")
+                        logger.error(
+                            "Reconnect failed after processing error, stopping email fetch."
+                        )
                         return processed_count
                     self.conn.select("INBOX")
                     last_noop_time = time.time()
                     continue
 
                 except Exception as e:
-                    logger.error(f"Non-connection error processing email {email_id}: {e}")
+                    logger.error(
+                        f"Non-connection error processing email {email_id}: {e}"
+                    )
                     continue
 
             # Disconnect from IMAP after fetching all emails
@@ -233,14 +249,19 @@ class IMAPClient:
 
             # Phase 2: Process emails and send to Telegram
             from app.user.email_telegram import EmailTelegramSender
+
             email_sender = EmailTelegramSender()
 
             for email_data in email_data_list:
                 try:
                     # Check if email exists and insert if not
-                    email_db_id, is_new_email = self._execute_db_transaction(email_data, email_data["uid"])
+                    email_db_id, is_new_email = self._execute_db_transaction(
+                        email_data, email_data["uid"]
+                    )
                     if not is_new_email or not email_db_id:
-                        logger.debug(f"Email with UID {email_data['uid']} already exists or failed to insert, skipping")
+                        logger.debug(
+                            f"Email with UID {email_data['uid']} already exists or failed to insert, skipping"
+                        )
                         continue
 
                     # Process attachments
@@ -253,11 +274,13 @@ class IMAPClient:
                             if filename:
                                 payload = part.get_payload(decode=True)
                                 content_type = part.get_content_type()
-                                attachments.append({
-                                    "filename": filename,
-                                    "content_type": content_type,
-                                    "data": payload,
-                                })
+                                attachments.append(
+                                    {
+                                        "filename": filename,
+                                        "content_type": content_type,
+                                        "data": payload,
+                                    }
+                                )
 
                     # Prepare data for Telegram
                     telegram_data = {
@@ -269,10 +292,9 @@ class IMAPClient:
                         "cc": email_data["cc"],
                         "bcc": email_data["bcc"],
                         "subject": email_data["subject"],
-                        "date": email_data["date"],
+                        "email_date": email_data["email_date"],
                         "body_text": email_data["body_text"],
                         "body_html": email_data["body_html"],
-                        "timestamp": email_data["timestamp"],
                         "uid": email_data["uid"],
                         "attachments": attachments,
                     }
@@ -280,7 +302,9 @@ class IMAPClient:
                     # Send to Telegram
                     result = await email_sender.send_email_to_telegram(telegram_data)
                     if result:
-                        logger.info(f"Successfully sent email {email_db_id} to Telegram")
+                        logger.info(
+                            f"Successfully sent email {email_db_id} to Telegram"
+                        )
                         processed_count += 1
                         # Reconnect to mark email as read
                         if self.connect():
@@ -359,7 +383,7 @@ class IMAPClient:
             # Check if email exists
             cursor.execute(
                 "SELECT id FROM emails WHERE email_account = ? AND uid = ?",
-                (self.email_addr, uid),
+                (self.account_info["id"], uid),
             )
             existing_email = cursor.fetchone()
 
@@ -372,9 +396,9 @@ class IMAPClient:
             cursor.execute(
                 """
                 INSERT OR IGNORE INTO emails
-                (email_account, message_id, sender, recipient, cc, bcc, subject, date,
-                 body_text, body_html, timestamp, uid)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (email_account, message_id, sender, recipient, cc, bcc, subject, email_date,
+                 body_text, body_html, uid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     email_data["email_account"],
@@ -384,10 +408,9 @@ class IMAPClient:
                     email_data["cc"],
                     email_data["bcc"],
                     email_data["subject"],
-                    email_data["date"],
+                    email_data["email_date"],
                     email_data["body_text"],
                     email_data["body_html"],
-                    email_data["timestamp"],
                     email_data["uid"],
                 ),
             )
@@ -434,7 +457,7 @@ class IMAPClient:
             logger.info(f"Successfully deleted email with UID {uid}")
 
             # delete from local db
-            db_result = self.db_manager.delete_email_by_uid(self.email_addr, uid)
+            db_result = self.db_manager.delete_email_by_uid(self.account_info, uid)
             if not db_result:
                 logger.warning(f"Could not remove email with UID {uid} from database")
 

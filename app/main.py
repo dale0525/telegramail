@@ -36,26 +36,27 @@ logger = Logger().get_logger(__name__)
 # Global variable to store the user client instance
 user_client_instance = None
 
+
 # Handle graceful shutdown
 async def shutdown(signal, loop):
     """
     Handle application shutdown gracefully
     """
     logger.info(f"Received exit signal {signal.name}...")
-    
+
     # Stop the user client if it's running
     global user_client_instance
     if user_client_instance:
         logger.info("Stopping user client...")
         await user_client_instance.stop()
-    
+
     # Cancel all running tasks
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     logger.info(f"Cancelling {len(tasks)} outstanding tasks")
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     loop.stop()
 
 
@@ -69,13 +70,11 @@ async def main():
     if not api_id or not api_hash or not bot_token:
         logger.debug("No TELEGRAM_API_ID or TELEGRAM_API_HASH or TELEGRAM_BOT_TOKEN")
         sys.exit(1)
-        
+
     # Set up signal handlers for graceful shutdown
     loop = asyncio.get_running_loop()
     for s in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(
-            s, lambda s=s: asyncio.create_task(shutdown(s, loop))
-        )
+        loop.add_signal_handler(s, lambda s=s: asyncio.create_task(shutdown(s, loop)))
 
     bot = BotClient().client
 
@@ -160,10 +159,10 @@ async def main():
                 BotCommand(command="check", description=_("command_desc_check")),
             ]
         )
-        
+
         # Start periodic email checking task (every 5 minutes)
         start_email_check_scheduler()
-        
+
         await bot.idle()
 
 

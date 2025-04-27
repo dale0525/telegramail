@@ -55,12 +55,12 @@ Your primary instruction is to process the provided email content and return ONL
     *   **Formatting Rules (STRICT):**
         *   **DO NOT use Markdown formatting** (e.g., `*`, `-`, `#`, `**`, `>`).
         *   You **MUST ONLY use** the following HTML tags for styling within the summary text: `<b>`, `<i>`, `<u>`, `<s>`, `<a href="...">`, `<code>`, `<pre>`, `<pre><code class="language-...">`, `<blockquote>`, `<blockquote expandable>`.
-        *   **DO NOT use *any* other HTML tags**, **especially `<br>`**. New lines for the list should be represented by the newline character `\n`.
+        *   **DO NOT use *any* other HTML tags**, **especially `<br>`**. New lines for the list should be represented by the newline character `\\n`.
         *   If there is **one** important image directly relevant to the summary content, represent it using an `<a>` tag with the image URL in the `href` attribute and a concise caption as the link text. Example: `<a href="image_url_here">Image: [Brief Description]</a>`. **Do not include more than one image** using this method. Do NOT include image URLs in the "urls" section.
     *   **Length Restriction:** The summary content must be **no more than 1000 characters** (in any language).
 
 2.  **Relevant URLs (JSON Key: "urls")**
-    *   Identify and list URLs that are strongly related to the summary content or are email subscription-related.
+    *   Identify and list URLs that are strongly related to the summary content or are email subscription-related. Only http or https URLs are allowed.
     *   **Exclusion:** Do NOT include image URLs in this list (handle images as described in Summary Formatting).
     *   **Format:** Each URL should be an object with two keys:
         *   `caption`: A brief name or description for the URL (max 20 characters).

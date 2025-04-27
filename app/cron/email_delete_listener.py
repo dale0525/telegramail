@@ -5,8 +5,8 @@ from aiotdlib.api import (
 from app.database import DBManager
 from app.email_utils.imap_client import IMAPClient
 from app.utils import Logger
-from app.data.data_manager import DataManager
 from app.cron.cron_utils import start_periodic_task
+from app.email_utils import AccountManager
 
 logger = Logger().get_logger(__name__)
 
@@ -46,15 +46,17 @@ async def check_deleted_topics_for_group(chat_id):
             thread_id = topic_info.message_thread_id
 
             db_manager = DBManager()
-            email, email_uid = db_manager.get_email_uid_by_telegram_thread_id(
+            account_id, email_uid = db_manager.get_email_uid_by_telegram_thread_id(
                 str(thread_id)
             )
 
-            if not email or not email_uid:
+            if not account_id or not email_uid:
                 continue
 
             logger.info(f"Deleting email with UID {email_uid} for topic {thread_id}")
-            imap_client = IMAPClient(email)
+            account_manager = AccountManager()
+            account = account_manager.get_account(id=account_id)
+            imap_client = IMAPClient(account)
             imap_client.delete_email_by_uid(email_uid)
             processed_count += 1
 
@@ -71,10 +73,13 @@ async def check_all_deleted_topics():
     """
     Check deleted topics for all groups
     """
-    groups_data = DataManager().get_groups()
-    for email, chat_id in groups_data.items():
-        logger.info(f"Checking deleted topics for group {chat_id} (email: {email})")
-        await check_deleted_topics_for_group(chat_id)
+    account_manager = AccountManager()
+    accounts = account_manager.get_all_accounts()
+    for account in accounts:
+        logger.info(
+            f"Checking deleted topics for group {account['tg_group_id']} (email: {account['email']})"
+        )
+        await check_deleted_topics_for_group(account["tg_group_id"])
 
 
 def listen_to_email_deletions():

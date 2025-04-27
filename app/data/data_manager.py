@@ -1,6 +1,7 @@
 import os, json
 from app.utils import Logger
 from app.utils.decorators import Singleton
+from app.database import DBManager
 
 logger = Logger().get_logger(__name__)
 
@@ -9,29 +10,8 @@ DATA_DIR = os.path.join(os.getcwd(), "data")
 
 @Singleton
 class DataManager:
-
-    @staticmethod
-    def get_groups():
-        """
-        Retrieve group data from the 'group.txt' file.
-
-        Returns:
-            dict: A dictionary containing group data if successfully loaded,
-                otherwise an empty dictionary in case of an error.
-        """
-
-        group_file_path = os.path.join(DATA_DIR, "group.txt")
-        if not os.path.exists(group_file_path):
-            return {}
-        with open(group_file_path, "r") as f:
-            groups_data = json.load(f)
-        return groups_data
-
-    @staticmethod
-    def save_groups(groups):
-        group_file_path = os.path.join(DATA_DIR, "group.txt")
-        with open(group_file_path, "w+") as f:
-            json.dump(groups, f)
+    def __init__(self):
+        self.db_manager = DBManager()
 
     @staticmethod
     def get_folder_id():

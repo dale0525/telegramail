@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from app.utils import Logger
 from app.utils.decorators import Singleton
 
@@ -16,6 +16,7 @@ class DBManager:
 
     def __init__(self):
         """Initialize database manager"""
+        # check if database exists
         self._initialize_db()
 
     def _initialize_db(self) -> None:
@@ -25,27 +26,39 @@ class DBManager:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
-        # Create emails table if not exists
-        cursor.execute(
+        # Create accounts and email table if not exists
+        cursor.executescript(
             """
-        CREATE TABLE IF NOT EXISTS emails (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email_account TEXT NOT NULL,
-            message_id TEXT,
-            sender TEXT,
-            recipient TEXT,
-            cc TEXT,
-            bcc TEXT,
-            subject TEXT,
-            date TEXT,
-            body_text TEXT,
-            body_html TEXT,
-            timestamp INTEGER,
-            uid TEXT,
-            telegram_thread_id TEXT,
-            UNIQUE(email_account, uid)
-        )
-        """
+CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    password TEXT NOT NULL,
+    imap_server TEXT NOT NULL,
+    imap_port INTEGER NOT NULL,
+    imap_ssl INTEGER NOT NULL,
+    smtp_server TEXT NOT NULL,
+    smtp_port INTEGER NOT NULL,
+    smtp_ssl INTEGER NOT NULL,
+    alias TEXT NOT NULL,
+    tg_group_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS emails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email_account INTEGER NOT NULL,
+    message_id TEXT,
+    sender TEXT,
+    recipient TEXT,
+    cc TEXT,
+    bcc TEXT,
+    subject TEXT,
+    email_date TEXT,
+    body_text TEXT,
+    body_html TEXT,
+    uid TEXT,
+    telegram_thread_id TEXT,
+    UNIQUE(email_account, uid)
+);
+"""
         )
 
         conn.commit()
@@ -60,7 +73,7 @@ class DBManager:
         """
         # Set timeout (in seconds) for acquiring a lock
         # Use WAL mode to reduce locking issues
-        conn = sqlite3.connect(DB_PATH, timeout=20.0)
+        conn = sqlite3.connect(DB_PATH)
 
         # Enable WAL mode which allows concurrent reads
         conn.execute("PRAGMA journal_mode=WAL")
@@ -70,36 +83,180 @@ class DBManager:
 
         return conn
 
-    def get_email_by_id(self, email_id: int) -> Optional[Dict[str, Any]]:
+    def get_accounts(self) -> List[Dict[str, Any]]:
         """
-        Get email by ID
-
-        Args:
-            email_id: Database ID of the email
+        Get all accounts from the database
 
         Returns:
-            Optional[Dict[str, Any]]: Email information or None if not found
+            List[Dict[str, Any]]: List of account dictionaries
         """
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute("SELECT * FROM emails WHERE id = ?", (email_id,))
+            cursor.execute("SELECT * FROM accounts")
+            accounts = [dict(row) for row in cursor.fetchall()]
+
+            conn.close()
+            return accounts
+
+        except Exception as e:
+            logger.error(f"Error getting accounts: {e}")
+            return []
+
+    def add_account(self, account: Dict[str, Any]) -> bool:
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO accounts (email, password, imap_server, imap_port, imap_ssl, smtp_server, smtp_port, smtp_ssl, alias, tg_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    account["email"],
+                    account["password"],
+                    account["imap_server"],
+                    account["imap_port"],
+                    account["imap_ssl"],
+                    account["smtp_server"],
+                    account["smtp_port"],
+                    account["smtp_ssl"],
+                    account["alias"],
+                    account.get("tg_group_id"),
+                ),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding account: {e}")
+            return False
+
+    def remove_account(
+        self,
+        id: Optional[int | str] = None,
+        email: Optional[str] = None,
+        smtp_server: Optional[str] = None,
+    ) -> bool:
+        """
+        Remove an account from the database by ID or by email and SMTP server
+
+        Args:
+            id: Database ID of the account to remove
+            email: Email address of the account to remove
+            smtp_server: SMTP server of the account to remove
+
+        Returns:
+            bool: True if account was removed, False otherwise
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            id = int(id)
+
+            if id is not None:
+                cursor.execute("DELETE FROM accounts WHERE id = ?", (id,))
+            elif email is not None and smtp_server is not None:
+                cursor.execute(
+                    "DELETE FROM accounts WHERE email = ? AND smtp_server = ?",
+                    (email, smtp_server),
+                )
+            else:
+                raise ValueError("Either id or email and smtp_server must be specified")
+
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error removing account: {e}")
+            return False
+
+    def get_account(
+        self,
+        id: Optional[int | str] = None,
+        email: Optional[str] = None,
+        smtp_server: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get account by ID or by email and SMTP server
+
+        Args:
+            id: Database ID of the account
+            email: Email address of the account
+            smtp_server: SMTP server of the account
+
+        Returns:
+            Optional[Dict[str, Any]]: Account information or None if not found
+        """
+        try:
+            conn = self._get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            if id is not None:
+                id = int(id)
+                cursor.execute("SELECT * FROM accounts WHERE id = ?", (id,))
+            elif email is not None and smtp_server is not None:
+                cursor.execute(
+                    "SELECT * FROM accounts WHERE email = ? AND smtp_server = ?",
+                    (email, smtp_server),
+                )
+            else:
+                raise ValueError("Either id or email and smtp_server must be specified")
+
             row = cursor.fetchone()
 
             if not row:
                 conn.close()
                 return None
 
-            email_dict = {k: row[k] for k in row.keys()}
+            account_dict = {k: row[k] for k in row.keys()}
 
             conn.close()
-            return email_dict
+            return account_dict
 
         except Exception as e:
-            logger.error(f"Error getting email by ID: {e}")
+            logger.error(f"Error getting account: {e}")
             return None
+
+    def update_account(
+        self,
+        updates: Dict[str, Any],
+        id: Optional[int | str] = None,
+        email: Optional[str] = None,
+        smtp_server: Optional[str] = None,
+    ):
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            id = int(id)
+
+            if id is not None:
+                # Only update keys that are present in updates
+                if updates:
+                    set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
+                    params = list(updates.values()) + [id]
+                    cursor.execute(
+                        f"UPDATE accounts SET {set_clause} WHERE id = ?", params
+                    )
+            elif email is not None and smtp_server is not None:
+                # Only update keys that are present in updates
+                if updates:
+                    set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
+                    params = list(updates.values()) + [email]
+                    cursor.execute(
+                        f"UPDATE accounts SET {set_clause} WHERE email = ?", params
+                    )
+            else:
+                raise ValueError("Either id or email must be specified")
+
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating account: {e}")
+            return False
 
     def get_email_uid_by_telegram_thread_id(
         self, telegram_thread_id: str
@@ -111,7 +268,7 @@ class DBManager:
             telegram_thread_id: Telegram thread ID to search for
 
         Returns:
-            tuple[Optional[str], Optional[str]]: (email_account, uid) or (None, None) if not found
+            tuple[Optional[int], Optional[str]]: (email_account, uid) or (None, None) if not found
         """
         try:
             conn = self._get_connection()
@@ -133,7 +290,7 @@ class DBManager:
             logger.error(f"Error getting email uid by Telegram thread ID: {e}")
             return None, None
 
-    def delete_email_by_uid(self, email_account: str, uid: str) -> bool:
+    def delete_email_by_uid(self, account_info: dict[str, Any], uid: str) -> bool:
         """
         Delete email by UID from local database
 
@@ -149,7 +306,7 @@ class DBManager:
             cursor = conn.cursor()
             cursor.execute(
                 "DELETE FROM emails WHERE email_account = ? AND uid = ?",
-                (email_account, uid),
+                (account_info["id"], uid),
             )
             conn.commit()
             rows_affected = cursor.rowcount
@@ -163,4 +320,29 @@ class DBManager:
                 return False
         except Exception as e:
             logger.error(f"Error deleting email with UID {uid} from database: {e}")
+            return False
+
+    def update_thread_id_in_db(self, email_id: int, thread_id: int) -> bool:
+        """
+        Update the telegram_thread_id for an email in the database
+
+        Args:
+            email_id: Database ID of the email
+            thread_id: Telegram message thread ID
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE emails SET telegram_thread_id = ? WHERE id = ?",
+                (str(thread_id), email_id),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating thread ID in database: {e}")
             return False

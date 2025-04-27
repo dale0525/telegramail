@@ -27,7 +27,8 @@ async def start_command_handler(client: Client, update: UpdateNewMessage):
         return
 
     account_manager = AccountManager()
-    if len(account_manager.accounts) <= 0:
+    accounts = account_manager.get_all_accounts()
+    if len(accounts) <= 0:
         await send_and_delete_message(
             client=client,
             chat_id=update.message.chat_id,

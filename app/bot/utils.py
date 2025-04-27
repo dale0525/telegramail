@@ -1,10 +1,10 @@
 from aiotdlib import Client
 from aiotdlib.api import Update
-import asyncio, os, signal, json
+import asyncio, os, signal
 from app.bot.bot_client import BotClient
 from app.user.user_client import UserClient
 from app.utils import Logger
-from typing import Optional
+from typing import Any, Optional
 from aiotdlib.api import (
     ChatFolder,
     ChatFolderIcon,
@@ -16,6 +16,7 @@ from aiotdlib.api import (
 )
 from app.i18n import _
 from app.data import DataManager
+from app.email_utils import AccountManager
 
 logger = Logger().get_logger(__name__)
 
@@ -111,17 +112,19 @@ def setup_signal_handlers(client: Client, loop: asyncio.AbstractEventLoop):
         )
 
 
-async def _ensure_groups_in_folder(folder_id: int):
-    groups = DataManager().get_groups()
-    if groups is None:
-        return
+async def _ensure_groups_in_folder(folder_id: int, new_group_id: Optional[int] = None):
+    account_manager = AccountManager()
+    accounts = account_manager.get_all_accounts()
     client = UserClient().client
     folder = await client.api.get_chat_folder(chat_folder_id=folder_id)
     edited_folder = folder.model_copy()
     groups_in_folder = edited_folder.included_chat_ids
-    for email, group_id in groups.items():
+    for account in accounts:
+        group_id = account["tg_group_id"]
         if group_id not in groups_in_folder:
             groups_in_folder.append(group_id)
+    if new_group_id and new_group_id not in groups_in_folder:
+        groups_in_folder.append(new_group_id)
     bot_info = await BotClient().client.api.get_me()
     bot_id = bot_info.id
     if bot_id not in groups_in_folder:
@@ -136,19 +139,21 @@ async def _ensure_groups_in_folder(folder_id: int):
 
 
 async def _create_email_folder(
-    folder_name: str, icon_name: str = "Work"
+    folder_name: str, icon_name: str = "Work", new_group_id: Optional[int] = None
 ) -> Optional[int]:
     try:
-        groups = DataManager().get_groups()
-        if groups is None:
-            return None
+        account_manager = AccountManager()
+        accounts = account_manager.get_all_accounts()
+        groups = [account["tg_group_id"] for account in accounts]
+        if new_group_id:
+            groups.append(new_group_id)
         client = UserClient().client
         folder_info = await client.api.create_chat_folder(
             ChatFolder(
                 name=ChatFolderName(text=FormattedText(text=folder_name, entities=[])),
                 icon=ChatFolderIcon(name=icon_name),
                 pinned_chat_ids=[],
-                included_chat_ids=list(groups.values()),
+                included_chat_ids=groups,
                 excluded_chat_ids=[],
                 color_id=-1,
             )
@@ -159,33 +164,38 @@ async def _create_email_folder(
         return None
 
 
-async def get_email_folder_id() -> tuple[bool, str]:
+async def get_email_folder_id(context) -> tuple[bool, str, int]:
     """
     Get folder id of "Email". If not exists, create one.
 
     Returns:
         Returns:
-        Tuple (success: bool, message: str)
+        Tuple (success: bool, message: str, folder_id: int)
     """
     folder_name = "Email"
     folder_id = DataManager().get_folder_id()
-    logger.debug(folder_id)
 
     if folder_id:
         try:
-            await _ensure_groups_in_folder(folder_id=folder_id)
+            await _ensure_groups_in_folder(
+                folder_id=folder_id, new_group_id=context.get("tg_group_id")
+            )
         except Exception as e:
             logger.error(f"failed to add all groups to email folder: {e}")
     else:
-        folder_id = await _create_email_folder(folder_name=folder_name)
+        folder_id = await _create_email_folder(
+            folder_name=folder_name, new_group_id=context.get("tg_group_id")
+        )
         if folder_id:
-            await _ensure_groups_in_folder(folder_id=folder_id)
+            await _ensure_groups_in_folder(
+                folder_id=folder_id, new_group_id=context.get("tg_group_id")
+            )
             DataManager().save_folder_id(folder_id=folder_id)
 
     if folder_id:
-        return True, _("folder_create_success")
+        return True, _("folder_create_success"), folder_id
     else:
-        return False, _("folder_create_fail")
+        return False, _("folder_create_fail"), None
 
 
 async def _create_super_group(name: str, desc: str, provider_name: str = None) -> Chat:
@@ -255,33 +265,16 @@ async def _create_super_group(name: str, desc: str, provider_name: str = None) -
     return group
 
 
-async def get_group_id(
-    email: str,
-    alias: Optional[str] = None,
-    provider_name: Optional[str] = None,
-) -> tuple[bool, str]:
-    """
-    Get group id of the email account. If not exists, create one.
+async def get_group_id(context: dict[str, Any]) -> tuple[bool, str, int]:
+    account_manager = AccountManager()
+    account = account_manager.get_account(
+        email=context["email"], smtp_server=context["smtp_server"]
+    )
 
-    Args:
-        email: email address
-        alias: email account alias
-        provider_name: Provider name for icon selection
-
-    Returns:
-        Tuple (success: bool, message: str)
-    """
-
-    group_id = None
+    group_id = account.get("tg_group_id") if account else None
     group = None
-    groups = DataManager().get_groups()
-    if groups is None:
-        groups = {}
-    else:
-        if email in groups:
-            group_id = groups[email]
 
-    if group_id and group_id > 0:
+    if group_id:
         try:
             client = UserClient().client
             group = await client.api.get_chat(group_id)
@@ -290,14 +283,14 @@ async def get_group_id(
 
     if not group:
         group = await _create_super_group(
-            name=alias, desc=email, provider_name=provider_name
+            name=context["alias"],
+            desc=context["email"],
+            provider_name=context["common_provider_name"],
         )
         if group:
             group_id = group.id
-            groups[email] = group_id
-            DataManager().save_groups(groups)
 
     if group_id:
-        return True, _("group_create_success")
+        return True, _("group_create_success"), group_id
     else:
-        return False, _("group_create_fail")
+        return False, _("group_create_fail"), None

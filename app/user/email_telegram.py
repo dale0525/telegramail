@@ -2,16 +2,15 @@ import os
 import re
 from typing import Dict, List, Optional, Any
 import tempfile
-import sqlite3
+import email.header
+import base64
 
 from app.bot.bot_client import BotClient
 from app.i18n import _
 from app.utils import Logger
 from app.database import DBManager
 from app.user.user_client import UserClient
-from app.utils.decorators import retry_on_fail
-from app.data import DataManager
-from app.email_utils import summarize_email
+from app.email_utils import summarize_email, AccountManager
 from aiotdlib.api import (
     FormattedText,
     InputMessageText,
@@ -28,7 +27,6 @@ from aiotdlib.api import (
     InlineKeyboardButton,
     InlineKeyboardButtonTypeUrl,
     ReplyMarkupInlineKeyboard,
-    LinkPreviewOptions,
 )
 from aiotdlib.api import MessageSendOptions
 
@@ -43,14 +41,8 @@ class EmailTelegramSender:
         self.bot_client = BotClient().client
         self.db_manager = DBManager()
 
-    @retry_on_fail(
-        max_retries=5,
-        retry_delay=0.5,
-        exceptions=(sqlite3.OperationalError, sqlite3.DatabaseError),
-        retry_on_error_message="database is locked",
-    )
     async def get_thread_id_by_subject(
-        self, subject: str, group_id: int
+        self, subject: str, account_id: int
     ) -> Optional[int]:
         """
         Find a telegram thread ID by email subject (without Re: prefix)
@@ -73,10 +65,10 @@ class EmailTelegramSender:
             cursor.execute(
                 """
                 SELECT telegram_thread_id FROM emails
-                WHERE subject LIKE ? AND telegram_thread_id IS NOT NULL
+                WHERE subject LIKE ? AND telegram_thread_id IS NOT NULL AND email_account = ?
                 LIMIT 1
                 """,
-                (f"%{clean_subject}%",),
+                (f"%{clean_subject}%", account_id),
             )
             result = cursor.fetchone()
             if result and result[0]:
@@ -115,8 +107,18 @@ class EmailTelegramSender:
                 title = title[:125] + "..."
 
             # Create forum topic
+            # 5377498341074542641:‼️
+            # 5379748062124056162:❗️
+            # 5309984423003823246:📣
+            # 5237699328843200968:✅
+            # 5235579393115438657:⭐️
+            # 5417915203100613993:💬
             result = await self.user_client.api.create_forum_topic(
-                chat_id=chat_id, name=title, icon=ForumTopicIcon(color=0x6FB9F0)
+                chat_id=chat_id,
+                name=title,
+                icon=ForumTopicIcon(
+                    color=0x6FB9F0, custom_emoji_id=5309984423003823246
+                ),
             )
 
             logger.info(
@@ -126,44 +128,6 @@ class EmailTelegramSender:
         except Exception as e:
             logger.error(f"Error creating forum topic: {e}")
             return None
-
-    @retry_on_fail(
-        max_retries=5,
-        retry_delay=0.5,
-        exceptions=(sqlite3.OperationalError, sqlite3.DatabaseError),
-        retry_on_error_message="database is locked",
-    )
-    async def update_thread_id_in_db(self, email_id: int, thread_id: int) -> bool:
-        """
-        Update the telegram_thread_id for an email in the database
-
-        Args:
-            email_id: Database ID of the email
-            thread_id: Telegram message thread ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        conn = None
-        try:
-            conn = self.db_manager._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE emails SET telegram_thread_id = ? WHERE id = ?",
-                (str(thread_id), email_id),
-            )
-            conn.commit()
-            return True
-        except Exception as e:
-            logger.error(f"Error updating thread ID in database: {e}")
-            raise  # Let the decorator handle retries
-        finally:
-            # Always close the connection
-            if conn:
-                try:
-                    conn.close()
-                except Exception as close_error:
-                    logger.error(f"Error closing database connection: {close_error}")
 
     async def str_to_formatted(self, original: str, parse_mode: Any) -> FormattedText:
         if not isinstance(parse_mode, str):
@@ -309,36 +273,43 @@ class EmailTelegramSender:
             Optional[Message]: Message object if sent successfully, None otherwise
         """
         try:
-            # Create temporary file for the attachment
-            with tempfile.NamedTemporaryFile(
-                delete=False, suffix=f"_{attachment['filename']}"
-            ) as temp:
-                temp_path = temp.name
-                temp.write(attachment["data"])
+            # Get original filename and decode if necessary
+            encoded_filename = attachment["filename"]
+            filename = self.decode_mime_filename(encoded_filename)
+
+            # Create temporary directory and file with the decoded filename
+            temp_dir = tempfile.mkdtemp()
+            # Sanitize filename to avoid filesystem issues
+            safe_filename = self.sanitize_filename(filename)
+            temp_path = os.path.join(temp_dir, safe_filename)
+
+            # Write attachment data to the file
+            with open(temp_path, "wb") as f:
+                f.write(attachment["data"])
 
             # Choose the right input content type based on the content type
             content_type = attachment["content_type"].lower()
 
-            # Create the message content based on content type
+            # Create the message content based on content type without any caption
             if content_type.startswith("image/"):
                 content = InputMessagePhoto(
                     photo=InputFileLocal(path=temp_path),
                     thumbnail=None,
-                    caption=FormattedText(text=attachment["filename"], entities=[]),
+                    caption=FormattedText(text="", entities=[]),
                     added_sticker_file_ids=[],
                 )
             elif content_type.startswith("video/"):
                 content = InputMessageVideo(
                     video=InputFileLocal(path=temp_path),
                     thumbnail=None,
-                    caption=FormattedText(text=attachment["filename"], entities=[]),
+                    caption=FormattedText(text="", entities=[]),
                     added_sticker_file_ids=[],
                 )
             elif content_type.startswith("audio/"):
                 content = InputMessageAudio(
                     audio=InputFileLocal(path=temp_path),
                     thumbnail=None,
-                    caption=FormattedText(text=attachment["filename"], entities=[]),
+                    caption=FormattedText(text="", entities=[]),
                     duration=0,
                     title="",
                     performer="",
@@ -348,7 +319,7 @@ class EmailTelegramSender:
                 content = InputMessageDocument(
                     document=InputFileLocal(path=temp_path),
                     thumbnail=None,
-                    caption=FormattedText(text=attachment["filename"], entities=[]),
+                    caption=FormattedText(text="", entities=[]),
                 )
 
             # Send the message
@@ -361,6 +332,7 @@ class EmailTelegramSender:
 
             # Clean up
             os.unlink(temp_path)
+            os.rmdir(temp_dir)
 
             return message
         except Exception as e:
@@ -368,7 +340,74 @@ class EmailTelegramSender:
             # Clean up in case of error
             if "temp_path" in locals() and os.path.exists(temp_path):
                 os.unlink(temp_path)
+            if "temp_dir" in locals() and os.path.exists(temp_dir):
+                os.rmdir(temp_dir)
             return None
+
+    def decode_mime_filename(self, filename: str) -> str:
+        """
+        Decode MIME encoded filenames (like =?utf-8?B?...?=)
+
+        Args:
+            filename: The potentially encoded filename
+
+        Returns:
+            str: Decoded filename
+        """
+        try:
+            # Check if this is a MIME encoded string
+            if filename.startswith("=?") and filename.endswith("?="):
+                # Use email.header.decode_header to decode
+                decoded_parts = email.header.decode_header(filename)
+                # Join all decoded parts
+                decoded_filename = ""
+                for part, charset in decoded_parts:
+                    if isinstance(part, bytes):
+                        if charset:
+                            decoded_filename += part.decode(charset)
+                        else:
+                            # Default to utf-8 if charset is not specified
+                            decoded_filename += part.decode("utf-8", errors="replace")
+                    else:
+                        decoded_filename += part
+                return decoded_filename
+            # Custom decoding for specific pattern not handled by email.header
+            # Format: =?charset?encoding?encoded-text?=
+            pattern = r"=\?([^?]+)\?([BbQq])\?([^?]+)\?\="
+            match = re.match(pattern, filename)
+            if match:
+                charset, encoding, encoded_text = match.groups()
+                if encoding.upper() == "B":  # Base64
+                    decoded_text = base64.b64decode(encoded_text).decode(charset)
+                    return decoded_text
+                # Handle other encodings if needed (Q for quoted-printable)
+
+            # Return original if no encoding detected
+            return filename
+        except Exception as e:
+            logger.error(f"Error decoding filename: {e}, using original: {filename}")
+            return filename
+
+    def sanitize_filename(self, filename: str) -> str:
+        """
+        Sanitize filename to make it safe for file system operations
+
+        Args:
+            filename: Original filename that might contain invalid characters
+
+        Returns:
+            str: Sanitized filename
+        """
+        # Replace invalid characters with underscore
+        sanitized = re.sub(r'[\\/*?:"<>|]', "_", filename)
+        # Limit length to prevent extremely long filenames
+        if len(sanitized) > 200:
+            name, ext = os.path.splitext(sanitized)
+            sanitized = name[:195] + ext
+        # Ensure we have at least some filename
+        if not sanitized or sanitized.isspace():
+            sanitized = "attachment"
+        return sanitized
 
     async def send_attachments(
         self, chat_id: int, thread_id: int, attachments: List[Dict[str, Any]]
@@ -388,15 +427,7 @@ class EmailTelegramSender:
             return True
 
         try:
-            # Send attachment header message
-            await self.send_text_message(
-                chat_id=chat_id,
-                text=f"<b>Attachments ({len(attachments)}):</b>",
-                thread_id=thread_id,
-                parse_mode="HTML",
-            )
-
-            # Send each attachment
+            # Send each attachment without header message
             for attachment in attachments:
                 await self.send_attachment(chat_id, thread_id, attachment)
 
@@ -416,22 +447,17 @@ class EmailTelegramSender:
             bool: True if email was sent successfully, False otherwise
         """
         try:
-            # Get group ID for this email account
-            groups = DataManager().get_groups()
-            if not groups or email_data["email_account"] not in groups:
-                logger.error(
-                    f"No group found for email account: {email_data['email_account']}"
-                )
-                return False
-
-            group_id = groups[email_data["email_account"]]
+            account_id = email_data["email_account"]
+            account_manager = AccountManager()
+            account = account_manager.get_account(id=account_id)
+            group_id = account["tg_group_id"]
 
             # Clean subject (remove Re: prefix)
             subject = email_data["subject"]
             clean_subject = re.sub(r"^(?i)re:\s*", "", subject.strip())
 
             # Check for existing thread ID
-            thread_id = await self.get_thread_id_by_subject(clean_subject, group_id)
+            thread_id = await self.get_thread_id_by_subject(clean_subject, account_id)
 
             # If no thread exists, create a new forum topic
             if not thread_id:
@@ -441,7 +467,7 @@ class EmailTelegramSender:
                     return False
 
                 # Update database with thread ID
-                await self.update_thread_id_in_db(email_data["id"], thread_id)
+                self.db_manager.update_thread_id_in_db(email_data["id"], thread_id)
 
             # 2. Send email title
             # Title
