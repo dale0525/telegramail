@@ -124,8 +124,13 @@ TelegramMail regularly checks for unread emails in the INBOX and sends new email
   - If in HTML format, sent as an HTML file
   - If in plain text format, sent directly as plain text
 - Attachments
+![20250428160226](https://imagehost.daletan.win/20250428160226.png)
 
 You can change the frequency of regular checks by modifying `POLLING_INTERVAL` in the `.env` file. The default is 300 seconds.
+
+### 删除邮件
+
+If you want to delete an email, just delete the corresponding Topic in Telegram. Telegramail will search for deleted topics every 3 minutes, clean the database and delete related emails from the mail server.
 
 ### AI
 

@@ -73,14 +73,14 @@ Your primary instruction is to process the provided email content and return **O
     *   **Length Restriction:** The entire "summary" string content must be **no more than 1000 characters** (in any language).
 
 2.  **Relevant URLs (JSON Key: "urls")**
-    *   **Goal:** Identify and list URLs directly relevant to the summary's content or related to email actions (e.g., view online, unsubscribe). Only `http` or `https` URLs are allowed.
+    *   **Goal:** Identify and list URLs directly relevant to the summary's content, related to email actions and email subscriptions. Only `http` or `https` URLs are allowed.
     *   **Exclusion:** Do **not** include image URLs here (handle as described in Summary Formatting).
     *   **Format:** Each URL must be an object within the array:
         ```json
-        {
+        {{
             "caption": "Brief name/description (max 20 chars)",
             "link": "Actual URL string"
-        }
+        }}
         ```
     *   **Restriction:** Include **no more than 5 URL objects** in the array.
     *   **Empty Case:** If no relevant URLs are found, use an empty JSON array: `[]`.
