@@ -42,7 +42,7 @@ class EmailTelegramSender:
         self.db_manager = DBManager()
 
     async def get_thread_id_by_subject(
-        self, subject: str, account_id: int
+        self, clean_subject: str, account_id: int
     ) -> Optional[int]:
         """
         Find a telegram thread ID by email subject (without Re: prefix)
@@ -54,8 +54,6 @@ class EmailTelegramSender:
         Returns:
             Optional[int]: Thread ID if found, None otherwise
         """
-        # Remove Re:, RE:, re:, etc. prefixes
-        clean_subject = re.sub(r"^(?i)re[:：]\s*", "", subject.strip())
 
         # Query database for an existing thread with this subject
         conn = None
@@ -302,40 +300,11 @@ class EmailTelegramSender:
             with open(temp_path, "wb") as f:
                 f.write(attachment["data"])
 
-            # Choose the right input content type based on the content type
-            content_type = attachment["content_type"].lower()
-
-            # Create the message content based on content type without any caption
-            if content_type.startswith("image/"):
-                content = InputMessagePhoto(
-                    photo=InputFileLocal(path=temp_path),
-                    thumbnail=None,
-                    caption=FormattedText(text="", entities=[]),
-                    added_sticker_file_ids=[],
-                )
-            elif content_type.startswith("video/"):
-                content = InputMessageVideo(
-                    video=InputFileLocal(path=temp_path),
-                    thumbnail=None,
-                    caption=FormattedText(text="", entities=[]),
-                    added_sticker_file_ids=[],
-                )
-            elif content_type.startswith("audio/"):
-                content = InputMessageAudio(
-                    audio=InputFileLocal(path=temp_path),
-                    thumbnail=None,
-                    caption=FormattedText(text="", entities=[]),
-                    duration=0,
-                    title="",
-                    performer="",
-                )
-            else:
-                # Default to document for other types
-                content = InputMessageDocument(
-                    document=InputFileLocal(path=temp_path),
-                    thumbnail=None,
-                    caption=FormattedText(text="", entities=[]),
-                )
+            content = InputMessageDocument(
+                document=InputFileLocal(path=temp_path),
+                thumbnail=None,
+                caption=FormattedText(text="", entities=[]),
+            )
 
             # Send the message
             message = await self.bot_client.api.send_message(
@@ -471,7 +440,9 @@ class EmailTelegramSender:
 
             # Clean subject (remove Re: prefix)
             subject = email_data["subject"]
-            clean_subject = re.sub(r"^(?i)re:\s*", "", subject.strip())
+            clean_subject = re.sub(
+                r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
+            )
 
             # Check for existing thread ID
             thread_id = await self.get_thread_id_by_subject(clean_subject, account_id)

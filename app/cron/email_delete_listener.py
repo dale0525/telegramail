@@ -4,13 +4,14 @@ from aiotdlib.api import (
 )
 from app.database import DBManager
 from app.email_utils.imap_client import IMAPClient
-from app.utils import Logger
+from app.utils import Logger, retry_on_fail
 from app.cron.cron_utils import start_periodic_task
 from app.email_utils import AccountManager
 
 logger = Logger().get_logger(__name__)
 
 
+@retry_on_fail(max_retries=2, retry_delay=1.0)
 async def check_deleted_topics_for_group(chat_id):
     """
     Check deleted topics for a specific group
@@ -19,7 +20,7 @@ async def check_deleted_topics_for_group(chat_id):
         # Get current time and calculate the time threshold (with redundancy)
         now = datetime.datetime.now()
         # Using 5 minutes instead of 3 for redundancy
-        time_threshold = now - datetime.timedelta(minutes=5)
+        time_threshold = now - datetime.timedelta(minutes=10)
 
         from app.user.user_client import UserClient
 

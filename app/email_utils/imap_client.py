@@ -448,13 +448,9 @@ class IMAPClient:
             if status != "OK":
                 logger.error(f"Failed to mark email {uid} as deleted: {response}")
                 return False
-            # use EXPUNGE to delete permanently, if the email is already deleted
-            status, response = self.conn.expunge()
-            if status != "OK":
-                logger.error(f"Failed to expunge deleted emails: {response}")
-                return False
+            # Email is marked as deleted, server will handle actual deletion
 
-            logger.info(f"Successfully deleted email with UID {uid}")
+            logger.info(f"Successfully marked email with UID {uid} for deletion")
 
             # delete from local db
             db_result = self.db_manager.delete_email_by_uid(self.account_info, uid)
