@@ -1,138 +1,128 @@
 # TelegramMail
 
-TelegramMail 是一个基于 Telegram Bot 的邮件收发工具，让你可以直接在 Telegram 中收发邮件，无需切换到传统邮件客户端。本项目设计为个人使用，一个Bot只能由一个用户管理和使用。
+TelegramMail is a Telegram-based email tool that allows you to send and receive emails directly in Telegram without switching to traditional email clients. This project is designed for personal use, with each client managed and used by a single user.
 
-## 和传统邮件客户端的比较
-### 优点
-- 轻量
-- 全平台支持（通过 telegram），一次配置全平台通用
-- 邮件信息和附件存储在 telegram，享受 telegram 的永久云存储
-- 即使邮箱账号丢失（比如离职后无法访问公司邮箱），依然可以查看历史邮件
-- 可以使用大语言模型 API 实现 AI 相关功能（待开发）
+## Comparison with Traditional Email Clients
+### Advantages
+- Lightweight
+- Cross-platform support (via Telegram), one configuration works across all platforms
+- Email information and attachments are stored in Telegram, enjoying Telegram's permanent cloud storage
+- Even if you lose access to your email account (e.g., after leaving a company), you can still view historical emails
+- Can implement AI-related features using LLM APIs
 
-### 缺点
-- 由于 telegram 对信息长度的限制，完整邮件只能查看预览图片
-- 无法处理含有大量收件人、抄送、密送的情况
-- 如果要在邮件正文添加图片，只能使用 markdown 格式，无法简单拖拽实现
-- 所有邮件信息都在同一个对话中，只能通过标签区分
+### Disadvantages
+- Cannot handle emails with a large number of recipients, CC, or BCC
+- Not convenient for composing emails, no WYSIWYG editor
 
-## 功能
+## Features
 
-- [x] 添加多个邮箱
-- [ ] 接收邮件并转发到 Telegram
-- [ ] 删除邮件
-- [ ] 撰写新邮件
-- [ ] 撰写邮件正文支持 Markdown
-- [ ] 定时获取邮件
-- [ ] 手动刷新邮件
-- [ ] 回复邮件
-- [ ] 转发邮件
-- [ ] 配置单个邮箱需要接收的文件夹
-- [ ] 获取所有邮件
-- [ ] 为每个邮箱设置签名，支持 Markdown
-- [ ] 添加邮箱后立即启动邮箱设置
-- [x] 通过 Telegram 配置邮箱设置
-- [ ] 邮件信息中显示邮箱所在文件夹
-- [ ] 使用 LLM 判断邮件标签
-- [ ] 使用 LLM 写邮件
-- [ ] 搜索邮件
-- [ ] 从邮件中提取重要链接
-- [ ] 反向代理查看邮件完整 html
+- [x] Add multiple email accounts
+- [x] Receive emails and forward to Telegram
+- [x] Delete emails
+- [ ] Compose new emails
+- [x] Fetch emails on schedule
+- [x] Manually refresh emails
+- [ ] Reply to emails
+- [ ] Forward emails
+- [ ] Receive emails from folders other than INBOX
+- [ ] Fetch all emails
+- [ ] Set signature for each email account
+- [ ] Display email folder information
+- [x] Summarize emails using LLM
+- [ ] Label emails using LLM
+- [ ] Write emails using LLM
+- [ ] Search emails
+- [x] Extract important links from emails (via LLM)
 
-## 已知问题
-- 由于 telgram 限制，bot 无法删除发送超过 48 小时的信息。在点击一封邮件的删除按钮时，如果该邮件已经超过 48 小时，需要额外手动删除telegram 中的信息（但 imap 侧无需手动删除）
+## Installation and Deployment
 
-## 安装与部署
+### Prerequisites
 
-### 环境要求
+- Telegram Bot Token (obtained via @BotFather)
+- Telegram App ID, Telegram App Hash (need to [apply](https://core.telegram.org/api/obtaining_api_id))
+> Why do we need Telegram App ID instead of just using Telegram Bot?
+> 1. Telegram Bot cannot delete messages older than 48 hours
+> 2. Telegram Bot cannot listen to message deletion events
+- (Optional) OpenAI-compatible LLM API for AI features such as email summarization
 
-- Docker 和 Docker Compose (推荐)
-- Telegram Bot Token
-- Telegram User ID
-- Python 3.9+（开发环境）
+#### Deployment with Python
 
-### 使用 Docker 部署
-
-1. 克隆仓库:
+1. Clone the repository:
    ```bash
    git clone https://github.com/dale0525/telegramail.git
    cd telegramail
    ```
-2. 创建配置文件:
+2. Create configuration file:
    ```bash
    cp .env.example .env
    ```
-3. 获取你的Telegram Bot Token:
-   通过 @BotFather 新建 Telegram 机器人，并获取 Token
-4. 获取你的 Telegram ID:
-   通过 @getuseridbot 获取你的 Telegram ID
-5. 编辑 `.env` 文件，填入你的 Telegram Bot Token和Telegram ID:
+3. Edit the `.env` file and fill in your Telegram Bot Token and Telegram ID:
    ```
+   TELEGRAM_API_ID=your_telegram_api_id_here
+   TELEGRAM_API_HASH=your_telegram_api_hash_here
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-   TELEGRAM_UID=your_telegram_id_here
    ```
-6. 使用 Docker Compose 启动:
-   ```bash
-   docker-compose up -d
+4. (Optional) Fill in the LLM base url and api key. `OPENAI_EMAIL_SUMMARIZE_MODELS` is a list of models used to summarize emails, separated by commas. If the first model fails to call, the next one will be used.
    ```
-
-### 本地开发
-
-1. 克隆仓库，配置好.env
-2. (Optional) 使用 mise 配置开发环境:
-   1. [安装 mise](https://mise.jdx.dev/getting-started.html)
-   2. 使用 mise 配置本地开发环境:
-   ```bash
-   mise install
+   ENABLE_LLM_SUMMARY=0    # set to 1 to enable email summary using llm
+   OPENAI_BASE_URL=your_openai_base_url_here
+   OPENAI_API_KEY=your_openai_key_here
+   OPENAI_EMAIL_SUMMARIZE_MODELS=1st_model_to_summarize_email_content,2nd_model_to_summarize_email_content
    ```
-3. 安装依赖:
-   ```bash
+5. Install dependencies:
+   ```
    pip install -r requirements.txt
+
+   # Or, if you have mise installed:
+   # mise run pip
    ```
-4. 运行程序:
-   ```bash
-   # 使用mise:
-   mise run dev
-   # 或者不使用 mise:
-   python run.py
+6. Start:
+   ```
+   python -m app.main
+
+   # Or, if you have mise installed:
+   # mise run dev
    ```
 
-## 使用方法
+## Usage
 
-### Telegram Bot 命令
+### Telegram Bot Commands
 
-- `/help` - 显示帮助信息
-- `/addaccount` - 添加邮箱账户
-- `/accounts` - 列出已添加的账户
-- `/compose` - 撰写新邮件
-- `/check` - 手动检查新邮件
+- `/start` - First-time startup command, will guide users to log in to their Telegram account and add their first email account
+- `/help` - Display help information
+- `/accounts` - Manage added email accounts or add new ones
+- `/check` - Manually check for new emails
 
-### 添加邮箱账户
+### Adding Email Accounts
 
-1. 在 Telegram 中向你的 Bot 发送 `/addaccount` 命令
-2. 按照提示输入邮箱地址、IMAP/SMTP 服务器信息和账户凭证
-3. Bot 会验证连接并保存账户信息
+1. Use the `/accounts` command and select "Add new account"
+2. Follow the prompts to select your email service provider, then enter your email address, password/App-specific password, and Alias (for display only). If you choose a custom email service, you'll need to additionally enter IMAP and SMTP server, port, and whether to use SSL
+3. Telegramail will create a group in Telegram named after your Alias, and add a folder named Email
+   ![20250428150635](https://imagehost.daletan.win/20250428150635.png)
 
-### 接收邮件
+### Receiving Emails
 
-TelegramMail 会定期检查新邮件，并将新邮件发送到 Telegram 对话中。每封邮件包含：
-- 邮件主题、发件人和收件人信息
-- 邮件正文预览
-- 邮件全文截图
-- 附件（如果有）
+TelegramMail regularly checks for unread emails in the INBOX and sends new emails to the Telegram group named after your email account Alias. Each email is presented as a Forum Topic, including:
+- Email subject, sender, and recipient information
+- Email summary (if LLM is configured)
+- Email body
+  - If in HTML format, sent as an HTML file
+  - If in plain text format, sent directly as plain text
+- Attachments
 
-### 发送邮件
+You can change the frequency of regular checks by modifying `POLLING_INTERVAL` in the `.env` file. The default is 300 seconds.
 
-1. 发送 `/compose` 命令
-2. 选择要使用的邮箱账户
-3. 按照提示输入收件人、抄送和密送人、主题和正文
-4. 发送附件（可选）
-5. 确认发送
+### AI
 
-> **注意：** 由于Telegram客户端会自动渲染特定的格式标记，以下格式需要使用转义符号：
-> - 加粗文本：使用 `\*\*文本\*\*` 而非 `**文本**`
-> - 内联代码：使用 `` \`代码\` `` 而非 `` `代码` ``
-> - 代码块：使用 `` \`\`\`\n 代码块 \n\`\`\` `` 而非 `` ```\n 代码块 \n``` ``
+If you've configured LLM-related parameters in `.env`, you can use AI-related features. Current features include:
+- Using LLM to summarize email content. Prompt is located at [app/email_utils/llm.py](./app/email_utils/llm.py).
 
-## 许可证
-此项目使用 GPL 许可证 - 详见 [LICENSE](LICENSE) 文件
+### Localization
+
+Translation texts are located in the [app/i18n](./app/i18n/) folder. You can add translations for your target language and set `DEFAULT_LANGUAGE` to your language in the `.env` file.
+
+## Known Issues
+- Due to instability of LLM output, it may generate invalid JSON response, or HTML tags that cannot be parsed by Telegram. In such case email summary will not be sent. If you want to use this feature, try to use more intelligent models.
+
+## License
+This project is licensed under the GPL License - see the [LICENSE](LICENSE) file for details

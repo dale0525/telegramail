@@ -164,6 +164,7 @@ class EmailTelegramSender:
         self,
         chat_id: int,
         text: str,
+        send_notification: bool = True,
         thread_id: Optional[int] = None,
         urls: Optional[list[dict]] = None,
         parse_mode: Optional[str] = None,
@@ -198,7 +199,11 @@ class EmailTelegramSender:
                 "chat_id": chat_id,
                 "message_thread_id": thread_id,
                 "input_message_content": InputMessageText(text=formatted),
-                "options": MessageSendOptions(paid_message_star_count=0, sending_id=0),
+                "options": MessageSendOptions(
+                    paid_message_star_count=0,
+                    sending_id=0,
+                    disable_notification=not send_notification,
+                ),
             }
             # Only add reply_markup if buttons exist
             if len(buttons) > 0:
@@ -210,7 +215,12 @@ class EmailTelegramSender:
             return None
 
     async def send_html_as_file(
-        self, chat_id: int, thread_id: int, content: str, filename: str = "email.html"
+        self,
+        chat_id: int,
+        thread_id: int,
+        content: str,
+        filename: str = "email.html",
+        send_notification: bool = False,
     ) -> Optional[Message]:
         """
         Send HTML content as a file
@@ -220,6 +230,7 @@ class EmailTelegramSender:
             thread_id: Thread ID for forum topics
             content: HTML content
             filename: Name for the file
+            send_notification: Whethere to send telegram notification
 
         Returns:
             Optional[Message]: Message object if sent successfully, None otherwise
@@ -241,7 +252,11 @@ class EmailTelegramSender:
                     document=InputFileLocal(path=temp_path),
                     caption=FormattedText(text=_("html_preview"), entities=[]),
                 ),
-                options=MessageSendOptions(paid_message_star_count=0, sending_id=0),
+                options=MessageSendOptions(
+                    paid_message_star_count=0,
+                    sending_id=0,
+                    disable_notification=not send_notification,
+                ),
             )
 
             # Clean up
@@ -327,7 +342,9 @@ class EmailTelegramSender:
                 chat_id=chat_id,
                 message_thread_id=thread_id,
                 input_message_content=content,
-                options=MessageSendOptions(paid_message_star_count=0, sending_id=0),
+                options=MessageSendOptions(
+                    paid_message_star_count=0, sending_id=0, disable_notification=True
+                ),
             )
 
             # Clean up
@@ -476,6 +493,7 @@ class EmailTelegramSender:
                 text=f"*{email_data['subject']}*",
                 thread_id=thread_id,
                 parse_mode="Markdown",
+                send_notification=False,
             )
 
             # 3. Send email headers
@@ -484,6 +502,7 @@ class EmailTelegramSender:
                 chat_id=group_id,
                 text=f"✍️ {_('email_from')}: {email_data['sender']}",
                 thread_id=thread_id,
+                send_notification=False,
             )
 
             # # To
@@ -502,6 +521,7 @@ class EmailTelegramSender:
                     chat_id=group_id,
                     text=f"👥 {_('email_cc')}: {email_data['cc']}",
                     thread_id=thread_id,
+                    send_notification=False,
                 )
 
             # 4. BCC (if exists)
@@ -510,26 +530,20 @@ class EmailTelegramSender:
                     chat_id=group_id,
                     text=f"🔒 {_('email_bcc')}: {email_data['bcc']}",
                     thread_id=thread_id,
+                    send_notification=False,
                 )
 
             # 5. Email Summary
             if email_data.get("body_text"):
                 summary = summarize_email(email_data["body_text"])
-                if summary is None:
-                    summary = email_data["body_text"]
-                    await self.send_text_message(
-                        chat_id=group_id,
-                        text=f"<b>{_('email_summary')}:</b> {summary[:4096]}",
-                        thread_id=thread_id,
-                        parse_mode="HTML",
-                    )
-                else:
+                if summary is not None:
                     await self.send_text_message(
                         chat_id=group_id,
                         text=f"<b>{_('email_summary')}:</b>\n{summary['summary']}",
                         urls=summary["urls"],
                         thread_id=thread_id,
                         parse_mode="HTML",
+                        send_notification=False,
                     )
 
             # 6. Send original HTML as a file attachment if needed
@@ -540,7 +554,11 @@ class EmailTelegramSender:
                 ]  # Sanitize and limit length
                 html_filename = f"{sanitized_subject}.html"
                 await self.send_html_as_file(
-                    group_id, thread_id, email_data["body_html"], html_filename
+                    chat_id=group_id,
+                    thread_id=thread_id,
+                    content=email_data["body_html"],
+                    filename=html_filename,
+                    send_notification=True,
                 )
             elif email_data.get("body_text"):
                 # split email body into chunks of 4096 characters
@@ -553,6 +571,7 @@ class EmailTelegramSender:
                         chat_id=group_id,
                         text=chunk,
                         thread_id=thread_id,
+                        send_notification=True,
                     )
 
             # 7. Send attachments if any
