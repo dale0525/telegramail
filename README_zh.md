@@ -64,7 +64,7 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
    ```
 4. (可选) 填入 LLM 的 base url 和 api key。`OPENAI_EMAIL_SUMMARIZE_MODELS`是用来总结邮件的模型列表，多个模型用逗号分隔。前面的模型如果调用失败会调用下一个。
    ```
-   ENABLE_LLM_SUMMARY=0    # set to 1 to enable email summary using llm
+   ENABLE_LLM_SUMMARY=0    # 改成 1 来开启 LLM 功能
    OPENAI_BASE_URL=your_openai_base_url_here
    OPENAI_API_KEY=your_openai_key_here
    OPENAI_EMAIL_SUMMARIZE_MODELS=1st_model_to_summarize_email_content,2nd_model_to_summarize_email_content
@@ -96,7 +96,20 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
 ### 添加邮箱账户
 
 1. 使用`/accounts`命令，选择添加新账户
-2. 按照提示选择邮箱服务供应商，然后输入邮箱地址、密码/App专用密码、Alias(纯显示用)。如果选择自定义邮箱服务，还需要额外输入 imap 和 smtp 的服务器、端口、是否使用 SSL
+2. 按照提示选择邮箱服务供应商，然后输入邮箱地址、密码/App专用密码、Alias(纯显示用)。如果选择自定义邮箱服务，还需要额外输入 imap 和 smtp 的服务器、端口、是否使用 SSL。当前[预定义配置](./app/email_utils/common_providers.py)的邮箱服务供应商包括：
+   - Gmail
+   - Outlook/Hotmail
+   - Yahoo
+   - ProtonMail
+   - iCloud
+   - Zoho Mail
+   - AOL
+   - GMX
+   - QQ 邮箱
+   - 网易邮箱
+   - 腾讯企业邮箱
+   - 阿里邮箱
+   - Yandex
 3. Telegramail 会在 Telegram 中创建一个以 Alias 命名的群组，并加入一个名为 Email 的文件夹
    ![20250428150635](https://imagehost.daletan.win/20250428150635.png)
 

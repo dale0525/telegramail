@@ -1,5 +1,7 @@
 # TelegramMail
 
+[中文文档](./README_zh.md)
+
 TelegramMail is a Telegram-based email tool that allows you to send and receive emails directly in Telegram without switching to traditional email clients. This project is designed for personal use, with each client managed and used by a single user.
 
 ## Comparison with Traditional Email Clients
@@ -96,7 +98,20 @@ TelegramMail is a Telegram-based email tool that allows you to send and receive 
 ### Adding Email Accounts
 
 1. Use the `/accounts` command and select "Add new account"
-2. Follow the prompts to select your email service provider, then enter your email address, password/App-specific password, and Alias (for display only). If you choose a custom email service, you'll need to additionally enter IMAP and SMTP server, port, and whether to use SSL
+2. Follow the prompts to select your email service provider, then enter your email address, password/App-specific password, and Alias (for display only). If you choose a custom email service, you'll need to additionally enter IMAP and SMTP server, port, and whether to use SSL. Currently, [pre-defined configs](./app/email_utils/common_providers.py) include:
+   - Gmail
+   - Outlook/Hotmail
+   - Yahoo
+   - ProtonMail
+   - iCloud
+   - Zoho Mail
+   - AOL
+   - GMX
+   - QQ Mail
+   - Netease
+   - Tencent Exmail
+   - Alimail
+   - Yandex
 3. Telegramail will create a group in Telegram named after your Alias, and add a folder named Email
    ![20250428150635](https://imagehost.daletan.win/20250428150635.png)
 
