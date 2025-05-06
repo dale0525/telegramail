@@ -47,19 +47,52 @@ async def check_deleted_topics_for_group(chat_id):
             thread_id = topic_info.message_thread_id
 
             db_manager = DBManager()
-            account_id, email_uid = db_manager.get_email_uid_by_telegram_thread_id(
-                str(thread_id)
-            )
+            # Assume get_email_uid_by_telegram_thread_id now returns (account_id, list_of_uids)
+            # or None if not found.
+            result = db_manager.get_email_uid_by_telegram_thread_id(str(thread_id))
 
-            if not account_id or not email_uid:
-                continue
-
-            logger.info(f"Deleting email with UID {email_uid} for topic {thread_id}")
-            account_manager = AccountManager()
-            account = account_manager.get_account(id=account_id)
-            imap_client = IMAPClient(account)
-            imap_client.delete_email_by_uid(email_uid)
-            processed_count += 1
+            if result:
+                account_id, email_uids = result
+                if (
+                    account_id and email_uids
+                ):  # Check if account_id and the list are valid
+                    logger.info(
+                        f"Found {len(email_uids)} emails associated with topic {thread_id} for account {account_id}"
+                    )
+                    account_manager = AccountManager()
+                    account = account_manager.get_account(id=account_id)
+                    if account:  # Ensure account exists
+                        imap_client = IMAPClient(account)
+                        deleted_count_in_loop = 0
+                        for email_uid in email_uids:
+                            try:
+                                logger.info(
+                                    f"Attempting to delete email with UID {email_uid} for topic {thread_id}"
+                                )
+                                imap_client.delete_email_by_uid(email_uid)
+                                deleted_count_in_loop += 1
+                            except Exception as delete_error:
+                                logger.error(
+                                    f"Error deleting email UID {email_uid} for topic {thread_id}: {delete_error}"
+                                )
+                        if deleted_count_in_loop > 0:
+                            logger.info(
+                                f"Successfully deleted {deleted_count_in_loop} emails for topic {thread_id}"
+                            )
+                        # Increment processed_count once per event if we found associated emails and attempted deletion.
+                        processed_count += 1
+                    else:
+                        logger.warning(
+                            f"Account with ID {account_id} not found for topic {thread_id}"
+                        )
+                else:
+                    # Log if result is returned but account_id or email_uids list is empty/invalid
+                    logger.info(
+                        f"No valid account_id or email UIDs found for topic {thread_id}, though an association record might exist."
+                    )
+            else:
+                # Log if no association was found at all by the db manager function
+                logger.info(f"No email association found for topic {thread_id}")
 
         if processed_count > 0:
             logger.info(

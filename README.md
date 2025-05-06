@@ -67,6 +67,7 @@ TelegramMail is a Telegram-based email tool that allows you to send and receive 
 4. (Optional) Fill in the LLM base url and api key. `OPENAI_EMAIL_SUMMARIZE_MODELS` is a list of models used to summarize emails, separated by commas. If the first model fails to call, the next one will be used.
    ```
    ENABLE_LLM_SUMMARY=0    # set to 1 to enable email summary using llm
+   LLM_SUMMARY_THRESHOLD=200    # if the email content is longer than this threshold, use llm to summarize
    OPENAI_BASE_URL=your_openai_base_url_here
    OPENAI_API_KEY=your_openai_key_here
    OPENAI_EMAIL_SUMMARIZE_MODELS=1st_model_to_summarize_email_content,2nd_model_to_summarize_email_content

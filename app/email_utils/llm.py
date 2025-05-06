@@ -118,6 +118,7 @@ Your primary instruction is to process the provided email content and return **O
         or os.getenv("OPENAI_BASE_URL") is None
         or os.getenv("OPENAI_API_KEY") is None
         or not str(os.getenv("ENABLE_LLM_SUMMARY", "0")) == "1"
+        or len(email_body) < int(os.getenv("LLM_SUMMARY_THRESHOLD", "100"))
     ):
         return None
     models = os.getenv("OPENAI_EMAIL_SUMMARIZE_MODELS").split(",")

@@ -400,36 +400,13 @@ class ConnectionFactory:
         connection_methods = []
 
         # Determine connection attempt order
-        if use_ssl and port == SMTP_SSL_PORT:
+        if use_ssl:
             connection_methods.append(
                 ("SSL", True, False, port)
             )  # SSL on specified port
-            connection_methods.append(
-                ("STARTTLS", False, True, SMTP_STARTTLS_PORT)
-            )  # STARTTLS as fallback
-        elif not use_ssl and port == SMTP_STARTTLS_PORT:
-            connection_methods.append(
-                ("STARTTLS", False, True, port)
-            )  # STARTTLS on specified port
-            connection_methods.append(
-                ("SSL", True, False, SMTP_SSL_PORT)
-            )  # SSL as fallback
-        elif port == SMTP_SSL_PORT:  # Port suggests SSL
-            connection_methods.append(("SSL", True, False, port))
-            connection_methods.append(("STARTTLS", False, True, SMTP_STARTTLS_PORT))
-        elif port == SMTP_STARTTLS_PORT:  # Port suggests STARTTLS
             connection_methods.append(("STARTTLS", False, True, port))
-            connection_methods.append(("SSL", True, False, SMTP_SSL_PORT))
         else:  # Unknown port
-            if use_ssl:
-                connection_methods.append(("SSL", True, False, port))
-                connection_methods.append(("STARTTLS", False, True, port))
-            else:
-                connection_methods.append(("STARTTLS", False, True, port))
-                connection_methods.append(("SSL", True, False, port))
-            # Add common ports as fallbacks
-            connection_methods.append(("STARTTLS", False, True, SMTP_STARTTLS_PORT))
-            connection_methods.append(("SSL", True, False, SMTP_SSL_PORT))
+            connection_methods.append(("PLAIN", False, False, port))
 
         last_error_msg = ""
 

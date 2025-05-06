@@ -454,8 +454,8 @@ class EmailTelegramSender:
                     logger.error("Failed to create forum topic")
                     return False
 
-                # Update database with thread ID
-                self.db_manager.update_thread_id_in_db(email_data["id"], thread_id)
+            # Update database with thread ID
+            self.db_manager.update_thread_id_in_db(email_data["id"], thread_id)
 
             # 2. Send email title
             # Title

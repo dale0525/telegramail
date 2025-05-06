@@ -65,6 +65,7 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
 4. (可选) 填入 LLM 的 base url 和 api key。`OPENAI_EMAIL_SUMMARIZE_MODELS`是用来总结邮件的模型列表，多个模型用逗号分隔。前面的模型如果调用失败会调用下一个。
    ```
    ENABLE_LLM_SUMMARY=0    # 改成 1 来开启 LLM 功能
+   LLM_SUMMARY_THRESHOLD=200    # 邮件正文字数大于这个值才会启用 LLM 总结
    OPENAI_BASE_URL=your_openai_base_url_here
    OPENAI_API_KEY=your_openai_key_here
    OPENAI_EMAIL_SUMMARIZE_MODELS=1st_model_to_summarize_email_content,2nd_model_to_summarize_email_content

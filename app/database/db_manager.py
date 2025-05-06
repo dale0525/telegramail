@@ -260,15 +260,17 @@ CREATE TABLE IF NOT EXISTS emails (
 
     def get_email_uid_by_telegram_thread_id(
         self, telegram_thread_id: str
-    ) -> tuple[Optional[str], Optional[str]]:
+    ) -> tuple[Optional[int], List[str]]:
         """
-        Get email account and UID by Telegram thread ID
+        Get email account ID and associated email UIDs by Telegram thread ID.
 
         Args:
-            telegram_thread_id: Telegram thread ID to search for
+            telegram_thread_id: Telegram thread ID to search for.
 
         Returns:
-            tuple[Optional[int], Optional[str]]: (email_account, uid) or (None, None) if not found
+            tuple[Optional[int], List[str]]: A tuple containing the account ID
+            and a list of email UIDs associated with the thread ID.
+            Returns (None, []) if no matching records are found.
         """
         try:
             conn = self._get_connection()
@@ -278,17 +280,24 @@ CREATE TABLE IF NOT EXISTS emails (
                 "SELECT email_account, uid FROM emails WHERE telegram_thread_id = ?",
                 (telegram_thread_id,),
             )
-            result = cursor.fetchone()
+            results = cursor.fetchall()  # Fetch all matching records
 
             conn.close()
 
-            if result:
-                return result[0], result[1]
-            return None, None
+            if not results:
+                # Return (None, []) if no records found
+                return None, []
+
+            # Assuming all UIDs for a thread belong to the same account
+            account_id = results[0][0]
+            email_uids = [row[1] for row in results]
+
+            return account_id, email_uids
 
         except Exception as e:
-            logger.error(f"Error getting email uid by Telegram thread ID: {e}")
-            return None, None
+            logger.error(f"Error getting email uids by Telegram thread ID: {e}")
+            # Return (None, []) in case of error as well, consistent with not found
+            return None, []
 
     def delete_email_by_uid(self, account_info: dict[str, Any], uid: str) -> bool:
         """
