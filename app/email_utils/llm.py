@@ -3,6 +3,7 @@ from app.llm import OpenAIClient
 from app.utils import Logger
 from app.i18n import _
 from json_repair import repair_json
+from app.email_utils.text import remove_spaces_and_urls
 
 logger = Logger().get_logger(__name__)
 
@@ -118,7 +119,8 @@ Your primary instruction is to process the provided email content and return **O
         or os.getenv("OPENAI_BASE_URL") is None
         or os.getenv("OPENAI_API_KEY") is None
         or not str(os.getenv("ENABLE_LLM_SUMMARY", "0")) == "1"
-        or len(email_body) < int(os.getenv("LLM_SUMMARY_THRESHOLD", "100"))
+        or len(remove_spaces_and_urls(email_body))
+        < int(os.getenv("LLM_SUMMARY_THRESHOLD", "100"))
     ):
         return None
     models = os.getenv("OPENAI_EMAIL_SUMMARIZE_MODELS").split(",")

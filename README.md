@@ -15,6 +15,7 @@ TelegramMail is a Telegram-based email tool that allows you to send and receive 
 ### Disadvantages
 - Cannot handle emails with a large number of recipients, CC, or BCC
 - Not convenient for composing emails, no WYSIWYG editor
+- Due to telegram's limitation, you cannot see badge of unread email counts
 
 ## Features
 

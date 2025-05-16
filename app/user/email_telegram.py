@@ -111,7 +111,7 @@ class EmailTelegramSender:
             # 5237699328843200968:✅
             # 5235579393115438657:⭐️
             # 5417915203100613993:💬
-            result = await self.user_client.api.create_forum_topic(
+            result = await self.bot_client.api.create_forum_topic(
                 chat_id=chat_id,
                 name=title,
                 icon=ForumTopicIcon(
@@ -201,6 +201,7 @@ class EmailTelegramSender:
                     paid_message_star_count=0,
                     sending_id=0,
                     disable_notification=not send_notification,
+                    from_background=not send_notification,
                 ),
             }
             # Only add reply_markup if buttons exist
@@ -239,6 +240,30 @@ class EmailTelegramSender:
             temp_path = os.path.join(temp_dir, filename)
 
             # Write the content to the file with the specified filename
+            # Ensure HTML content declares UTF-8
+            html_content_lower = content.lower()
+            # Check for common charset declarations in meta tags
+            charset_declared = (
+                '<meta charset="utf-8">' in html_content_lower
+                or "charset=utf-8" in html_content_lower
+                or '<meta charset="utf8">' in html_content_lower
+                or "charset=utf8" in html_content_lower
+            )
+
+            if not charset_declared:
+                # Attempt to inject the meta tag into the <head> section
+                head_match = re.search(r"<head.*?>", content, re.IGNORECASE)
+                if head_match:
+                    inject_pos = head_match.end()
+                    content = (
+                        content[:inject_pos]
+                        + '\\n<meta charset="UTF-8">'
+                        + content[inject_pos:]
+                    )
+                else:
+                    # If no <head> tag, prepend to the whole content
+                    content = '<meta charset="UTF-8">\\n' + content
+
             with open(temp_path, "wb") as f:
                 f.write(content.encode("utf-8"))
 
@@ -254,6 +279,7 @@ class EmailTelegramSender:
                     paid_message_star_count=0,
                     sending_id=0,
                     disable_notification=not send_notification,
+                    from_background=not send_notification,
                 ),
             )
 
@@ -312,7 +338,10 @@ class EmailTelegramSender:
                 message_thread_id=thread_id,
                 input_message_content=content,
                 options=MessageSendOptions(
-                    paid_message_star_count=0, sending_id=0, disable_notification=True
+                    paid_message_star_count=0,
+                    sending_id=0,
+                    disable_notification=True,
+                    from_background=True,
                 ),
             )
 
@@ -329,6 +358,44 @@ class EmailTelegramSender:
             if "temp_dir" in locals() and os.path.exists(temp_dir):
                 os.rmdir(temp_dir)
             return None
+
+    def decode_mime_header_value(self, value: str) -> str:
+        """
+        Decode a MIME encoded header value (like =?utf-8?B?...?=).
+
+        Args:
+            value: The potentially encoded header value.
+
+        Returns:
+            str: Decoded header value.
+        """
+        if not value:
+            return ""
+        try:
+            # Check if this is a MIME encoded string (more robustly)
+            if "=?" in value and "?=" in value:
+                decoded_parts = email.header.decode_header(value)
+                decoded_value_parts = []
+                for part, charset in decoded_parts:
+                    if isinstance(part, bytes):
+                        if charset:
+                            decoded_value_parts.append(
+                                part.decode(charset, errors="replace")
+                            )
+                        else:
+                            # Default to utf-8 if charset is not specified
+                            decoded_value_parts.append(
+                                part.decode("utf-8", errors="replace")
+                            )
+                    else:
+                        decoded_value_parts.append(part)
+                return "".join(decoded_value_parts).strip()
+
+            # Return original if no encoding detected or needed
+            return value.strip()
+        except Exception as e:
+            logger.error(f"Error decoding header value: {e}, using original: {value}")
+            return value.strip()
 
     def decode_mime_filename(self, filename: str) -> str:
         """
@@ -444,6 +511,10 @@ class EmailTelegramSender:
                 r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
             )
 
+            # Decode sender name
+            original_sender = email_data.get("sender", "")
+            decoded_sender = self.decode_mime_header_value(original_sender)
+
             # Check for existing thread ID
             thread_id = await self.get_thread_id_by_subject(clean_subject, account_id)
 
@@ -471,7 +542,7 @@ class EmailTelegramSender:
             # From
             await self.send_text_message(
                 chat_id=group_id,
-                text=f"✍️ {_('email_from')}: {email_data['sender']}",
+                text=f"✍️ {_('email_from')}: {decoded_sender}",
                 thread_id=thread_id,
                 send_notification=False,
             )
@@ -514,7 +585,14 @@ class EmailTelegramSender:
                         urls=summary["urls"],
                         thread_id=thread_id,
                         parse_mode="HTML",
-                        send_notification=False,
+                        send_notification=True,
+                    )
+                else:
+                    await self.send_text_message(
+                        chat_id=group_id,
+                        text=email_data["body_text"],
+                        thread_id=thread_id,
+                        send_notification=True,
                     )
 
             # 6. Send original HTML as a file attachment if needed
@@ -529,21 +607,8 @@ class EmailTelegramSender:
                     thread_id=thread_id,
                     content=email_data["body_html"],
                     filename=html_filename,
-                    send_notification=True,
+                    send_notification=False,
                 )
-            elif email_data.get("body_text"):
-                # split email body into chunks of 4096 characters
-                email_body_chunks = [
-                    email_data["body_text"][i : i + 4000]
-                    for i in range(0, len(email_data["body_text"]), 4000)
-                ]
-                for chunk in email_body_chunks:
-                    await self.send_text_message(
-                        chat_id=group_id,
-                        text=chunk,
-                        thread_id=thread_id,
-                        send_notification=True,
-                    )
 
             # 7. Send attachments if any
             if email_data.get("attachments"):

@@ -154,3 +154,22 @@ def get_email_body(msg) -> Tuple[str, str]:
                 logger.error(f"Error converting HTML to text using html2text: {e}")
 
     return body_text, body_html
+
+
+def remove_spaces_and_urls(text: str) -> str:
+    """
+    Removes all whitespace characters and URLs from a string.
+
+    Args:
+        text: The input string.
+
+    Returns:
+        The string with whitespace and URLs removed.
+    """
+    if not text:
+        return ""
+    # Remove URLs
+    text_no_urls = re.sub(r"http\S+|www\.\S+", "", text)
+    # Remove all whitespace (spaces, tabs, newlines, etc.)
+    text_no_spaces_or_urls = "".join(text_no_urls.split())
+    return text_no_spaces_or_urls
