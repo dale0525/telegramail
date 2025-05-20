@@ -120,4 +120,13 @@ COMMON_PROVIDERS = [
         "imap_port": 993,
         "imap_ssl": True,
     },
+    {
+        "name": "Linux DO",
+        "smtp_server": "mail.linux.do",
+        "smtp_port": 465,
+        "smtp_ssl": True,
+        "imap_server": "mail.linux.do",
+        "imap_port": 993,
+        "imap_ssl": True,
+    },
 ]

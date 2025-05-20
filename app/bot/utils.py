@@ -234,6 +234,7 @@ async def _create_super_group(name: str, desc: str, provider_name: str = None) -
             "Tencent Exmail": "wework.jpg",
             "Alibaba Mail": "alimail.jpg",
             "Yandex": "yandex.jpg",
+            "Linux DO": "linuxdo.jpg",
         }
 
         # Get the icon filename if available for this provider
@@ -285,7 +286,11 @@ async def get_group_id(context: dict[str, Any]) -> tuple[bool, str, int]:
         group = await _create_super_group(
             name=context["alias"],
             desc=context["email"],
-            provider_name=context["common_provider_name"],
+            provider_name=(
+                context["common_provider_name"]
+                if "common_provider_name" in context
+                else None
+            ),
         )
         if group:
             group_id = group.id
