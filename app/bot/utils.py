@@ -13,6 +13,9 @@ from aiotdlib.api import (
     FormattedText,
     InputFileLocal,
     InputChatPhotoStatic,
+    MessageSenderUser,
+    ChatMemberStatusAdministrator,
+    ChatAdministratorRights,
 )
 from app.i18n import _
 from app.data import DataManager
@@ -263,6 +266,21 @@ async def _create_super_group(name: str, desc: str, provider_name: str = None) -
     # Add bot to the group
     bot_id = await BotClient().client.get_my_id()
     await client.api.add_chat_members(chat_id=group.id, user_ids=[bot_id])
+    await client.api.set_chat_member_status(
+        chat_id=group.id,
+        member_id=MessageSenderUser(user_id=bot_id),
+        status=ChatMemberStatusAdministrator(
+            rights=ChatAdministratorRights(
+                can_manage_chat=True,
+                can_change_info=True,
+                can_post_messages=True,
+                can_edit_messages=True,
+                can_delete_messages=True,
+                can_pin_messages=True,
+                can_manage_topics=True,
+            )
+        ),
+    )
     return group
 
 
