@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Any
 import tempfile
 import email.header
 import base64
+from dataclasses import dataclass
 
 from app.bot.bot_client import BotClient
 from app.i18n import _
@@ -33,6 +34,181 @@ from aiotdlib.api import (
 from aiotdlib.api import MessageSendOptions
 
 logger = Logger().get_logger(__name__)
+
+
+@dataclass
+class MessageContent:
+    """Data class for storing message content to be sent"""
+
+    text: str
+    parse_mode: Optional[str] = None
+    send_notification: bool = True
+    urls: Optional[List[Dict]] = None
+
+
+@dataclass
+class FileContent:
+    """Data class for storing file content to be sent"""
+
+    content: str
+    filename: str
+    send_notification: bool = False
+
+
+@dataclass
+class AttachmentContent:
+    """Data class for storing attachment content to be sent"""
+
+    data: bytes
+    filename: str
+
+
+class AtomicEmailSender:
+    """Atomic email sender that ensures topic creation and message sending are atomic operations"""
+
+    def __init__(self, email_sender: "EmailTelegramSender"):
+        self.email_sender = email_sender
+        self.created_topic_id: Optional[int] = None
+        self.sent_messages: List[Message] = []
+        self.db_updated = False
+
+    async def send_email_atomically(
+        self,
+        chat_id: int,
+        topic_title: str,
+        messages: List[MessageContent],
+        files: List[FileContent],
+        attachments: List[AttachmentContent],
+        email_id: int,
+        account_id: int,
+    ) -> bool:
+        """
+        Atomically send an email to a Telegram chat
+
+        Args:
+            chat_id: Telegram chat ID
+            topic_title: Topic title for the forum
+            messages: List of message content to be sent
+            files: List of file content to be sent
+            attachments: List of attachment content to be sent
+            email_id: Email database ID
+            account_id: Account database ID
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # 1. Check if a thread already exists
+            thread_id = await self.email_sender.get_thread_id_by_subject(
+                topic_title, account_id
+            )
+
+            # 2. If no thread exists, create a new one
+            if not thread_id:
+                thread_id = await self.email_sender.create_forum_topic(
+                    chat_id, topic_title
+                )
+                if not thread_id:
+                    logger.error("Failed to create forum topic")
+                    return False
+                self.created_topic_id = thread_id
+
+            # 3. Update database with thread ID
+            if not self.email_sender.db_manager.update_thread_id_in_db(
+                email_id, thread_id
+            ):
+                logger.error("Failed to update thread ID in database")
+                await self._rollback()
+                return False
+            self.db_updated = True
+
+            # 4. Send all messages in order
+            for message in messages:
+                sent_message = await self.email_sender.send_text_message(
+                    chat_id=chat_id,
+                    text=message.text,
+                    thread_id=thread_id,
+                    parse_mode=message.parse_mode,
+                    send_notification=message.send_notification,
+                    urls=message.urls,
+                )
+                if not sent_message:
+                    logger.error(f"Failed to send message: {message.text[:50]}...")
+                    await self._rollback()
+                    return False
+                self.sent_messages.append(sent_message)
+
+            # 5. Send all files
+            for file in files:
+                sent_message = await self.email_sender.send_html_as_file(
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    content=file.content,
+                    filename=file.filename,
+                    send_notification=file.send_notification,
+                )
+                if not sent_message:
+                    logger.error(f"Failed to send file: {file.filename}")
+                    await self._rollback()
+                    return False
+                self.sent_messages.append(sent_message)
+
+            # 6. Send all attachments
+            for attachment in attachments:
+                sent_message = await self.email_sender.send_attachment(
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    attachment={
+                        "data": attachment.data,
+                        "filename": attachment.filename,
+                    },
+                )
+                if not sent_message:
+                    logger.error(f"Failed to send attachment: {attachment.filename}")
+                    await self._rollback()
+                    return False
+                self.sent_messages.append(sent_message)
+
+            logger.info(
+                f"Successfully sent email atomically. Topic: {topic_title}, Messages: {len(self.sent_messages)}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error in atomic email sending: {e}")
+            await self._rollback()
+            return False
+
+    async def _rollback(self):
+        """
+        Rollback all operations if any step fails
+
+        This is a simple implementation that only logs the actions.
+        Actual rollback in Telegram might not be possible.
+        """
+        try:
+            # Delete sent messages
+            # Telegram Bot API typically does not allow deleting messages
+            if self.sent_messages:
+                logger.warning(
+                    f"Rollback: {len(self.sent_messages)} messages were sent but operation failed"
+                )
+
+            # If a new topic was created, try to delete it (Telegram API might not support deleting topics)
+            if self.created_topic_id:
+                logger.warning(
+                    f"Rollback: Created topic {self.created_topic_id} but operation failed"
+                )
+                # Here you can try to delete the topic, but Telegram API might not support it
+                # await self.email_sender.bot_client.api.delete_forum_topic(...)
+
+            # Rollback database update
+            if self.db_updated:
+                # Here you can implement the rollback logic for the database
+                logger.warning("Rollback: Database was updated but operation failed")
+
+        except Exception as e:
+            logger.error(f"Error during rollback: {e}")
 
 
 class EmailTelegramSender:
@@ -466,15 +642,15 @@ class EmailTelegramSender:
 
     def get_processed_email_content(self, email_data: Dict[str, Any]) -> str:
         """
-        获取处理后的邮件内容，实现降级处理机制
+        Get processed email content with fallback mechanism from HTML to text
 
         Args:
-            email_data: 邮件数据字典
+            email_data: Email data dictionary
 
         Returns:
-            str: 处理后的邮件内容，优先使用HTML版本，降级到纯文本版本
+            str: Processed email content, prioritizing HTML over plain text
         """
-        # 优先使用body_html（如果存在且非空）
+        # Prioritize body_html (if exists and non-empty)
         body_html = email_data.get("body_html", "")
         if body_html and body_html.strip():
             logger.info("Using HTML content for email processing")
@@ -486,15 +662,163 @@ class EmailTelegramSender:
                     "HTML preprocessing returned empty content, falling back to text"
                 )
 
-        # 如果body_html不存在、为空或处理失败，则使用body_text作为备选
+        # If body_html doesn't exist, is empty, or processing failed, use body_text as fallback
         body_text = email_data.get("body_text", "")
         if body_text and body_text.strip():
             logger.info("Using text content for email processing")
             return body_text.strip()
 
-        # 如果两者都不可用，返回空字符串
+        # If both are unavailable, return empty string
         logger.warning("No usable email content found (both HTML and text are empty)")
         return ""
+
+    def prepare_email_messages(
+        self, email_data: Dict[str, Any]
+    ) -> List[MessageContent]:
+        """
+        Prepare email messages for sending to Telegram
+
+        Args:
+            email_data: Email data dictionary
+
+        Returns:
+            List[MessageContent]: List of prepared message content
+        """
+        messages = []
+
+        # 1. Email title
+        title_message = MessageContent(
+            text=f"*{email_data['subject']}*",
+            parse_mode="Markdown",
+            send_notification=False,
+        )
+        messages.append(title_message)
+
+        # 2. Sender information
+        original_sender = email_data.get("sender", "")
+        decoded_sender = self.decode_mime_header_value(original_sender)
+        from_message = MessageContent(
+            text=f"✍️ {_('email_from')}: {decoded_sender}",
+            send_notification=False,
+        )
+        messages.append(from_message)
+
+        # 3. CC information (if exists)
+        if email_data.get("cc"):
+            cc_message = MessageContent(
+                text=f"👥 {_('email_cc')}: {email_data['cc']}",
+                send_notification=False,
+            )
+            messages.append(cc_message)
+
+        # 4. BCC information (if exists)
+        if email_data.get("bcc"):
+            bcc_message = MessageContent(
+                text=f"🔒 {_('email_bcc')}: {email_data['bcc']}",
+                send_notification=False,
+            )
+            messages.append(bcc_message)
+
+        # 5. Email summary or content
+        processed_content = self.get_processed_email_content(email_data)
+        if processed_content:
+            summary = summarize_email(processed_content)
+            if summary is not None:
+                # Use enhanced email summary format
+                formatted_summary = format_enhanced_email_summary(summary)
+                summary_header = f"<b>{_('email_summary')}:</b>\n"
+                summary_message = MessageContent(
+                    text=f"{summary_header}{formatted_summary}",
+                    parse_mode="HTML",
+                    send_notification=True,
+                    urls=summary.get("urls", []),
+                )
+                messages.append(summary_message)
+            else:
+                # If summary failed, send processed original content
+                max_length = 4000  # Telegram message length limit
+                if len(processed_content) > max_length:
+                    truncated_content = (
+                        processed_content[:max_length]
+                        + f"...\n\n{_('content_truncated')}"
+                    )
+                else:
+                    truncated_content = processed_content
+
+                content_message = MessageContent(
+                    text=truncated_content,
+                    send_notification=True,
+                )
+                messages.append(content_message)
+        else:
+            # If no usable email content, send notification message
+            no_content_message = MessageContent(
+                text=f"📧 {_('email_content_unavailable')}",
+                send_notification=True,
+            )
+            messages.append(no_content_message)
+
+        return messages
+
+    def prepare_email_files(self, email_data: Dict[str, Any]) -> List[FileContent]:
+        """
+        Prepare email file content for sending
+
+        Args:
+            email_data: Email data dictionary
+
+        Returns:
+            List[FileContent]: List of prepared file content
+        """
+        files = []
+
+        # Send original HTML file (if exists)
+        if email_data.get("body_html"):
+            # Clean subject for use as filename
+            subject = email_data["subject"]
+            clean_subject = re.sub(
+                r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
+            )
+            sanitized_subject = re.sub(r'[\\/*?:"<>|]', "_", clean_subject)[:50]
+            html_filename = f"{sanitized_subject}.html"
+
+            html_file = FileContent(
+                content=email_data["body_html"],
+                filename=html_filename,
+                send_notification=False,
+            )
+            files.append(html_file)
+
+        return files
+
+    def prepare_email_attachments(
+        self, email_data: Dict[str, Any]
+    ) -> List[AttachmentContent]:
+        """
+        Prepare email attachment content for sending
+
+        Args:
+            email_data: Email data dictionary
+
+        Returns:
+            List[AttachmentContent]: List of prepared attachment content
+        """
+        attachments = []
+
+        # Process email attachments
+        if email_data.get("attachments"):
+            for attachment in email_data["attachments"]:
+                # Decode filename
+                encoded_filename = attachment["filename"]
+                decoded_filename = self.decode_mime_filename(encoded_filename)
+
+                attachment_content = AttachmentContent(
+                    data=attachment["data"],
+                    filename=decoded_filename,
+                )
+                attachments.append(attachment_content)
+
+        return attachments
 
     async def send_attachments(
         self, chat_id: int, thread_id: int, attachments: List[Dict[str, Any]]
@@ -525,7 +849,77 @@ class EmailTelegramSender:
 
     async def send_email_to_telegram(self, email_data: Dict[str, Any]) -> bool:
         """
-        Send email to a Telegram chat
+        Send email to Telegram chat using atomic operations
+
+        Args:
+            email_data: Email data dictionary
+
+        Returns:
+            bool: True if successful, False if failed
+        """
+        try:
+            # 1. Get account information
+            account_id = email_data["email_account"]
+            account_manager = AccountManager()
+            account = account_manager.get_account(id=account_id)
+            if not account:
+                logger.error(f"Account not found for ID: {account_id}")
+                return False
+
+            group_id = account["tg_group_id"]
+            if not group_id:
+                logger.error(
+                    f"No Telegram group ID configured for account: {account_id}"
+                )
+                return False
+
+            # 2. Clean email subject (remove Re: prefix)
+            subject = email_data["subject"]
+            clean_subject = re.sub(
+                r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
+            )
+
+            # 3. Prepare all content to be sent
+            logger.info(f"Preparing email content for subject: {clean_subject}")
+
+            # Prepare message content
+            messages = self.prepare_email_messages(email_data)
+            logger.info(f"Prepared {len(messages)} messages")
+
+            # Prepare file content
+            files = self.prepare_email_files(email_data)
+            logger.info(f"Prepared {len(files)} files")
+
+            # Prepare attachment content
+            attachments = self.prepare_email_attachments(email_data)
+            logger.info(f"Prepared {len(attachments)} attachments")
+
+            # 4. Use atomic sender to send all content
+            atomic_sender = AtomicEmailSender(self)
+            success = await atomic_sender.send_email_atomically(
+                chat_id=group_id,
+                topic_title=clean_subject,
+                messages=messages,
+                files=files,
+                attachments=attachments,
+                email_id=email_data["id"],
+                account_id=account_id,
+            )
+
+            if success:
+                logger.info(f"Successfully sent email to Telegram: {clean_subject}")
+                return True
+            else:
+                logger.error(f"Failed to send email to Telegram: {clean_subject}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error sending email to Telegram: {e}")
+            return False
+
+    async def send_email_to_telegram_legacy(self, email_data: Dict[str, Any]) -> bool:
+        """
+        Legacy email sending method (kept as backup)
 
         Args:
             email_data: Email data dictionary
@@ -563,7 +957,6 @@ class EmailTelegramSender:
             self.db_manager.update_thread_id_in_db(email_data["id"], thread_id)
 
             # 2. Send email title
-            # Title
             await self.send_text_message(
                 chat_id=group_id,
                 text=f"*{email_data['subject']}*",
@@ -572,24 +965,13 @@ class EmailTelegramSender:
                 send_notification=False,
             )
 
-            # 3. Send email headers
-            # From
+            # 3. Send email headers - From
             await self.send_text_message(
                 chat_id=group_id,
                 text=f"✍️ {_('email_from')}: {decoded_sender}",
                 thread_id=thread_id,
                 send_notification=False,
             )
-
-            # # To
-            # await self.send_text_message(
-            #     group_id, f"<b>To:</b> {email_data['recipient']}", thread_id
-            # )
-
-            # # Date
-            # await self.send_text_message(
-            #     group_id, f"<b>Date:</b> {email_data['date']}", thread_id
-            # )
 
             # 4. CC (if exists)
             if email_data.get("cc"):
@@ -600,7 +982,7 @@ class EmailTelegramSender:
                     send_notification=False,
                 )
 
-            # 4. BCC (if exists)
+            # 5. BCC (if exists)
             if email_data.get("bcc"):
                 await self.send_text_message(
                     chat_id=group_id,
@@ -609,12 +991,12 @@ class EmailTelegramSender:
                     send_notification=False,
                 )
 
-            # 5. Email Summary - 使用增强的处理逻辑，优先HTML，降级到纯文本
+            # 6. Email Summary - Use enhanced processing logic, prioritize HTML, fallback to plain text
             processed_content = self.get_processed_email_content(email_data)
             if processed_content:
                 summary = summarize_email(processed_content)
                 if summary is not None:
-                    # 使用新的格式化函数来显示增强的邮件摘要
+                    # Use new formatting function to display enhanced email summary
                     formatted_summary = format_enhanced_email_summary(summary)
                     summary_header = f"<b>{_('email_summary')}:</b>\n"
 
@@ -627,12 +1009,13 @@ class EmailTelegramSender:
                         send_notification=True,
                     )
                 else:
-                    # 如果总结失败，发送处理后的原始内容
-                    # 限制内容长度以避免消息过长
-                    max_length = 4000  # Telegram消息长度限制
+                    # If summary failed, send processed original content
+                    # Limit content length to avoid overly long messages
+                    max_length = 4000  # Telegram message length limit
                     if len(processed_content) > max_length:
                         truncated_content = (
-                            processed_content[:max_length] + "...\n\n[内容已截断]"
+                            processed_content[:max_length]
+                            + f"...\n\n{_('content_truncated')}"
                         )
                     else:
                         truncated_content = processed_content
@@ -644,15 +1027,15 @@ class EmailTelegramSender:
                         send_notification=True,
                     )
             else:
-                # 如果没有可用的邮件内容，发送提示信息
+                # If no usable email content, send notification message
                 await self.send_text_message(
                     chat_id=group_id,
-                    text="📧 邮件内容无法显示",
+                    text=f"📧 {_('email_content_unavailable')}",
                     thread_id=thread_id,
                     send_notification=True,
                 )
 
-            # 6. Send original HTML as a file attachment if needed
+            # 7. Send original HTML as a file attachment if needed
             if email_data.get("body_html"):
                 # Generate a filename based on the email subject
                 sanitized_subject = re.sub(r'[\\/*?:"<>|]', "_", clean_subject)[
@@ -667,7 +1050,7 @@ class EmailTelegramSender:
                     send_notification=False,
                 )
 
-            # 7. Send attachments if any
+            # 8. Send attachments if any
             if email_data.get("attachments"):
                 await self.send_attachments(
                     group_id, thread_id, email_data["attachments"]

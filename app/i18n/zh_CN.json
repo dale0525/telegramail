@@ -92,6 +92,8 @@
     "email_category_newsletter": "通讯",
     "email_category_system": "系统",
     "email_category_other": "其他",
+    "email_content_unavailable": "邮件内容无法显示",
+    "content_truncated": "内容已截断",
     "error_edit_account_not_found": "未找到账户 {email}",
     "error_generating_step_text": "❌ 生成步骤文本时出错。",
     "error_generic": "未知错误",

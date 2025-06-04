@@ -91,6 +91,8 @@
     "email_category_newsletter": "Newsletter",
     "email_category_system": "System",
     "email_category_other": "Other",
+    "email_content_unavailable": "Email content unavailable",
+    "content_truncated": "Content truncated",
     "error_edit_account_not_found": "Account {email} not found",
     "error_generating_step_text": "❌ Error generating step text.",
     "error_generic": "Unknown error",
