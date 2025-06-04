@@ -1,6 +1,7 @@
 import email, html, re, html2text
 from email.header import decode_header
 from typing import Optional, Tuple
+from bs4 import BeautifulSoup
 
 from app.utils import Logger
 
@@ -173,3 +174,105 @@ def remove_spaces_and_urls(text: str) -> str:
     # Remove all whitespace (spaces, tabs, newlines, etc.)
     text_no_spaces_or_urls = "".join(text_no_urls.split())
     return text_no_spaces_or_urls
+
+
+def clean_html_content(html_content: str) -> str:
+    """
+    预处理HTML内容，移除样式和脚本，保留链接信息，转换为纯文本
+
+    Args:
+        html_content: 原始HTML内容
+
+    Returns:
+        str: 处理后的纯文本内容，保留链接信息
+    """
+    if not html_content or not html_content.strip():
+        return ""
+
+    try:
+        # 使用BeautifulSoup解析HTML
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        # 移除所有style标签
+        for style in soup.find_all("style"):
+            style.decompose()
+
+        # 移除所有script标签
+        for script in soup.find_all("script"):
+            script.decompose()
+
+        # 处理链接：将<a href="url">链接文本</a>转换为"链接文本 (url)"
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "")
+            link_text = link.get_text(strip=True)
+
+            # 只处理http/https链接
+            if href.startswith(("http://", "https://")):
+                if link_text:
+                    # 如果链接文本存在，格式化为"链接文本 (url)"
+                    new_text = f"{link_text} ({href})"
+                else:
+                    # 如果没有链接文本，直接使用URL
+                    new_text = href
+                link.replace_with(new_text)
+            else:
+                # 对于非http链接，只保留文本
+                link.replace_with(link_text if link_text else "")
+
+        # 移除所有HTML标签的style属性
+        for tag in soup.find_all():
+            if tag.has_attr("style"):
+                del tag["style"]
+
+        # 获取纯文本内容
+        text_content = soup.get_text()
+
+        # 清理多余的空白字符
+        # 将多个连续的空白字符（包括换行符）替换为单个空格或换行符
+        text_content = re.sub(r"\n\s*\n", "\n\n", text_content)  # 保留段落分隔
+        text_content = re.sub(
+            r"[ \t]+", " ", text_content
+        )  # 多个空格/制表符替换为单个空格
+        text_content = re.sub(r"\n ", "\n", text_content)  # 移除行首空格
+        text_content = text_content.strip()
+
+        return text_content
+
+    except Exception as e:
+        logger.error(f"Error preprocessing HTML content: {e}")
+        # 如果HTML处理失败，尝试简单的正则表达式清理
+        try:
+            # 移除script和style标签及其内容
+            html_content = re.sub(
+                r"<script[^>]*>.*?</script>",
+                "",
+                html_content,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            html_content = re.sub(
+                r"<style[^>]*>.*?</style>",
+                "",
+                html_content,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+
+            # 简单处理链接
+            html_content = re.sub(
+                r'<a[^>]*href=["\']([^"\']*)["\'][^>]*>(.*?)</a>',
+                r"\2 (\1)",
+                html_content,
+                flags=re.IGNORECASE,
+            )
+
+            # 移除所有HTML标签
+            html_content = re.sub(r"<[^>]+>", "", html_content)
+
+            # 清理空白字符
+            html_content = re.sub(r"\n\s*\n", "\n\n", html_content)
+            html_content = re.sub(r"[ \t]+", " ", html_content)
+            html_content = html_content.strip()
+
+            return html_content
+        except Exception as fallback_error:
+            logger.error(f"Fallback HTML processing also failed: {fallback_error}")
+            return ""

@@ -10,7 +10,12 @@ from app.i18n import _
 from app.utils import Logger
 from app.database import DBManager
 from app.user.user_client import UserClient
-from app.email_utils import summarize_email, AccountManager
+from app.email_utils import (
+    summarize_email,
+    format_enhanced_email_summary,
+    AccountManager,
+    clean_html_content,
+)
 from aiotdlib.api import (
     FormattedText,
     InputMessageText,
@@ -459,6 +464,38 @@ class EmailTelegramSender:
             sanitized = "attachment"
         return sanitized
 
+    def get_processed_email_content(self, email_data: Dict[str, Any]) -> str:
+        """
+        获取处理后的邮件内容，实现降级处理机制
+
+        Args:
+            email_data: 邮件数据字典
+
+        Returns:
+            str: 处理后的邮件内容，优先使用HTML版本，降级到纯文本版本
+        """
+        # 优先使用body_html（如果存在且非空）
+        body_html = email_data.get("body_html", "")
+        if body_html and body_html.strip():
+            logger.info("Using HTML content for email processing")
+            processed_content = clean_html_content(body_html)
+            if processed_content and processed_content.strip():
+                return processed_content
+            else:
+                logger.warning(
+                    "HTML preprocessing returned empty content, falling back to text"
+                )
+
+        # 如果body_html不存在、为空或处理失败，则使用body_text作为备选
+        body_text = email_data.get("body_text", "")
+        if body_text and body_text.strip():
+            logger.info("Using text content for email processing")
+            return body_text.strip()
+
+        # 如果两者都不可用，返回空字符串
+        logger.warning("No usable email content found (both HTML and text are empty)")
+        return ""
+
     async def send_attachments(
         self, chat_id: int, thread_id: int, attachments: List[Dict[str, Any]]
     ) -> bool:
@@ -572,25 +609,48 @@ class EmailTelegramSender:
                     send_notification=False,
                 )
 
-            # 5. Email Summary
-            if email_data.get("body_text"):
-                summary = summarize_email(email_data["body_text"])
+            # 5. Email Summary - 使用增强的处理逻辑，优先HTML，降级到纯文本
+            processed_content = self.get_processed_email_content(email_data)
+            if processed_content:
+                summary = summarize_email(processed_content)
                 if summary is not None:
+                    # 使用新的格式化函数来显示增强的邮件摘要
+                    formatted_summary = format_enhanced_email_summary(summary)
+                    summary_header = f"<b>{_('email_summary')}:</b>\n"
+
                     await self.send_text_message(
                         chat_id=group_id,
-                        text=f"<b>{_('email_summary')}:</b>\n{summary['summary']}",
-                        urls=summary["urls"],
+                        text=f"{summary_header}{formatted_summary}",
+                        urls=summary.get("urls", []),
                         thread_id=thread_id,
                         parse_mode="HTML",
                         send_notification=True,
                     )
                 else:
+                    # 如果总结失败，发送处理后的原始内容
+                    # 限制内容长度以避免消息过长
+                    max_length = 4000  # Telegram消息长度限制
+                    if len(processed_content) > max_length:
+                        truncated_content = (
+                            processed_content[:max_length] + "...\n\n[内容已截断]"
+                        )
+                    else:
+                        truncated_content = processed_content
+
                     await self.send_text_message(
                         chat_id=group_id,
-                        text=email_data["body_text"],
+                        text=truncated_content,
                         thread_id=thread_id,
                         send_notification=True,
                     )
+            else:
+                # 如果没有可用的邮件内容，发送提示信息
+                await self.send_text_message(
+                    chat_id=group_id,
+                    text="📧 邮件内容无法显示",
+                    thread_id=thread_id,
+                    send_notification=True,
+                )
 
             # 6. Send original HTML as a file attachment if needed
             if email_data.get("body_html"):
