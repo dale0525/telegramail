@@ -1,6 +1,7 @@
 {
     "account": "账户",
     "account_deleted_success": "账户已删除",
+    "account_not_found": "账户未找到",
     "account_verification_failed_auth": "认证失败（用户名或密码错误）。",
     "account_verification_failed_imap_dns_os": "DNS 解析或操作系统错误",
     "account_verification_failed_imap_login": "无法登录到 IMAP 服务器。",
@@ -99,6 +100,9 @@
     "login_invalid_phone": "请输入有效的Telegram手机号",
     "login_password_received": "密码已收到",
     "manage_account": "管理账户",
+    "manual_fetch_email": "手动获取邮件",
+    "manual_fetch_processing": "正在获取邮件...",
+    "manual_fetch_complete": "邮件获取完成",
     "new_email_count": "封新邮件",
     "no": "否",
     "no_accounts": "当前没有邮箱账号。请先添加一个邮箱账号。",

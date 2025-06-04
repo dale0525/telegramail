@@ -12,6 +12,7 @@ from app.bot.conversation import Conversation, ConversationState
 from app.bot.handlers.accounts import (
     add_account_handler,
     edit_account_conversation_starter,
+    manual_fetch_email_handler,
 )
 from app.email_utils.account_manager import AccountManager
 from app.bot.utils import answer_callback
@@ -57,7 +58,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
     elif data.startswith("manage_account:"):
         # Handle the click on a specific account management button
         account_id = data.split(":", 1)[1]
-        account = account_manager.get_account_by_id(account_id)
+        account = account_manager.get_account(id=account_id)
         email = account["email"]
         logger.info(f"User {user_id} requested to manage account: {email}")
 
@@ -67,10 +68,18 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
         except Exception as e:
             logger.warning(f"Failed to answer 'manage_account' callback query: {e}")
 
-        # Edit the message to show Edit/Delete options for this account
+        # Edit the message to show Manual Fetch/Edit/Delete options for this account
         message_id = update.message_id
         manage_text = f"🛠️ <b>{_('manage_account')}</b>: {email}"
         keyboard = [
+            [
+                InlineKeyboardButton(
+                    text=f"📧 {_('manual_fetch_email')}",
+                    type=InlineKeyboardButtonTypeCallback(
+                        data=f"manual_fetch:{account_id}".encode("utf-8")
+                    ),
+                ),
+            ],
             [
                 InlineKeyboardButton(
                     text=f"✏️ {_('edit_account')}",
@@ -105,10 +114,28 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
         except Exception as e:
             logger.error(f"Failed to edit message for account management: {e}")
 
+    elif data.startswith("manual_fetch:"):
+        # Handle manual email fetch for a specific account
+        account_id = data.split(":", 1)[1]
+        account = account_manager.get_account(id=account_id)
+        email = account["email"]
+        logger.info(f"User {user_id} requested manual email fetch for account: {email}")
+
+        # Answer the callback query first
+        try:
+            await client.api.answer_callback_query(
+                update.id, text=_("manual_fetch_processing"), url="", cache_time=1
+            )
+        except Exception as e:
+            logger.warning(f"Failed to answer 'manual_fetch' callback query: {e}")
+
+        # Call the manual fetch handler
+        await manual_fetch_email_handler(client, update, account_id)
+
     elif data.startswith("edit_account:"):
         # Start the conversation flow for editing an account
         account_id = data.split(":", 1)[1]
-        account = account_manager.get_account_by_id(account_id)
+        account = account_manager.get_account(id=account_id)
         email = account["email"]
         logger.info(f"User {user_id} requested to edit account: {email}")
         try:
@@ -124,7 +151,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
     elif data.startswith("delete_account_confirm:"):
         # Ask for confirmation before deleting
         account_id = data.split(":", 1)[1]
-        account = account_manager.get_account_by_id(account_id)
+        account = account_manager.get_account(id=account_id)
         email = account["email"]
         logger.info(f"User {user_id} requested confirmation to delete account: {email}")
 
@@ -173,7 +200,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
     elif data.startswith("delete_account_execute:"):
         # Execute the deletion
         account_id = data.split(":", 1)[1]
-        account = account_manager.get_account_by_id(account_id)
+        account = account_manager.get_account(id=account_id)
         email = account["email"]
         logger.info(f"User {user_id} confirmed deletion for account: {email}")
 

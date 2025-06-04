@@ -4,6 +4,7 @@ from app.bot.conversation import Conversation
 from app.email_utils.account_manager import AccountManager
 from app.utils import Logger
 from app.bot.handlers.access import validate_admin
+from app.bot.utils import send_and_delete_message
 
 # Import the step definitions
 from .account_steps import ADD_ACCOUNT_STEPS, EDIT_ACCOUNT_STEPS
@@ -270,3 +271,53 @@ async def edit_account_conversation_starter(
         f"Starting edit conversation for account: {current_account_data['email']} for user {user_id}"
     )
     await conversation.start()
+
+
+async def manual_fetch_email_handler(
+    client: Client, update: UpdateNewCallbackQuery, account_id: str
+):
+    """
+    Handle manual email fetch for a specific account
+
+    Args:
+        client: Telegram client
+        update: Callback query update
+        account_id: Account ID to fetch emails for
+    """
+    chat_id = update.chat_id
+    user_id = update.sender_user_id
+    message_id = update.message_id
+
+    # Get account information
+    account_manager = AccountManager()
+    account = account_manager.get_account(id=account_id)
+
+    if not account:
+        logger.error(f"Account with ID {account_id} not found")
+        await send_and_delete_message(
+            client, chat_id, f"❌ {_('account_not_found')}", 3
+        )
+        return
+
+    email = account["email"]
+    logger.info(f"User {user_id} requested manual email fetch for account: {email}")
+
+    # Start the email fetching process
+    await check_specific_email(
+        client=client,
+        chat_id=chat_id,
+        user_id=user_id,
+        account=account,
+    )
+
+    # Clean up the management message after a short delay
+    try:
+        # Delete the original management message
+        await client.api.delete_messages(
+            chat_id=chat_id, message_ids=[message_id], revoke=True
+        )
+        logger.debug(
+            f"Cleaned up management message {message_id} after manual email fetch"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to clean up management message: {e}")
