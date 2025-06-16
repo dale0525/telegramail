@@ -143,6 +143,7 @@ Use Docker Compose for production deployment with pre-built images from Docker H
    - Tencent Exmail
    - Alimail
    - Yandex
+   - Linux DO
 3. Telegramail will create a group in Telegram named after your Alias, and add a folder named Email
    ![20250428150635](https://imagehost.daletan.win/20250428150635.png)
 

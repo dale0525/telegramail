@@ -141,6 +141,7 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
    - 腾讯企业邮箱
    - 阿里邮箱
    - Yandex
+   - Linux DO
 3. Telegramail 会在 Telegram 中创建一个以 Alias 命名的群组，并加入一个名为 Email 的文件夹
    ![20250428150635](https://imagehost.daletan.win/20250428150635.png)
 
