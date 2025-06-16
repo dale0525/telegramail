@@ -47,44 +47,75 @@ TelegramMail is a Telegram-based email tool that allows you to send and receive 
 > 2. Telegram Bot cannot listen to message deletion events
 - (Optional) OpenAI-compatible LLM API for AI features such as email summarization
 
-#### Deployment with Python
+### Local Development
+1. [Install mise](https://mise.jdx.dev/getting-started.html)
+> You can also skip mise and use python3.10 and pip directly
 
 1. Clone the repository:
    ```bash
    git clone https://github.com/dale0525/telegramail.git
    cd telegramail
    ```
+
 2. Create configuration file:
    ```bash
    cp .env.example .env
    ```
-3. Edit the `.env` file and fill in your Telegram Bot Token and Telegram ID:
+
+3. Edit the `.env` file and fill in your configuration:
    ```
    TELEGRAM_API_ID=your_telegram_api_id_here
    TELEGRAM_API_HASH=your_telegram_api_hash_here
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-   ```
-4. (Optional) Fill in the LLM base url and api key. `OPENAI_EMAIL_SUMMARIZE_MODELS` is a list of models used to summarize emails, separated by commas. If the first model fails to call, the next one will be used.
-   ```
-   ENABLE_LLM_SUMMARY=0    # set to 1 to enable email summary using llm
-   LLM_SUMMARY_THRESHOLD=200    # if the email content is longer than this threshold, use llm to summarize
+
+   # Optional LLM settings
+   ENABLE_LLM_SUMMARY=0    # set to 1 to enable LLM features
+   LLM_SUMMARY_THRESHOLD=200  # if the email content is longer than this threshold, use LLM to summarize
    OPENAI_BASE_URL=your_openai_base_url_here
    OPENAI_API_KEY=your_openai_key_here
-   OPENAI_EMAIL_SUMMARIZE_MODELS=1st_model_to_summarize_email_content,2nd_model_to_summarize_email_content
+   OPENAI_EMAIL_SUMMARIZE_MODELS=first_model_to_summarize_email_content,second_model_to_summarize_email_content,...   # if the first model fails, try the second one
    ```
-5. Install dependencies:
-   ```
+
+4. Install and run with mise:
+   ```bash
+   # Install dependencies
+   mise run pip
+   # Or directly
    pip install -r requirements.txt
 
-   # Or, if you have mise installed:
-   # mise run pip
-   ```
-6. Start:
-   ```
+   # Start development server
+   mise run dev
+   # Or directly
    python -m app.main
+   ```
 
-   # Or, if you have mise installed:
-   # mise run dev
+5. Check i18n:
+   ```bash
+   mise run i18n
+   # Or directly
+   python scripts/check_i18n.py
+   ```
+
+### Production Deployment
+
+Use Docker Compose for production deployment with pre-built images from Docker Hub:
+
+1. Create deployment directory:
+   ```bash
+   mkdir telegramail && cd telegramail
+   ```
+
+2. Download Docker Compose configuration:
+   ```bash
+   curl -O https://raw.githubusercontent.com/dale0525/telegramail/main/docker-compose.yml
+   curl -o .env https://raw.githubusercontent.com/dale0525/telegramail/main/.env.example
+   ```
+
+3. Edit the `.env` file. See [Local Development](#Local Development) for details.
+
+4. Deploy:
+   ```bash
+   docker-compose up -d
    ```
 
 ## Usage
@@ -103,7 +134,6 @@ TelegramMail is a Telegram-based email tool that allows you to send and receive 
    - Gmail
    - Outlook/Hotmail
    - Yahoo
-   - ProtonMail
    - iCloud
    - Zoho Mail
    - AOL
@@ -129,7 +159,14 @@ TelegramMail regularly checks for unread emails in the INBOX and sends new email
 
 You can change the frequency of regular checks by modifying `POLLING_INTERVAL` in the `.env` file. The default is 300 seconds.
 
-### 删除邮件
+### Manually Fetching Emails
+#### Manually Fetch All Emails
+Use the `/check` command to manually check for new emails for all added email accounts
+
+#### Manually Fetch Specific Email Account
+Use the `/accounts` command, then click on the email account you want to manually fetch emails for, and then click the "Manual Fetch Email" button
+
+### Delete Emails
 
 If you want to delete an email, just delete the corresponding Topic in Telegram. Telegramail will search for deleted topics every 3 minutes, clean the database and delete related emails from the mail server.
 

@@ -1,11 +1,11 @@
-version: "3"
+version: "3.8"
 
 services:
     telegramail:
-        build: .
+        image: logictan/telegramail:latest
         container_name: telegramail
         restart: unless-stopped
+        env_file:
+            - .env
         volumes:
-            - ./.env:/app/.env
-        environment:
-            - TZ=Asia/Shanghai
+            - ./data:/app/data

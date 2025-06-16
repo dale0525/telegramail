@@ -4,7 +4,9 @@ from typing import Dict, List, Optional, Any
 import tempfile
 import email.header
 import base64
+import asyncio
 from dataclasses import dataclass
+from functools import wraps
 
 from app.bot.bot_client import BotClient
 from app.i18n import _
@@ -34,6 +36,63 @@ from aiotdlib.api import (
 from aiotdlib.api import MessageSendOptions
 
 logger = Logger().get_logger(__name__)
+
+
+def retry_on_telegram_error(max_retries: int = 3, delay: float = 1.0):
+    """
+    Decorator to retry Telegram API calls on failure
+
+    Args:
+        max_retries: Maximum number of retry attempts
+        delay: Delay between retries in seconds
+    """
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries + 1):
+                try:
+                    result = await func(*args, **kwargs)
+                    if result is not None:  # Success
+                        if attempt > 0:
+                            logger.info(
+                                f"Successfully sent after {attempt} retries: {func.__name__}"
+                            )
+                        return result
+                    else:
+                        # Result is None, treat as failure
+                        if attempt < max_retries:
+                            logger.warning(
+                                f"Attempt {attempt + 1} failed for {func.__name__}, retrying in {delay}s..."
+                            )
+                            await asyncio.sleep(
+                                delay * (attempt + 1)
+                            )  # Exponential backoff
+                        else:
+                            logger.error(
+                                f"All {max_retries + 1} attempts failed for {func.__name__}"
+                            )
+                            return None
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        logger.warning(
+                            f"Attempt {attempt + 1} failed for {func.__name__} with error: {e}, retrying in {delay}s..."
+                        )
+                        await asyncio.sleep(
+                            delay * (attempt + 1)
+                        )  # Exponential backoff
+                    else:
+                        logger.error(
+                            f"All {max_retries + 1} attempts failed for {func.__name__} with error: {e}"
+                        )
+                        raise last_exception
+            return None
+
+        return wrapper
+
+    return decorator
 
 
 @dataclass
@@ -85,6 +144,9 @@ class AtomicEmailSender:
         """
         Atomically send an email to a Telegram chat
 
+        This method ensures that topic creation happens after all content is prepared,
+        and all message sending operations include retry mechanisms.
+
         Args:
             chat_id: Telegram chat ID
             topic_title: Topic title for the forum
@@ -98,18 +160,23 @@ class AtomicEmailSender:
             bool: True if successful, False otherwise
         """
         try:
-            # 1. Check if a thread already exists
+            logger.info(f"Starting atomic email send for topic: {topic_title}")
+
+            # 1. First check if a thread already exists
             thread_id = await self.email_sender.get_thread_id_by_subject(
                 topic_title, account_id
             )
 
-            # 2. If no thread exists, create a new one
+            # 2. If no thread exists, create a new one AFTER content is prepared
             if not thread_id:
-                thread_id = await self.email_sender.create_forum_topic(
+                logger.info(
+                    f"No existing thread found, creating new topic: {topic_title}"
+                )
+                thread_id = await self._create_forum_topic_with_retry(
                     chat_id, topic_title
                 )
                 if not thread_id:
-                    logger.error("Failed to create forum topic")
+                    logger.error("Failed to create forum topic after retries")
                     return False
                 self.created_topic_id = thread_id
 
@@ -122,9 +189,10 @@ class AtomicEmailSender:
                 return False
             self.db_updated = True
 
-            # 4. Send all messages in order
-            for message in messages:
-                sent_message = await self.email_sender.send_text_message(
+            # 4. Send all messages in order with retry mechanism
+            logger.info(f"Sending {len(messages)} messages to thread {thread_id}")
+            for i, message in enumerate(messages):
+                sent_message = await self._send_text_message_with_retry(
                     chat_id=chat_id,
                     text=message.text,
                     thread_id=thread_id,
@@ -133,14 +201,17 @@ class AtomicEmailSender:
                     urls=message.urls,
                 )
                 if not sent_message:
-                    logger.error(f"Failed to send message: {message.text[:50]}...")
+                    logger.error(
+                        f"Failed to send message {i+1}/{len(messages)}: {message.text[:50]}..."
+                    )
                     await self._rollback()
                     return False
                 self.sent_messages.append(sent_message)
 
-            # 5. Send all files
-            for file in files:
-                sent_message = await self.email_sender.send_html_as_file(
+            # 5. Send all files with retry mechanism
+            logger.info(f"Sending {len(files)} files to thread {thread_id}")
+            for i, file in enumerate(files):
+                sent_message = await self._send_html_as_file_with_retry(
                     chat_id=chat_id,
                     thread_id=thread_id,
                     content=file.content,
@@ -148,14 +219,17 @@ class AtomicEmailSender:
                     send_notification=file.send_notification,
                 )
                 if not sent_message:
-                    logger.error(f"Failed to send file: {file.filename}")
+                    logger.error(
+                        f"Failed to send file {i+1}/{len(files)}: {file.filename}"
+                    )
                     await self._rollback()
                     return False
                 self.sent_messages.append(sent_message)
 
-            # 6. Send all attachments
-            for attachment in attachments:
-                sent_message = await self.email_sender.send_attachment(
+            # 6. Send all attachments with retry mechanism
+            logger.info(f"Sending {len(attachments)} attachments to thread {thread_id}")
+            for i, attachment in enumerate(attachments):
+                sent_message = await self._send_attachment_with_retry(
                     chat_id=chat_id,
                     thread_id=thread_id,
                     attachment={
@@ -164,7 +238,9 @@ class AtomicEmailSender:
                     },
                 )
                 if not sent_message:
-                    logger.error(f"Failed to send attachment: {attachment.filename}")
+                    logger.error(
+                        f"Failed to send attachment {i+1}/{len(attachments)}: {attachment.filename}"
+                    )
                     await self._rollback()
                     return False
                 self.sent_messages.append(sent_message)
@@ -178,6 +254,65 @@ class AtomicEmailSender:
             logger.error(f"Error in atomic email sending: {e}")
             await self._rollback()
             return False
+
+    @retry_on_telegram_error(max_retries=3, delay=1.0)
+    async def _create_forum_topic_with_retry(
+        self, chat_id: int, title: str
+    ) -> Optional[int]:
+        """Create forum topic with retry mechanism"""
+        return await self.email_sender.create_forum_topic(chat_id, title)
+
+    @retry_on_telegram_error(max_retries=3, delay=1.0)
+    async def _send_text_message_with_retry(
+        self,
+        chat_id: int,
+        text: str,
+        thread_id: int,
+        parse_mode: Optional[str] = None,
+        send_notification: bool = True,
+        urls: Optional[List[Dict]] = None,
+    ) -> Optional[Message]:
+        """Send text message with retry mechanism"""
+        return await self.email_sender.send_text_message(
+            chat_id=chat_id,
+            text=text,
+            thread_id=thread_id,
+            parse_mode=parse_mode,
+            send_notification=send_notification,
+            urls=urls,
+        )
+
+    @retry_on_telegram_error(max_retries=3, delay=1.0)
+    async def _send_html_as_file_with_retry(
+        self,
+        chat_id: int,
+        thread_id: int,
+        content: str,
+        filename: str,
+        send_notification: bool = False,
+    ) -> Optional[Message]:
+        """Send HTML file with retry mechanism"""
+        return await self.email_sender.send_html_as_file(
+            chat_id=chat_id,
+            thread_id=thread_id,
+            content=content,
+            filename=filename,
+            send_notification=send_notification,
+        )
+
+    @retry_on_telegram_error(max_retries=3, delay=1.0)
+    async def _send_attachment_with_retry(
+        self,
+        chat_id: int,
+        thread_id: int,
+        attachment: Dict[str, Any],
+    ) -> Optional[Message]:
+        """Send attachment with retry mechanism"""
+        return await self.email_sender.send_attachment(
+            chat_id=chat_id,
+            thread_id=thread_id,
+            attachment=attachment,
+        )
 
     async def _rollback(self):
         """
@@ -352,6 +487,9 @@ class EmailTelegramSender:
             chat_id: Telegram chat ID
             text: Message text to send
             thread_id: Optional thread ID for forum topics
+            send_notification: Whether to send notification
+            urls: Optional list of URLs to include as buttons
+            parse_mode: Optional parse mode (HTML, Markdown)
 
         Returns:
             Optional[Message]: Message object if sent successfully, None otherwise
@@ -407,7 +545,7 @@ class EmailTelegramSender:
             thread_id: Thread ID for forum topics
             content: HTML content
             filename: Name for the file
-            send_notification: Whethere to send telegram notification
+            send_notification: Whether to send telegram notification
 
         Returns:
             Optional[Message]: Message object if sent successfully, None otherwise

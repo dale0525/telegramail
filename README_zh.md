@@ -45,44 +45,75 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
 > 2. Telegram Bot 无法监听删除信息事件
 - (可选) 兼容 OpenAI 的 LLM API，用于 AI 功能，如总结邮件内容
 
-#### 使用 Python 部署
+#### 本地开发
+1. [安装 mise](https://mise.jdx.dev/getting-started.html)
+> 也可以不安装，直接使用 python3.10 和 pip
 
-1. 克隆仓库:
+2. 克隆仓库:
    ```bash
    git clone https://github.com/dale0525/telegramail.git
    cd telegramail
    ```
-2. 创建配置文件:
+
+3. 创建配置文件:
    ```bash
    cp .env.example .env
    ```
-3. 编辑 `.env` 文件，填入你的 Telegram Bot Token和Telegram ID:
+
+4. 编辑 `.env` 文件，填入你的 Telegram Bot Token和Telegram ID:
    ```
    TELEGRAM_API_ID=your_telegram_api_id_here
    TELEGRAM_API_HASH=your_telegram_api_hash_here
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-   ```
-4. (可选) 填入 LLM 的 base url 和 api key。`OPENAI_EMAIL_SUMMARIZE_MODELS`是用来总结邮件的模型列表，多个模型用逗号分隔。前面的模型如果调用失败会调用下一个。
-   ```
+
+   # 可选的 LLM 设置
    ENABLE_LLM_SUMMARY=0    # 改成 1 来开启 LLM 功能
-   LLM_SUMMARY_THRESHOLD=200    # 邮件正文字数大于这个值才会启用 LLM 总结
+   LLM_SUMMARY_THRESHOLD=200  # 如果邮件内容超过这个阈值，会使用 LLM 来总结邮件内容
    OPENAI_BASE_URL=your_openai_base_url_here
    OPENAI_API_KEY=your_openai_key_here
-   OPENAI_EMAIL_SUMMARIZE_MODELS=1st_model_to_summarize_email_content,2nd_model_to_summarize_email_content
+   OPENAI_EMAIL_SUMMARIZE_MODELS=第一个模型,第二个模型,...   # 如果第一个模型请求失败，会尝试使用第二个模型
    ```
-5. 安装依赖：
-   ```
+
+5. 安装依赖并启动：
+   ```bash
+   # 安装依赖
+   mise run pip
+   # 或者
    pip install -r requirements.txt
 
-   # 或者，如果你安装了 mise:
-   # mise run pip
-   ```
-6. 启动：
-   ```
+   # 启动应用
+   mise run dev
+   # 或者
    python -m app.main
+   ```
 
-   # 或者，如果你安装了 mise:
-   # mise run dev
+6. 检查 i18n 是否完善
+   ```bash
+   mise run i18n
+   # 或者
+   python scripts/check_i18n.py
+   ```
+
+#### 生产环境部署（使用 Docker Compose）
+
+使用 Docker Compose 和 Docker Hub 上的预构建镜像进行生产环境部署：
+
+1. 创建部署目录:
+   ```bash
+   mkdir telegramail && cd telegramail
+   ```
+
+2. 下载 Docker Compose 配置和环境配置文件:
+   ```bash
+   curl -O https://raw.githubusercontent.com/dale0525/telegramail/main/docker-compose.yml
+   curl -o .env https://raw.githubusercontent.com/dale0525/telegramail/main/.env.example
+   ```
+
+3. 修改`.env`文件，见[本地开发](#本地开发)中的说明
+
+4. 部署:
+   ```bash
+   docker-compose up -d
    ```
 
 ## 使用方法
@@ -101,7 +132,6 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
    - Gmail
    - Outlook/Hotmail
    - Yahoo
-   - ProtonMail
    - iCloud
    - Zoho Mail
    - AOL
@@ -126,6 +156,13 @@ TelegramMail 会定期检查 INBOX 中的未读邮件，并将新邮件发送到
 ![20250428155652](https://imagehost.daletan.win/20250428155652.png)
 
 你可以通过修改`.env`中的`POLLING_INTERVAL`来更改定期检查的频率。默认为 300 秒。
+
+### 手动获取邮件
+#### 手动获取所有邮件
+使用`/check`命令，程序会检查所有已添加邮箱账户的未读邮件
+
+#### 手动获取特定邮箱账户的邮件
+使用`/accounts`命令，在出现的邮箱列表中，点击需要手动获取邮件的邮箱账户，然后点击"手动获取邮件"按钮即可
 
 ### 删除邮件
 
