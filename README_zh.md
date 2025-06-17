@@ -1,6 +1,6 @@
 # TelegramMail
 
-TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接在 Telegram 中收发邮件，无需切换到传统邮件客户端。本项目设计为个人使用，一个客户端只能由一个用户管理和使用。
+TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/aiotdlib) 的邮件收发工具，让你可以直接在 Telegram 中收发邮件，无需切换到传统邮件客户端。本项目设计为个人使用，一个客户端只能由一个用户管理和使用。
 
 ## 和传统邮件客户端的比较
 ### 优点

@@ -2,7 +2,7 @@
 
 [中文文档](./README_zh.md)
 
-TelegramMail is a Telegram-based email tool that allows you to send and receive emails directly in Telegram without switching to traditional email clients. This project is designed for personal use, with each client managed and used by a single user.
+TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://github.com/pylakey/aiotdlib) that allows you to send and receive emails directly in Telegram without switching to traditional email clients. This project is designed for personal use, with each client managed and used by a single user.
 
 ## Comparison with Traditional Email Clients
 ### Advantages
