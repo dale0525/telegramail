@@ -25,9 +25,6 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONPATH=/app
 
-# Create non-root user for security
-RUN groupadd -r telegramail && useradd -r -g telegramail telegramail
-
 # Install runtime dependencies including C++ runtime for TDLib
 RUN apt-get update && apt-get install -y \
     ca-certificates \
@@ -47,27 +44,12 @@ COPY --from=builder /root/.local /root/.local
 # Copy application code and scripts
 COPY app/ ./app/
 COPY scripts/ ./scripts/
-COPY .env.example .env.example
 
 # Add Python packages to PATH for setup script
 ENV PATH=/root/.local/bin:$PATH
 
 # Setup TDLib libraries for the target architecture
 RUN python3 scripts/setup_tdlib.py --verbose
-
-# Copy Python packages to telegramail user location and set permissions
-RUN mkdir -p /home/telegramail/.local && \
-    cp -r /root/.local/* /home/telegramail/.local/ && \
-    mkdir -p /app/data && \
-    chown -R telegramail:telegramail /app /home/telegramail && \
-    chmod -R 755 /app && \
-    rm -rf /root/.local
-
-# Switch to non-root user
-USER telegramail
-
-# Add local Python packages to PATH for telegramail user
-ENV PATH=/home/telegramail/.local/bin:$PATH
 
 # Default command
 CMD ["python", "-m", "app.main"]
