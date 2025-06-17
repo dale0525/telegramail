@@ -56,9 +56,10 @@ ENV PATH=/root/.local/bin:$PATH
 RUN python3 scripts/setup_tdlib.py --verbose
 
 # Copy Python packages to telegramail user location and set permissions
-RUN cp -r /root/.local /home/telegramail/.local && \
+RUN mkdir -p /home/telegramail/.local && \
+    cp -r /root/.local/* /home/telegramail/.local/ && \
     mkdir -p /app/data && \
-    chown -R telegramail:telegramail /app /home/telegramail/.local && \
+    chown -R telegramail:telegramail /app /home/telegramail && \
     chmod -R 755 /app && \
     rm -rf /root/.local
 
