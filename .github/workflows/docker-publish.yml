@@ -64,6 +64,24 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
           logout: false
 
+      - name: Verify TDLib libraries
+        run: |
+          echo "Checking TDLib library files..."
+          ls -la app/resources/tdlib/
+
+          # Check for required library files
+          if [ ! -f "app/resources/tdlib/libtdjson_linux_amd64.so" ]; then
+            echo "Error: Missing TDLib library for linux/amd64"
+            exit 1
+          fi
+
+          if [ ! -f "app/resources/tdlib/libtdjson_linux_arm64.so" ]; then
+            echo "Error: Missing TDLib library for linux/arm64"
+            exit 1
+          fi
+
+          echo "All required TDLib libraries found"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5

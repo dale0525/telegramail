@@ -1,5 +1,9 @@
 import os
 from aiotdlib import Client, ClientSettings
+from app.utils.tdlib_manager import get_library_path
+from app.utils import Logger
+
+logger = Logger().get_logger(__name__)
 from aiotdlib.api import (
     CheckAuthenticationCode,
     CheckAuthenticationPassword,
@@ -58,6 +62,11 @@ class UserClient:
     def start(self, phone_number: str | None = None):
         api_id = os.getenv("TELEGRAM_API_ID")
         api_hash = os.getenv("TELEGRAM_API_HASH")
+
+        # Get dynamic library path for user client
+        library_path = get_library_path("user")
+        logger.info(f"Using TDLib library for user: {library_path}")
+
         self.client = CustomClient(
             settings=ClientSettings(
                 api_id=api_id,
@@ -65,14 +74,7 @@ class UserClient:
                 phone_number=phone_number,
                 database_encryption_key="Telegramail",
                 files_directory=os.path.join(os.getcwd(), "data", "user"),
-                library_path=os.path.join(
-                    os.getcwd(),
-                    "app",
-                    "resources",
-                    "tdlib",
-                    "darwin",
-                    "libtdjson_darwin_arm64_2.dylib",
-                ),
+                library_path=library_path,
             )
         )
 

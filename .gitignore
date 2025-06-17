@@ -6,6 +6,11 @@ __pycache__/
 # C extensions
 *.so
 
+# Exception: Include TDLib library files
+!app/resources/tdlib/*.so
+!app/resources/tdlib/*.dylib
+!app/resources/tdlib/*.dll
+
 # Distribution / packaging
 .Python
 build/

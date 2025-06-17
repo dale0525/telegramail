@@ -45,7 +45,8 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
 > 2. Telegram Bot 无法监听删除信息事件
 - (可选) 兼容 OpenAI 的 LLM API，用于 AI 功能，如总结邮件内容
 
-#### 本地开发
+### 本地开发
+*暂不支持 Windows，如果需要 Windows 支持，请自行编译 TDLib 库文件（或使用 WSL/Docker）*
 1. [安装 mise](https://mise.jdx.dev/getting-started.html)
 > 也可以不安装，直接使用 python3.10 和 pip
 
@@ -74,27 +75,43 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
    OPENAI_EMAIL_SUMMARIZE_MODELS=第一个模型,第二个模型,...   # 如果第一个模型请求失败，会尝试使用第二个模型
    ```
 
-5. 安装依赖并启动：
+5. 初始化开发环境：
    ```bash
-   # 安装依赖
-   mise run pip
+   # 安装依赖、设置 TDLib 库文件
+   mise run init
    # 或者
-   pip install -r requirements.txt
+   pip install -r requirements.txt && python scripts/setup_tdlib.py
+   ```
 
+6. 启动应用：
+   ```bash
    # 启动应用
    mise run dev
    # 或者
    python -m app.main
    ```
 
-6. 检查 i18n 是否完善
+7. 检查 i18n 是否完善
    ```bash
    mise run i18n
    # 或者
    python scripts/check_i18n.py
    ```
 
-#### 生产环境部署（使用 Docker Compose）
+#### TDLib 库文件管理
+
+项目包含了跨平台的 TDLib 库文件自动化管理功能：
+
+- **自动设置**：setup_tdlib.py脚本会自动检测你的平台并配置相应的 TDLib 库文件
+- **开发模式**：为 bot 和 user 客户端创建独立的库文件（aiotdlib 要求）
+- **生产模式**：在容器环境中使用单一库文件
+
+**平台支持**：
+- ✅ **macOS**：从包含的 ARM64 库文件自动设置
+- ✅ **Linux**：支持 AMD64 和 ARM64 架构的自动设置
+- ⚠️ **Windows**：需要手动编译 TDLib 库（或使用 WSL/Docker）
+
+### 生产环境部署（使用 Docker Compose）
 
 使用 Docker Compose 和 Docker Hub 上的预构建镜像进行生产环境部署：
 

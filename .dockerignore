@@ -19,7 +19,6 @@ LICENSE
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
 .Python
 build/
 develop-eggs/
@@ -37,6 +36,12 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# C extensions (but keep TDLib libraries)
+*.so
+!app/resources/tdlib/*.so
+!app/resources/tdlib/*.dylib
+!app/resources/tdlib/*.dll
 
 # Virtual environments
 venv/

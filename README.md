@@ -48,6 +48,8 @@ TelegramMail is a Telegram-based email tool that allows you to send and receive 
 - (Optional) OpenAI-compatible LLM API for AI features such as email summarization
 
 ### Local Development
+**Windows is not yet supported for local development. If you need Windows support, please compile TDLib library files yourself (or use WSL/Docker).**
+
 1. [Install mise](https://mise.jdx.dev/getting-started.html)
 > You can also skip mise and use python3.10 and pip directly
 
@@ -76,25 +78,41 @@ TelegramMail is a Telegram-based email tool that allows you to send and receive 
    OPENAI_EMAIL_SUMMARIZE_MODELS=first_model_to_summarize_email_content,second_model_to_summarize_email_content,...   # if the first model fails, try the second one
    ```
 
-4. Install and run with mise:
+4. Init development environment:
    ```bash
-   # Install dependencies
-   mise run pip
+   # Install dependencies and setup TDLib libraries
+   mise run init
    # Or directly
-   pip install -r requirements.txt
+   pip install -r requirements.txt && python scripts/setup_tdlib.py
+   ```
 
+5. Start the application:
+   ```bash
    # Start development server
    mise run dev
    # Or directly
    python -m app.main
    ```
 
-5. Check i18n:
+6. Check i18n:
    ```bash
    mise run i18n
    # Or directly
    python scripts/check_i18n.py
    ```
+
+#### TDLib Management
+
+The project includes automated TDLib library management for cross-platform development:
+
+- **Automatic Setup**: The setup_tdlib.py script automatically detects your platform and configures the appropriate TDLib libraries
+- **Development Mode**: Creates separate library files for bot and user clients (required by aiotdlib)
+- **Production Mode**: Uses single library files in container environments
+
+**Platform Support**:
+- ✅ **macOS**: Automatic setup from included ARM64 library
+- ✅ **Linux**: Automatic setup for both AMD64 and ARM64
+- ⚠️ **Windows**: Manual TDLib compilation required (or use WSL/Docker)
 
 ### Production Deployment
 

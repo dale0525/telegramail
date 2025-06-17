@@ -1,4 +1,4 @@
-aiotdlib==0.27.4
+aiotdlib==0.27.6
 python-dotenv
 beautifulsoup4>=4.13.4
 openai>=1.75.0
