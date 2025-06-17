@@ -28,9 +28,13 @@ ENV PYTHONPATH=/app
 # Create non-root user for security
 RUN groupadd -r telegramail && useradd -r -g telegramail telegramail
 
-# Install runtime dependencies
+# Install runtime dependencies including C++ runtime for TDLib
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    libc++1 \
+    libc++abi1 \
+    libssl3 \
+    zlib1g \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
