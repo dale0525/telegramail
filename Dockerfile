@@ -44,8 +44,9 @@ WORKDIR /app
 # Copy Python packages from builder stage
 COPY --from=builder /root/.local /home/telegramail/.local
 
-# Copy application code
+# Copy application code and scripts
 COPY app/ ./app/
+COPY scripts/ ./scripts/
 COPY .env.example .env.example
 
 # Setup TDLib libraries for the target architecture
