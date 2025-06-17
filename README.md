@@ -106,8 +106,8 @@ TelegramMail is a Telegram-based email tool that allows you to send and receive 
 The project includes automated TDLib library management for cross-platform development:
 
 - **Automatic Setup**: The setup_tdlib.py script automatically detects your platform and configures the appropriate TDLib libraries
-- **Development Mode**: Creates separate library files for bot and user clients (required by aiotdlib)
-- **Production Mode**: Uses single library files in container environments
+- **Separate Libraries**: Creates separate library files for bot and user clients (required by aiotdlib limitation)
+- **Cross-Environment**: Works consistently in both development and production/container environments
 
 **Platform Support**:
 - ✅ **macOS**: Automatic setup from included ARM64 library

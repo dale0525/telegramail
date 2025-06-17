@@ -192,12 +192,8 @@ class TDLibManager:
         """
         platform_name, arch = self.platform_info
 
-        # In production/container environment, use the source library directly
-        if self._is_container_environment():
-            source_path = self.get_source_library_path()
-            return str(source_path.absolute())
-
-        # In development environment, use separate library files
+        # Both development and container environments need separate library files
+        # because aiotdlib doesn't allow multiple clients to use the same library file
         try:
             bot_path, user_path = self.get_development_library_paths()
 
@@ -208,20 +204,20 @@ class TDLibManager:
             else:
                 raise ValueError(f"Invalid client type: {client_type}")
 
-            # Ensure development libraries are set up
+            # Ensure libraries are set up
             if not target_path.exists():
-                logger.info(f"Development library not found, setting up...")
+                logger.info(f"Library not found for {client_type}, setting up...")
                 if not self.setup_development_libraries():
-                    # Fallback to source library
-                    logger.warning("Falling back to source library")
-                    return str(self.get_source_library_path().absolute())
+                    # This is a critical error - we can't proceed without separate libraries
+                    raise RuntimeError(
+                        f"Failed to setup separate library files for {client_type}"
+                    )
 
             return str(target_path.absolute())
 
         except Exception as e:
             logger.error(f"Failed to get runtime library path: {e}")
-            # Fallback to source library
-            return str(self.get_source_library_path().absolute())
+            raise RuntimeError(f"Cannot provide library path for {client_type}: {e}")
 
     def _is_container_environment(self) -> bool:
         """

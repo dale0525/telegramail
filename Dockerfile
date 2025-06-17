@@ -49,17 +49,7 @@ COPY app/ ./app/
 COPY .env.example .env.example
 
 # Setup TDLib libraries for the target architecture
-RUN python3 -c "\
-import platform; \
-import os; \
-from pathlib import Path; \
-machine = platform.machine().lower(); \
-arch = 'amd64' if machine in ['x86_64', 'amd64'] else ('arm64' if machine in ['aarch64', 'arm64'] else machine); \
-print(f'Setting up TDLib for linux_{arch}'); \
-tdlib_dir = Path('/app/app/resources/tdlib'); \
-source_lib = tdlib_dir / f'libtdjson_linux_{arch}.so'; \
-print(f'Found TDLib library: {source_lib}') if source_lib.exists() else print(f'Warning: TDLib library not found: {source_lib}'); \
-"
+RUN python3 scripts/setup_tdlib.py --verbose
 
 # Create data directory and set permissions
 RUN mkdir -p /app/data && \
