@@ -69,9 +69,6 @@ Thumbs.db
 # Data directory (will be mounted as volume)
 data/
 
-# Scripts
-scripts/
-
 # Mise
 mise.toml
 
