@@ -131,7 +131,12 @@ Use Docker Compose for production deployment with pre-built images from Docker H
 
 3. Edit the `.env` file. See [Local Development](#Local Development) for details.
 
-4. Deploy:
+4. Create data directory and set permissions:
+   ```bash
+   mkdir data && chmod -R 755 data
+   ```
+
+5. Deploy:
    ```bash
    docker-compose up -d
    ```

@@ -128,7 +128,12 @@ TelegramMail 是一个基于 Telegram 的邮件收发工具，让你可以直接
 
 3. 修改`.env`文件，见[本地开发](#本地开发)中的说明
 
-4. 部署:
+4. 创建数据目录并设置权限:
+   ```bash
+   mkdir data && chmod -R 755 data
+   ```
+
+5. 部署:
    ```bash
    docker-compose up -d
    ```

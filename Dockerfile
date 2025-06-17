@@ -69,12 +69,5 @@ USER telegramail
 # Add local Python packages to PATH for telegramail user
 ENV PATH=/home/telegramail/.local/bin:$PATH
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)" || exit 1
-
-# Expose port (if needed for future web interface)
-EXPOSE 8080
-
 # Default command
 CMD ["python", "-m", "app.main"]
