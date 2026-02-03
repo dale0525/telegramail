@@ -1,5 +1,6 @@
 import os
 import re
+import html
 from typing import Dict, List, Optional, Any
 import tempfile
 import email.header
@@ -107,6 +108,15 @@ class MessageContent:
 
 
 @dataclass
+class PreparedMessageContent:
+    """Data class for storing prepared FormattedText to be sent"""
+
+    formatted_text: FormattedText
+    send_notification: bool = True
+    urls: Optional[List[Dict]] = None
+
+
+@dataclass
 class FileContent:
     """Data class for storing file content to be sent"""
 
@@ -163,6 +173,9 @@ class AtomicEmailSender:
         try:
             logger.info(f"Starting atomic email send for topic: {topic_title}")
 
+            # 0. Parse/validate all message text BEFORE creating topic.
+            prepared_messages = await self._prepare_formatted_messages(messages)
+
             # 1. First check if a thread already exists
             thread_id = await self.email_sender.get_thread_id_by_subject(
                 topic_title, account_id
@@ -191,19 +204,18 @@ class AtomicEmailSender:
             self.db_updated = True
 
             # 4. Send all messages in order with retry mechanism
-            logger.info(f"Sending {len(messages)} messages to thread {thread_id}")
-            for i, message in enumerate(messages):
-                sent_message = await self._send_text_message_with_retry(
+            logger.info(f"Sending {len(prepared_messages)} messages to thread {thread_id}")
+            for i, message in enumerate(prepared_messages):
+                sent_message = await self._send_formatted_text_message_with_retry(
                     chat_id=chat_id,
-                    text=message.text,
                     thread_id=thread_id,
-                    parse_mode=message.parse_mode,
+                    formatted_text=message.formatted_text,
                     send_notification=message.send_notification,
                     urls=message.urls,
                 )
                 if not sent_message:
                     logger.error(
-                        f"Failed to send message {i+1}/{len(messages)}: {message.text[:50]}..."
+                        f"Failed to send message {i+1}/{len(prepared_messages)}: {message.formatted_text.text[:50]}..."
                     )
                     await self._rollback()
                     return False
@@ -264,21 +276,19 @@ class AtomicEmailSender:
         return await self.email_sender.create_forum_topic(chat_id, title)
 
     @retry_on_telegram_error(max_retries=3, delay=1.0)
-    async def _send_text_message_with_retry(
+    async def _send_formatted_text_message_with_retry(
         self,
         chat_id: int,
-        text: str,
         thread_id: int,
-        parse_mode: Optional[str] = None,
+        formatted_text: FormattedText,
         send_notification: bool = True,
         urls: Optional[List[Dict]] = None,
     ) -> Optional[Message]:
-        """Send text message with retry mechanism"""
-        return await self.email_sender.send_text_message(
+        """Send pre-parsed text message with retry mechanism"""
+        return await self.email_sender.send_formatted_text_message(
             chat_id=chat_id,
-            text=text,
             thread_id=thread_id,
-            parse_mode=parse_mode,
+            formatted_text=formatted_text,
             send_notification=send_notification,
             urls=urls,
         )
@@ -345,6 +355,45 @@ class AtomicEmailSender:
 
         except Exception as e:
             logger.error(f"Error during rollback: {e}")
+
+    async def _prepare_formatted_messages(
+        self, messages: List[MessageContent]
+    ) -> List["PreparedMessageContent"]:
+        prepared_messages: List[PreparedMessageContent] = []
+        for message in messages:
+            formatted_text = await self._parse_message_text(
+                text=message.text,
+                parse_mode=message.parse_mode,
+            )
+            prepared_messages.append(
+                PreparedMessageContent(
+                    formatted_text=formatted_text,
+                    send_notification=message.send_notification,
+                    urls=message.urls,
+                )
+            )
+        return prepared_messages
+
+    async def _parse_message_text(
+        self, *, text: str, parse_mode: Optional[str]
+    ) -> FormattedText:
+        try:
+            return await self.email_sender.str_to_formatted(text, parse_mode)
+        except Exception as e:
+            fallback_text = self._fallback_plain_text(text, parse_mode)
+            logger.warning(
+                "Failed to parse message text, sending plain text instead "
+                f"(parse_mode={parse_mode}): {e}"
+            )
+            return FormattedText(text=fallback_text, entities=[])
+
+    def _fallback_plain_text(self, text: str, parse_mode: Optional[str]) -> str:
+        if isinstance(parse_mode, str) and parse_mode.lower() == "html":
+            # Convert common HTML newlines before stripping tags.
+            plain = re.sub(r"<br\\s*/?>", "\n", text, flags=re.IGNORECASE)
+            plain = re.sub(r"<[^>]+>", "", plain)
+            return html.unescape(plain).strip()
+        return text
 
 
 class EmailTelegramSender:
@@ -528,6 +577,54 @@ class EmailTelegramSender:
             return await self.bot_client.api.send_message(**send_kwargs)
         except Exception as e:
             logger.error(f"Error sending text message: {e}")
+            return None
+
+    async def send_formatted_text_message(
+        self,
+        *,
+        chat_id: int,
+        formatted_text: FormattedText,
+        send_notification: bool = True,
+        thread_id: Optional[int] = None,
+        urls: Optional[list[dict]] = None,
+    ) -> Optional[Message]:
+        """
+        Send a pre-parsed FormattedText message to a Telegram chat
+
+        This avoids parse-time failures (HTML/Markdown parsing) during the send phase,
+        which helps prevent "empty topic" cases for new forum topics.
+        """
+        buttons = []
+        if urls and len(urls) > 0:
+            for url in urls[:5]:
+                url_text = url["caption"]
+                url_link = url["link"]
+                buttons.append(
+                    [
+                        InlineKeyboardButton(
+                            text=url_text,
+                            type=InlineKeyboardButtonTypeUrl(url=url_link),
+                        )
+                    ]
+                )
+        try:
+            send_kwargs = {
+                "chat_id": chat_id,
+                "message_thread_id": thread_id,
+                "input_message_content": InputMessageText(text=formatted_text),
+                "options": MessageSendOptions(
+                    paid_message_star_count=0,
+                    sending_id=0,
+                    disable_notification=not send_notification,
+                    from_background=not send_notification,
+                ),
+            }
+            if len(buttons) > 0:
+                send_kwargs["reply_markup"] = ReplyMarkupInlineKeyboard(rows=buttons)
+
+            return await self.bot_client.api.send_message(**send_kwargs)
+        except Exception as e:
+            logger.error(f"Error sending formatted text message: {e}")
             return None
 
     async def send_html_as_file(

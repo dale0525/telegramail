@@ -70,6 +70,9 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
    TELEGRAM_API_HASH=your_telegram_api_hash_here
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
+   # Optional TDLib settings
+   TELEGRAM_CHAT_EVENT_LOG_TIMEOUT=30  # increase if you see TimeoutError when scanning deleted topics
+
    # Optional LLM settings
    ENABLE_LLM_SUMMARY=0    # set to 1 to enable LLM features
    LLM_SUMMARY_THRESHOLD=200  # if the email content is longer than this threshold, use LLM to summarize

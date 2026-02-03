@@ -1,3 +1,5 @@
+import asyncio
+import os
 from typing import Set
 from aiotdlib.api import (
     ChatEventLogFilters,
@@ -24,16 +26,53 @@ async def check_deleted_topics_for_group(chat_id):
         last_event_id = db_manager.get_chat_event_cursor(chat_id)
         newest_seen_event_id = last_event_id
         from_event_id = 0
+        try:
+            request_timeout = int(os.getenv("TELEGRAM_CHAT_EVENT_LOG_TIMEOUT", "30"))
+        except ValueError:
+            logger.warning(
+                "Invalid TELEGRAM_CHAT_EVENT_LOG_TIMEOUT value; falling back to 30s",
+                exc_info=False,
+            )
+            request_timeout = 30
+        if request_timeout <= 0:
+            logger.warning(
+                "TELEGRAM_CHAT_EVENT_LOG_TIMEOUT must be a positive integer; falling back to 30s",
+                exc_info=False,
+            )
+            request_timeout = 30
         seen_event_ids: Set[int] = set()
         while True:
-            events = await UserClient().client.api.get_chat_event_log(
-                chat_id=chat_id,
-                query="",
-                from_event_id=from_event_id,
-                limit=100,
-                filters=ChatEventLogFilters(forum_changes=True),
-                user_ids=[],
-            )
+            events = None
+            for attempt in range(1, 4):
+                try:
+                    events = await UserClient().client.api.get_chat_event_log(
+                        chat_id=chat_id,
+                        query="",
+                        from_event_id=from_event_id,
+                        limit=100,
+                        filters=ChatEventLogFilters(forum_changes=True),
+                        user_ids=[],
+                        request_timeout=request_timeout * attempt,
+                    )
+                    break
+                except (asyncio.TimeoutError, TimeoutError):
+                    if attempt >= 3:
+                        logger.warning(
+                            f"TDLib get_chat_event_log timed out for chat {chat_id} "
+                            f"(from_event_id={from_event_id}) after {attempt} attempts; "
+                            "skipping event scan until next run",
+                            exc_info=False,
+                        )
+                        break
+                    logger.warning(
+                        f"TDLib get_chat_event_log timed out for chat {chat_id} "
+                        f"(from_event_id={from_event_id}) attempt {attempt}/3; retrying",
+                        exc_info=False,
+                    )
+                    await asyncio.sleep(1.0 * attempt)
+
+            if events is None:
+                break
 
             if not events.events:
                 break

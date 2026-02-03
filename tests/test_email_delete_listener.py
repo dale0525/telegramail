@@ -1,4 +1,5 @@
 import datetime
+import os
 import unittest
 from unittest import mock
 
@@ -75,6 +76,25 @@ class _FakeAccountManager:
 
 
 class TestEmailDeleteListener(unittest.IsolatedAsyncioTestCase):
+    async def test_passes_request_timeout_to_tdlib(self):
+        from app.cron import email_delete_listener as listener
+
+        api = mock.AsyncMock()
+        api.get_chat_event_log.return_value = _FakeEventLogResult(events=[])
+        fake_user_client = _FakeUserClient(api=api)
+        fake_db = _FakeDbManager()
+
+        with (
+            mock.patch.dict(
+                os.environ, {"TELEGRAM_CHAT_EVENT_LOG_TIMEOUT": "99"}, clear=False
+            ),
+            mock.patch("app.user.user_client.UserClient", return_value=fake_user_client),
+            mock.patch.object(listener, "DBManager", return_value=fake_db),
+        ):
+            await listener.check_deleted_topics_for_group(chat_id=777)
+
+        self.assertEqual(api.get_chat_event_log.call_args.kwargs["request_timeout"], 99)
+
     async def test_processes_deleted_topic_even_if_old(self):
         """
         Regression: Previously the listener ignored deletions older than a short time window,

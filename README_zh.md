@@ -67,6 +67,9 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
    TELEGRAM_API_HASH=your_telegram_api_hash_here
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
+   # 可选的 TDLib 设置
+   TELEGRAM_CHAT_EVENT_LOG_TIMEOUT=30  # 如果遇到超时（TimeoutError），可以适当调大
+
    # 可选的 LLM 设置
    ENABLE_LLM_SUMMARY=0    # 改成 1 来开启 LLM 功能
    LLM_SUMMARY_THRESHOLD=200  # 如果邮件内容超过这个阈值，会使用 LLM 来总结邮件内容
