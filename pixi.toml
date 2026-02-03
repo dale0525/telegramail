@@ -1,0 +1,25 @@
+[workspace]
+authors = ["TelegramMail contributors"]
+channels = ["conda-forge"]
+name = "telegramail"
+platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64"]
+version = "0.1.0"
+
+[tasks]
+dev = "python -m app.main"
+i18n = "python scripts/check_i18n.py"
+setup-tdlib = "python scripts/setup_tdlib.py"
+init = { cmd = "echo 'Init complete'", depends-on = ["setup-tdlib"] }
+test = 'python -m unittest discover -s tests -p "test_*.py"'
+
+[dependencies]
+python = "3.10.*"
+pip = "*"
+
+[pypi-dependencies]
+aiotdlib = "==0.27.6"
+beautifulsoup4 = ">=4.13.4"
+html2text = ">=2025.4.15"
+json-repair = ">=0.41.0"
+openai = ">=1.75.0"
+python-dotenv = "*"

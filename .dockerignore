@@ -44,6 +44,8 @@ MANIFEST
 !app/resources/tdlib/*.dll
 
 # Virtual environments
+.venv/
+.pixi/
 venv/
 env/
 ENV/
@@ -68,9 +70,6 @@ Thumbs.db
 
 # Data directory (will be mounted as volume)
 data/
-
-# Mise
-mise.toml
 
 # Docker
 Dockerfile

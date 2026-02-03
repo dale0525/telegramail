@@ -47,7 +47,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 
 ### 本地开发
 *暂不支持 Windows，如果需要 Windows 支持，请自行编译 TDLib 库文件（或使用 WSL/Docker）*
-1. [安装 mise](https://mise.jdx.dev/getting-started.html)
+1. [安装 pixi](https://pixi.sh/)
 > 也可以不安装，直接使用 python3.10 和 pip
 
 2. 克隆仓库:
@@ -78,7 +78,8 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 5. 初始化开发环境：
    ```bash
    # 安装依赖、设置 TDLib 库文件
-   mise run init
+   pixi install
+   pixi run init
    # 或者
    pip install -r requirements.txt && python scripts/setup_tdlib.py
    ```
@@ -86,14 +87,14 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 6. 启动应用：
    ```bash
    # 启动应用
-   mise run dev
+   pixi run dev
    # 或者
    python -m app.main
    ```
 
 7. 检查 i18n 是否完善
    ```bash
-   mise run i18n
+   pixi run i18n
    # 或者
    python scripts/check_i18n.py
    ```

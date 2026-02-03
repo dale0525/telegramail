@@ -50,8 +50,8 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 ### Local Development
 **Windows is not yet supported for local development. If you need Windows support, please compile TDLib library files yourself (or use WSL/Docker).**
 
-1. [Install mise](https://mise.jdx.dev/getting-started.html)
-> You can also skip mise and use python3.10 and pip directly
+1. [Install pixi](https://pixi.sh/)
+> You can also skip pixi and use python3.10 and pip directly
 
 1. Clone the repository:
    ```bash
@@ -81,7 +81,8 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 4. Init development environment:
    ```bash
    # Install dependencies and setup TDLib libraries
-   mise run init
+   pixi install
+   pixi run init
    # Or directly
    pip install -r requirements.txt && python scripts/setup_tdlib.py
    ```
@@ -89,14 +90,14 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 5. Start the application:
    ```bash
    # Start development server
-   mise run dev
+   pixi run dev
    # Or directly
    python -m app.main
    ```
 
 6. Check i18n:
    ```bash
-   mise run i18n
+   pixi run i18n
    # Or directly
    python scripts/check_i18n.py
    ```
