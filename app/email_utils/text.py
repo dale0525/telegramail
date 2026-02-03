@@ -193,6 +193,21 @@ def clean_html_content(html_content: str) -> str:
         # 使用BeautifulSoup解析HTML
         soup = BeautifulSoup(html_content, "html.parser")
 
+        # Remove common non-content areas first (quoted replies / boilerplate)
+        for selector in [
+            "blockquote",  # quoted replies in most email clients
+            ".gmail_quote",
+            ".gmail_extra",
+            "#gmail_quote",
+            ".yahoo_quoted",
+            "#divRplyFwdMsg",  # Outlook reply/forward container
+            ".signature",
+            ".footer",
+            ".unsubscribe",
+        ]:
+            for tag in soup.select(selector):
+                tag.decompose()
+
         # 移除所有style标签
         for style in soup.find_all("style"):
             style.decompose()
@@ -200,6 +215,19 @@ def clean_html_content(html_content: str) -> str:
         # 移除所有script标签
         for script in soup.find_all("script"):
             script.decompose()
+
+        # 移除head内的非内容标签，避免噪音
+        for head in soup.find_all("head"):
+            head.decompose()
+
+        # Remove hidden elements
+        for tag in soup.find_all(attrs={"hidden": True}):
+            tag.decompose()
+        for tag in soup.find_all(style=True):
+            style_text = str(tag.get("style", "")).lower()
+            if "display:none" in style_text or "visibility:hidden" in style_text:
+                tag.decompose()
+                continue
 
         # 处理链接：将<a href="url">链接文本</a>转换为"链接文本 (url)"
         for link in soup.find_all("a", href=True):
@@ -225,7 +253,7 @@ def clean_html_content(html_content: str) -> str:
                 del tag["style"]
 
         # 获取纯文本内容
-        text_content = soup.get_text()
+        text_content = soup.get_text(separator="\n")
 
         # 清理多余的空白字符
         # 将多个连续的空白字符（包括换行符）替换为单个空格或换行符
@@ -235,6 +263,47 @@ def clean_html_content(html_content: str) -> str:
         )  # 多个空格/制表符替换为单个空格
         text_content = re.sub(r"\n ", "\n", text_content)  # 移除行首空格
         text_content = text_content.strip()
+
+        # Remove common boilerplate lines (unsubscribe, view-in-browser, etc.)
+        boilerplate_patterns = [
+            re.compile(r"\bunsubscribe\b", re.IGNORECASE),
+            re.compile(r"\bview (this )?email in (your )?browser\b", re.IGNORECASE),
+            re.compile(r"\bmanage (your )?preferences\b", re.IGNORECASE),
+            re.compile(r"\bprivacy policy\b", re.IGNORECASE),
+            re.compile(r"(取消订阅|退订|隐私政策|在浏览器中查看)", re.IGNORECASE),
+        ]
+        lines = [line.strip() for line in text_content.splitlines()]
+        kept_lines = []
+        for line in lines:
+            if not line:
+                kept_lines.append("")
+                continue
+            if any(p.search(line) for p in boilerplate_patterns):
+                continue
+            kept_lines.append(line)
+        text_content = "\n".join(kept_lines)
+        text_content = re.sub(r"\n{3,}", "\n\n", text_content).strip()
+
+        # Strip quoted reply history if it is still present as plain text markers.
+        reply_markers = [
+            re.compile(r"^on\s.+\swrote:\s*$", re.IGNORECASE),
+            re.compile(r"^-----\s*original message\s*-----\s*$", re.IGNORECASE),
+            re.compile(r"^from:\s", re.IGNORECASE),
+            re.compile(r"^sent:\s", re.IGNORECASE),
+            re.compile(r"^to:\s", re.IGNORECASE),
+            re.compile(r"^subject:\s", re.IGNORECASE),
+            re.compile(r"^(发件人|发送时间|收件人|主题|抄送|密送)[:：]", re.IGNORECASE),
+        ]
+        stripped_lines = []
+        for line in text_content.splitlines():
+            if any(p.search(line.strip()) for p in reply_markers):
+                break
+            # Remove pure quote lines from inline replies (plain-text style)
+            if line.lstrip().startswith(">"):
+                continue
+            stripped_lines.append(line)
+        text_content = "\n".join(stripped_lines)
+        text_content = re.sub(r"\n{3,}", "\n\n", text_content).strip()
 
         return text_content
 
@@ -276,3 +345,66 @@ def clean_html_content(html_content: str) -> str:
         except Exception as fallback_error:
             logger.error(f"Fallback HTML processing also failed: {fallback_error}")
             return ""
+
+
+def extract_unsubscribe_urls(
+    html_content: str, default_language: str = "en_US", max_urls: int = 1
+) -> list[dict]:
+    """
+    Extract unsubscribe URLs from raw HTML content.
+
+    This is intentionally separate from clean_html_content(): we often remove boilerplate
+    such as footers/quotes from the "effective content", but we still want a reliable
+    unsubscribe quick-action button in Telegram.
+    """
+    if not html_content or not html_content.strip() or max_urls <= 0:
+        return []
+
+    def is_unsubscribe_link(link: str, text: str) -> bool:
+        combined = f"{text} {link}".lower()
+        keywords = [
+            "unsubscribe",
+            "optout",
+            "opt-out",
+            "manage preferences",
+            "email preferences",
+            "subscription preferences",
+            "退订",
+            "取消订阅",
+            "退訂",
+            "取消訂閱",
+            "解除订阅",
+            "解除訂閱",
+        ]
+        return any(k in combined for k in keywords)
+
+    def caption_for_lang(lang: str) -> str:
+        if (lang or "").lower().startswith("zh"):
+            return "退订"
+        return "Unsubscribe"
+
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+    except Exception as e:
+        logger.error(f"Error parsing HTML for unsubscribe urls: {e}")
+        return []
+
+    seen = set()
+    results: list[dict] = []
+    caption = caption_for_lang(default_language)
+
+    for link in soup.find_all("a", href=True):
+        href = str(link.get("href", "")).strip()
+        if not href.startswith(("http://", "https://")):
+            continue
+        text = link.get_text(" ", strip=True)
+        if not is_unsubscribe_link(href, text):
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        results.append({"caption": caption, "link": href})
+        if len(results) >= max_urls:
+            break
+
+    return results

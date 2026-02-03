@@ -18,6 +18,7 @@ from app.email_utils import (
     format_enhanced_email_summary,
     AccountManager,
     clean_html_content,
+    extract_unsubscribe_urls,
 )
 from aiotdlib.api import (
     FormattedText,
@@ -860,7 +861,14 @@ class EmailTelegramSender:
         # 5. Email summary or content
         processed_content = self.get_processed_email_content(email_data)
         if processed_content:
-            summary = summarize_email(processed_content)
+            unsubscribe_urls = []
+            body_html = email_data.get("body_html", "")
+            if body_html and body_html.strip():
+                unsubscribe_urls = extract_unsubscribe_urls(
+                    body_html, default_language=os.getenv("DEFAULT_LANGUAGE", "en_US")
+                )
+
+            summary = summarize_email(processed_content, extra_urls=unsubscribe_urls)
             if summary is not None:
                 # Use enhanced email summary format
                 formatted_summary = format_enhanced_email_summary(summary)
@@ -886,6 +894,7 @@ class EmailTelegramSender:
                 content_message = MessageContent(
                     text=truncated_content,
                     send_notification=True,
+                    urls=unsubscribe_urls,
                 )
                 messages.append(content_message)
         else:
@@ -1132,7 +1141,14 @@ class EmailTelegramSender:
             # 6. Email Summary - Use enhanced processing logic, prioritize HTML, fallback to plain text
             processed_content = self.get_processed_email_content(email_data)
             if processed_content:
-                summary = summarize_email(processed_content)
+                unsubscribe_urls = []
+                body_html = email_data.get("body_html", "")
+                if body_html and body_html.strip():
+                    unsubscribe_urls = extract_unsubscribe_urls(
+                        body_html, default_language=os.getenv("DEFAULT_LANGUAGE", "en_US")
+                    )
+
+                summary = summarize_email(processed_content, extra_urls=unsubscribe_urls)
                 if summary is not None:
                     # Use new formatting function to display enhanced email summary
                     formatted_summary = format_enhanced_email_summary(summary)
@@ -1161,6 +1177,7 @@ class EmailTelegramSender:
                     await self.send_text_message(
                         chat_id=group_id,
                         text=truncated_content,
+                        urls=unsubscribe_urls,
                         thread_id=thread_id,
                         send_notification=True,
                     )

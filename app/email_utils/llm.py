@@ -1,11 +1,86 @@
 import os
+import re
 from app.llm import OpenAIClient
 from app.utils import Logger
 from app.i18n import _
 from json_repair import repair_json
 from app.email_utils.text import remove_spaces_and_urls
+from bs4 import BeautifulSoup, NavigableString, Tag
+from html import escape as html_escape
 
 logger = Logger().get_logger(__name__)
+
+_TELEGRAM_ALLOWED_INLINE_TAGS = {"b", "i", "code"}
+
+
+def _locale_to_language_name(locale_code: str) -> str:
+    """
+    Convert a locale code (e.g. en_US, zh_CN) into a human-readable language name
+    for use in LLM prompts.
+    """
+    code = (locale_code or "").strip()
+    lower = code.lower()
+    if lower.startswith("zh"):
+        if "tw" in lower or "hk" in lower or "hant" in lower:
+            return "繁體中文"
+        return "简体中文"
+    if lower.startswith("en"):
+        return "English"
+    if lower.startswith("ja"):
+        return "日本語"
+    if lower.startswith("ko"):
+        return "한국어"
+    if lower.startswith("fr"):
+        return "Français"
+    if lower.startswith("de"):
+        return "Deutsch"
+    if lower.startswith("es"):
+        return "Español"
+    return code or "English"
+
+
+def _sanitize_telegram_limited_html(raw_html: str) -> str:
+    """
+    Sanitize an untrusted HTML fragment for Telegram HTML parse mode.
+
+    Only keeps <b>, <i>, <code> tags (no attributes). Everything else is stripped
+    to plain text and HTML-escaped.
+    """
+    if not raw_html:
+        return ""
+
+    # Normalize common line-break tags to newlines before parsing.
+    normalized = (
+        raw_html.replace("<br />", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br>", "\n")
+    )
+
+    soup = BeautifulSoup(f"<div>{normalized}</div>", "html.parser")
+    root = soup.div
+
+    def render(node) -> str:
+        if isinstance(node, NavigableString):
+            return html_escape(str(node), quote=False)
+        if isinstance(node, Tag):
+            name = (node.name or "").lower()
+            if name == "br":
+                return "\n"
+            if name in _TELEGRAM_ALLOWED_INLINE_TAGS:
+                inner = "".join(render(child) for child in node.contents)
+                return f"<{name}>{inner}</{name}>"
+            # Strip tag but keep its children
+            return "".join(render(child) for child in node.contents)
+        return ""
+
+    return "".join(render(child) for child in root.contents).strip()
+
+
+def _escape_telegram_html_text(text: str) -> str:
+    """Escape untrusted text that will be embedded into Telegram HTML messages."""
+    if text is None:
+        return ""
+    return html_escape(str(text), quote=False)
 
 
 def format_enhanced_email_summary(summary_data: dict) -> str:
@@ -37,7 +112,8 @@ def format_enhanced_email_summary(summary_data: dict) -> str:
     # Main summary
     summary_text = summary_data.get("summary", "")
     if summary_text:
-        parts.append(f"\n{summary_text}")
+        safe_summary = _sanitize_telegram_limited_html(summary_text)
+        parts.append(f"\n{safe_summary}")
 
     # Action required indicator
     if summary_data.get("action_required", False):
@@ -48,23 +124,27 @@ def format_enhanced_email_summary(summary_data: dict) -> str:
         if action_items:
             parts.append(f"\n<b>{_('email_action_items')}:</b>")
             for i, item in enumerate(action_items[:5], 1):  # Limit to 5 items
-                parts.append(f"  {i}. {item}")
+                parts.append(f"  {i}. {_escape_telegram_html_text(item)}")
 
     # Deadline information
     deadline = summary_data.get("deadline")
     if deadline:
-        parts.append(f"\n<b>{_('email_deadline')}:</b> {deadline}")
+        parts.append(
+            f"\n<b>{_('email_deadline')}:</b> {_escape_telegram_html_text(deadline)}"
+        )
 
     # Key contacts
     key_contacts = summary_data.get("key_contacts", [])
     if key_contacts:
-        contacts_str = ", ".join(key_contacts[:3])  # Limit to 3 contacts
+        contacts_str = ", ".join(
+            _escape_telegram_html_text(c) for c in key_contacts[:3]
+        )  # Limit to 3 contacts
         parts.append(f"\n<b>{_('email_key_contacts')}:</b> {contacts_str}")
 
     return "\n".join(parts)
 
 
-def summarize_email(email_body: str) -> dict | None:
+def summarize_email(email_body: str, extra_urls: list[dict] | None = None) -> dict | None:
     """
     Use OpenAI's large language models to summarize an email with enhanced structure.
 
@@ -97,81 +177,29 @@ def summarize_email(email_body: str) -> dict | None:
         Returns None if all LLM requests failed.
     """
     default_language = os.getenv("DEFAULT_LANGUAGE", "en_US")
+    language_name = _locale_to_language_name(default_language)
     messages = [
         {
             "role": "system",
             "content": f"""
-You are an AI assistant specialized in analyzing emails and extracting actionable insights into a **well-structured JSON format** optimized for mobile messaging display.
+You analyze one email and return a STRICT JSON object for quick reading in mobile chat.
 
-Your primary instruction is to process the provided email content and return **ONLY a single, valid JSON object** adhering strictly to the specified format. **DO NOT** include any conversational text, explanations, comments, or any other text outside the JSON object itself.
+Return ONLY a single JSON object. Do NOT return markdown, code fences, or any extra text.
 
----
+Language requirement:
+- All human-readable strings MUST be in {language_name} (locale: {default_language}).
 
-**Instructions for Processing Email Content:**
+Do not hallucinate. If information is missing, use null / [] and keep text concise.
 
-1. **Summary (JSON Key: "summary")**
-   * **Goal:** Create a concise, scannable summary that helps users quickly understand the email's purpose and importance.
-   * **Content Requirements:**
-     - Start with the main purpose/topic in one clear sentence
-     - Include specific details (names, dates, amounts, locations)
-     - Highlight any urgent or time-sensitive information
-     - Keep total length under 800 characters for mobile readability
-   * **HTML Formatting (Use strategically for emphasis):**
-     - `<b>` for critical information (deadlines, amounts, urgent items)
-     - `<i>` for context or secondary information
-     - `<code>` for specific codes, IDs, or technical terms
-     - Use `\\n` for line breaks between key points
-     - **NO** other HTML tags allowed
-
-2. **Priority Level (JSON Key: "priority")**
-   * Analyze urgency and importance, return one of: "high", "medium", "low"
-   * **High:** Urgent deadlines, critical issues, immediate action required
-   * **Medium:** Important but not urgent, scheduled items, FYI with some relevance
-   * **Low:** General information, newsletters, non-urgent updates
-
-3. **Action Required (JSON Key: "action_required")**
-   * Boolean: true if the recipient needs to take any action, false otherwise
-
-4. **Action Items (JSON Key: "action_items")**
-   * Array of specific actions the recipient should take
-   * Each item should be a clear, actionable statement (max 100 chars each)
-   * Maximum 5 items, prioritize by importance
-   * Use empty array [] if no actions required
-
-5. **Deadline Information (JSON Key: "deadline")**
-   * Extract any time constraints, deadlines, or scheduled events
-   * Format as clear, specific text (e.g., "Reply by Dec 15, 2024" or "Meeting at 2 PM tomorrow")
-   * Use null if no deadline mentioned
-
-6. **Key Contacts (JSON Key: "key_contacts")**
-   * Array of important people mentioned (names only, max 3)
-   * Focus on decision makers, meeting participants, or people requiring follow-up
-   * Use empty array [] if no key contacts identified
-
-7. **Category (JSON Key: "category")**
-   * Classify email type, return one of: "meeting", "task", "information", "urgent", "financial", "travel", "social", "newsletter", "system", "other"
-
-8. **Relevant URLs (JSON Key: "urls")**
-   * Important links for actions or reference (max 3)
-   * Format: {{"caption": "Brief description (max 25 chars)", "link": "URL"}}
-   * Exclude unsubscribe links and tracking URLs
-
-**Output Format (STRICT):**
-```json
-{{
-    "summary": "...",
-    "priority": "high|medium|low",
-    "action_required": true|false,
-    "action_items": ["action1", "action2", ...],
-    "deadline": "deadline text or null",
-    "key_contacts": ["name1", "name2", ...],
-    "category": "category_name",
-    "urls": [{{"caption": "...", "link": "..."}}]
-}}
-```
-
-* Provide all text content in {default_language}.
-* Ensure JSON is valid and properly escaped.
+ JSON schema (MUST include ALL keys):
+- summary: string (may include ONLY <b>, <i>, <code>; no attributes; use \\n for line breaks; keep <= 800 chars)
+- priority: "high" | "medium" | "low"
+- action_required: boolean
+- action_items: string[] (max 5, each <= 100 chars, plain text only, no HTML)
+- deadline: string | null (plain text, no HTML)
+- key_contacts: string[] (max 3, names only, plain text)
+- category: "meeting" | "task" | "information" | "urgent" | "financial" | "travel" | "social" | "newsletter" | "system" | "other"
+- urls: array of {{"caption": string, "link": string}} (max 5; link must be http/https; include unsubscribe link when present; avoid obviously irrelevant tracking-only links)
 """,
         },
         {
@@ -225,6 +253,7 @@ Your primary instruction is to process the provided email content and return **O
                 real_result["action_required"] = bool(
                     real_result.get("action_required", False)
                 )
+
                 real_result["action_items"] = (
                     real_result.get("action_items", [])
                     if isinstance(real_result.get("action_items"), list)
@@ -240,8 +269,108 @@ Your primary instruction is to process the provided email content and return **O
                     if isinstance(real_result.get("urls"), list)
                     else []
                 )
-                real_result["priority"] = real_result.get("priority", "medium")
-                real_result["category"] = real_result.get("category", "other")
+
+                allowed_priorities = {"high", "medium", "low"}
+                priority = str(real_result.get("priority", "medium")).lower().strip()
+                if priority not in allowed_priorities:
+                    priority = "medium"
+                real_result["priority"] = priority
+
+                allowed_categories = {
+                    "meeting",
+                    "task",
+                    "information",
+                    "urgent",
+                    "financial",
+                    "travel",
+                    "social",
+                    "newsletter",
+                    "system",
+                    "other",
+                }
+                category = str(real_result.get("category", "other")).lower().strip()
+                if category not in allowed_categories:
+                    category = "other"
+                real_result["category"] = category
+
+                summary = real_result.get("summary", "")
+                if not isinstance(summary, str):
+                    summary = str(summary)
+                summary = _sanitize_telegram_limited_html(summary)
+                real_result["summary"] = summary[:800]
+
+                def _strip_tags(value: str) -> str:
+                    return re.sub(r"<[^>]+>", "", value or "").strip()
+
+                real_result["action_items"] = [
+                    _strip_tags(str(item))[:100]
+                    for item in real_result.get("action_items", [])
+                    if str(item).strip()
+                ][:5]
+
+                deadline = real_result.get("deadline", None)
+                if deadline is None:
+                    real_result["deadline"] = None
+                else:
+                    deadline_text = str(deadline).strip()
+                    if deadline_text.lower() in {"null", "none", ""}:
+                        real_result["deadline"] = None
+                    else:
+                        real_result["deadline"] = _strip_tags(deadline_text)[:120]
+
+                real_result["key_contacts"] = [
+                    _strip_tags(str(name))[:50]
+                    for name in real_result.get("key_contacts", [])
+                    if str(name).strip()
+                ][:3]
+
+                def _normalize_url_item(item: dict) -> dict | None:
+                    if not isinstance(item, dict):
+                        return None
+                    caption_raw = str(item.get("caption", "")).strip()
+                    link = str(item.get("link", "")).strip()
+                    if not link.startswith(("http://", "https://")):
+                        return None
+                    caption = _strip_tags(caption_raw)[:25]
+                    if not caption:
+                        caption = link[:25]
+                    return {"caption": caption, "link": link}
+
+                max_urls = 5
+                cleaned_urls: list[dict] = []
+                seen_links = set()
+                for url in real_result.get("urls", [])[:10]:
+                    normalized = _normalize_url_item(url)
+                    if not normalized:
+                        continue
+                    link = normalized["link"]
+                    if link in seen_links:
+                        continue
+                    seen_links.add(link)
+                    cleaned_urls.append(normalized)
+                    if len(cleaned_urls) >= max_urls:
+                        break
+
+                # Merge extra URLs (e.g., deterministic unsubscribe links), keep unique and capped.
+                merged_extra: list[dict] = []
+                for url in (extra_urls or [])[:10]:
+                    normalized = _normalize_url_item(url)
+                    if not normalized:
+                        continue
+                    link = normalized["link"]
+                    if link in seen_links:
+                        continue
+                    seen_links.add(link)
+                    merged_extra.append(normalized)
+
+                if merged_extra:
+                    keep_llm = max(0, max_urls - len(merged_extra))
+                    real_result["urls"] = (
+                        cleaned_urls[:keep_llm] + merged_extra[:max_urls]
+                    )
+                else:
+                    real_result["urls"] = cleaned_urls
+
                 return real_result
             else:
                 # Fallback: check for old format compatibility

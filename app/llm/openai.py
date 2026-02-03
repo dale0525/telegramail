@@ -58,6 +58,8 @@ class OpenAIClient:
 
             if output_json:
                 params["response_format"] = {"type": "json_object"}
+                # Lower temperature improves JSON stability and reduces hallucinated structure.
+                params["temperature"] = 0
 
             start_time = time.time()
             completion = self.client.chat.completions.create(**params)
