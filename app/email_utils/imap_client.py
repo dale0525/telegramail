@@ -345,7 +345,7 @@ class IMAPClient:
             self.conn.select("INBOX")
 
             # Mark as read on server (add \Seen flag)
-            status, response = self.conn.uid("STORE", uid, "+FLAGS", "(\Seen)")
+            status, response = self.conn.uid("STORE", uid, "+FLAGS", r"(\Seen)")
             if status != "OK":
                 logger.error(f"Failed to mark email as read on server: {response}")
                 return False
@@ -444,19 +444,64 @@ class IMAPClient:
         try:
             self.conn.select("INBOX")
 
-            status, response = self.conn.uid("STORE", uid, "+FLAGS", "(\Deleted)")
+            # If UID is already gone from INBOX, treat it as success and clean local DB
+            try:
+                search_status, search_data = self.conn.uid(
+                    "SEARCH", None, f"UID {uid}"
+                )
+                if search_status == "OK":
+                    found = bool((search_data[0] or b"").strip())
+                    if not found:
+                        logger.info(
+                            f"Email UID {uid} not found in INBOX; treating as already deleted"
+                        )
+                        db_result = self.db_manager.delete_email_by_uid(
+                            self.account_info, uid
+                        )
+                        if not db_result:
+                            logger.warning(
+                                f"Could not remove email with UID {uid} from database"
+                            )
+                        return True
+            except Exception as search_err:
+                logger.warning(
+                    f"Failed to verify existence for UID {uid} before deletion: {search_err}"
+                )
+
+            status, response = self.conn.uid("STORE", uid, "+FLAGS", r"(\Deleted)")
             if status != "OK":
                 logger.error(f"Failed to mark email {uid} as deleted: {response}")
                 return False
-            # Email is marked as deleted, server will handle actual deletion
 
             logger.info(f"Successfully marked email with UID {uid} for deletion")
 
-            # delete from local db
+            # Ensure the deletion is actually applied on server (provider behavior differs)
+            expunged = False
+            try:
+                expunge_status, expunge_resp = self.conn.uid("EXPUNGE", uid)
+                if expunge_status == "OK":
+                    expunged = True
+                else:
+                    logger.warning(
+                        f"UID EXPUNGE failed for email {uid}: {expunge_resp}"
+                    )
+            except Exception as uid_expunge_err:
+                logger.debug(
+                    f"UID EXPUNGE not supported or failed for {uid}: {uid_expunge_err}"
+                )
+
+            if not expunged:
+                expunge_status, expunge_resp = self.conn.expunge()
+                if expunge_status != "OK":
+                    logger.error(
+                        f"EXPUNGE failed after marking email {uid} deleted: {expunge_resp}"
+                    )
+                    return False
+
+            # delete from local db only after server-side delete succeeded
             db_result = self.db_manager.delete_email_by_uid(self.account_info, uid)
             if not db_result:
                 logger.warning(f"Could not remove email with UID {uid} from database")
-
             return True
 
         except (

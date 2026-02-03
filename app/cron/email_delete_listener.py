@@ -1,4 +1,4 @@
-import datetime
+from typing import Set
 from aiotdlib.api import (
     ChatEventLogFilters,
 )
@@ -17,82 +17,139 @@ async def check_deleted_topics_for_group(chat_id):
     Check deleted topics for a specific group
     """
     try:
-        # Get current time and calculate the time threshold (with redundancy)
-        now = datetime.datetime.now()
-        # Using 5 minutes instead of 3 for redundancy
-        time_threshold = now - datetime.timedelta(minutes=10)
-
         from app.user.user_client import UserClient
 
-        events = await UserClient().client.api.get_chat_event_log(
-            chat_id=chat_id,
-            query="",
-            from_event_id=0,
-            limit=100,
-            filters=ChatEventLogFilters(forum_changes=True),
-            user_ids=[],
-        )
+        db_manager = DBManager()
 
-        processed_count = 0
-        for event in events.events:
-            # Skip if event is older than our threshold
-            event_time = datetime.datetime.fromtimestamp(event.date)
-            if event_time < time_threshold:
+        last_event_id = db_manager.get_chat_event_cursor(chat_id)
+        newest_seen_event_id = last_event_id
+        from_event_id = 0
+        seen_event_ids: Set[int] = set()
+        while True:
+            events = await UserClient().client.api.get_chat_event_log(
+                chat_id=chat_id,
+                query="",
+                from_event_id=from_event_id,
+                limit=100,
+                filters=ChatEventLogFilters(forum_changes=True),
+                user_ids=[],
+            )
+
+            if not events.events:
                 break
 
-            if not event.action.ID == "chatEventForumTopicDeleted":
+            newest_seen_event_id = max(newest_seen_event_id, int(events.events[0].id))
+
+            reached_cursor = False
+            for event in events.events:
+                event_id = int(event.id)
+                if event_id in seen_event_ids:
+                    continue
+                seen_event_ids.add(event_id)
+
+                if event_id <= last_event_id:
+                    reached_cursor = True
+                    break
+
+                if event.action.ID != "chatEventForumTopicDeleted":
+                    continue
+
+                topic_info = event.action.topic_info
+                thread_id = str(topic_info.message_thread_id)
+                ok = db_manager.upsert_deleted_topic(
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    event_id=event_id,
+                    deleted_at=int(event.date),
+                )
+                if not ok:
+                    raise RuntimeError(
+                        f"Failed to persist deleted topic (chat_id={chat_id}, thread_id={thread_id})"
+                    )
+
+            if reached_cursor:
+                break
+
+            # Pagination: keep walking back in time until we reach last_event_id.
+            if len(events.events) < 100:
+                break
+
+            oldest_event_id = int(events.events[-1].id)
+            if oldest_event_id == from_event_id:
+                # Defensive: avoid infinite loops if the API returns the same page.
+                break
+            from_event_id = oldest_event_id
+
+        if newest_seen_event_id > last_event_id:
+            db_manager.set_chat_event_cursor(chat_id, newest_seen_event_id)
+
+        # Process all pending deleted topics (including ones recorded on previous runs).
+        pending_topics = db_manager.list_pending_deleted_topics(chat_id)
+
+        processed_count = 0
+        for topic in pending_topics:
+            thread_id = str(topic["thread_id"])
+
+            try:
+                account_id, email_uids = (
+                    db_manager.get_email_uid_by_telegram_thread_id(thread_id)
+                )
+            except Exception as db_err:
+                db_manager.record_deleted_topic_failure(
+                    chat_id, thread_id, f"DB error: {db_err}"
+                )
                 continue
 
-            topic_info = event.action.topic_info
-            thread_id = topic_info.message_thread_id
+            if not account_id or not email_uids:
+                # Nothing left to delete (already processed, or mapping missing). Mark processed to avoid retries.
+                db_manager.mark_deleted_topic_processed(chat_id, thread_id)
+                continue
 
-            db_manager = DBManager()
-            # Assume get_email_uid_by_telegram_thread_id now returns (account_id, list_of_uids)
-            # or None if not found.
-            result = db_manager.get_email_uid_by_telegram_thread_id(str(thread_id))
+            logger.info(
+                f"Found {len(email_uids)} emails associated with topic {thread_id} for account {account_id}"
+            )
 
-            if result:
-                account_id, email_uids = result
-                if (
-                    account_id and email_uids
-                ):  # Check if account_id and the list are valid
+            account_manager = AccountManager()
+            account = account_manager.get_account(id=account_id)
+            if not account:
+                logger.warning(
+                    f"Account with ID {account_id} not found for topic {thread_id}; marking processed"
+                )
+                db_manager.mark_deleted_topic_processed(chat_id, thread_id)
+                continue
+
+            imap_client = IMAPClient(account)
+            deleted_count_in_loop = 0
+            all_ok = True
+            for email_uid in email_uids:
+                try:
                     logger.info(
-                        f"Found {len(email_uids)} emails associated with topic {thread_id} for account {account_id}"
+                        f"Attempting to delete email with UID {email_uid} for topic {thread_id}"
                     )
-                    account_manager = AccountManager()
-                    account = account_manager.get_account(id=account_id)
-                    if account:  # Ensure account exists
-                        imap_client = IMAPClient(account)
-                        deleted_count_in_loop = 0
-                        for email_uid in email_uids:
-                            try:
-                                logger.info(
-                                    f"Attempting to delete email with UID {email_uid} for topic {thread_id}"
-                                )
-                                imap_client.delete_email_by_uid(email_uid)
-                                deleted_count_in_loop += 1
-                            except Exception as delete_error:
-                                logger.error(
-                                    f"Error deleting email UID {email_uid} for topic {thread_id}: {delete_error}"
-                                )
-                        if deleted_count_in_loop > 0:
-                            logger.info(
-                                f"Successfully deleted {deleted_count_in_loop} emails for topic {thread_id}"
-                            )
-                        # Increment processed_count once per event if we found associated emails and attempted deletion.
-                        processed_count += 1
+                    ok = imap_client.delete_email_by_uid(email_uid)
+                    if ok:
+                        deleted_count_in_loop += 1
                     else:
-                        logger.warning(
-                            f"Account with ID {account_id} not found for topic {thread_id}"
-                        )
-                else:
-                    # Log if result is returned but account_id or email_uids list is empty/invalid
-                    logger.info(
-                        f"No valid account_id or email UIDs found for topic {thread_id}, though an association record might exist."
+                        all_ok = False
+                except Exception as delete_error:
+                    all_ok = False
+                    logger.error(
+                        f"Error deleting email UID {email_uid} for topic {thread_id}: {delete_error}"
                     )
+
+            if all_ok:
+                db_manager.mark_deleted_topic_processed(chat_id, thread_id)
             else:
-                # Log if no association was found at all by the db manager function
-                logger.info(f"No email association found for topic {thread_id}")
+                db_manager.record_deleted_topic_failure(
+                    chat_id, thread_id, "Failed to delete one or more emails"
+                )
+
+            if deleted_count_in_loop > 0:
+                logger.info(
+                    f"Deleted {deleted_count_in_loop}/{len(email_uids)} emails for topic {thread_id}"
+                )
+
+            processed_count += 1
 
         if processed_count > 0:
             logger.info(
