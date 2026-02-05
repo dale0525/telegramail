@@ -28,6 +28,7 @@ from app.email_utils import (
     extract_unsubscribe_urls,
 )
 from app.email_utils.identity import suggest_identity
+from app.telegram_ui.email_cards import build_incoming_email_card
 from aiotdlib.api import (
     FormattedText,
     InputMessageText,
@@ -571,90 +572,59 @@ class EmailTelegramSender:
         Returns:
             List[MessageContent]: List of prepared message content
         """
-        messages = []
-
-        # 1. Email title
         subject = (email_data.get("subject") or "").strip() or _("no_subject")
-        title_message = MessageContent(
-            text=f"*📥 {subject}*",
-            parse_mode="Markdown",
-            send_notification=False,
-        )
-        messages.append(title_message)
-
-        # 2. Sender information
         original_sender = email_data.get("sender", "")
         decoded_sender = self.decode_mime_header_value(original_sender)
-        from_message = MessageContent(
-            text=f"✍️ {_('email_from')}: {decoded_sender}",
-            send_notification=False,
-        )
-        messages.append(from_message)
 
-        # 3. CC information (if exists)
-        if email_data.get("cc"):
-            cc_message = MessageContent(
-                text=f"👥 {_('email_cc')}: {email_data['cc']}",
-                send_notification=False,
-            )
-            messages.append(cc_message)
+        recipient = self.decode_mime_header_value(email_data.get("recipient", ""))
+        cc = self.decode_mime_header_value(email_data.get("cc", ""))
+        bcc = self.decode_mime_header_value(email_data.get("bcc", ""))
+        email_date = (email_data.get("email_date") or "").strip()
+        attachments_count = len(email_data.get("attachments") or [])
 
-        # 4. BCC information (if exists)
-        if email_data.get("bcc"):
-            bcc_message = MessageContent(
-                text=f"🔒 {_('email_bcc')}: {email_data['bcc']}",
-                send_notification=False,
-            )
-            messages.append(bcc_message)
-
-        # 5. Email summary or content
         processed_content = self.get_processed_email_content(email_data)
-        if processed_content:
-            unsubscribe_urls = []
-            body_html = email_data.get("body_html", "")
-            if body_html and body_html.strip():
-                unsubscribe_urls = extract_unsubscribe_urls(
-                    body_html, default_language=os.getenv("DEFAULT_LANGUAGE", "en_US")
-                )
+        unsubscribe_urls: list[dict] = []
+        body_html = email_data.get("body_html", "")
+        if body_html and str(body_html).strip():
+            unsubscribe_urls = extract_unsubscribe_urls(
+                body_html, default_language=os.getenv("DEFAULT_LANGUAGE", "en_US")
+            )
 
+        urls: Optional[list[dict]] = None
+        summary_html: Optional[str] = None
+        body_text: Optional[str] = None
+
+        if processed_content:
             summary = summarize_email(processed_content, extra_urls=unsubscribe_urls)
             if summary is not None:
-                # Use enhanced email summary format
-                formatted_summary = format_enhanced_email_summary(summary)
-                summary_header = f"<b>{_('email_summary')}:</b>\n"
-                summary_message = MessageContent(
-                    text=f"{summary_header}{formatted_summary}",
-                    parse_mode="HTML",
-                    send_notification=True,
-                    urls=summary.get("urls", []),
-                )
-                messages.append(summary_message)
+                summary_html = format_enhanced_email_summary(summary)
+                urls = summary.get("urls", [])
             else:
-                # If summary failed, send processed original content
-                max_length = 4000  # Telegram message length limit
-                if len(processed_content) > max_length:
-                    truncated_content = (
-                        processed_content[:max_length]
-                        + f"...\n\n{_('content_truncated')}"
-                    )
-                else:
-                    truncated_content = processed_content
-
-                content_message = MessageContent(
-                    text=truncated_content,
-                    send_notification=True,
-                    urls=unsubscribe_urls,
-                )
-                messages.append(content_message)
+                urls = unsubscribe_urls
+                body_text = processed_content
         else:
-            # If no usable email content, send notification message
-            no_content_message = MessageContent(
-                text=f"📧 {_('email_content_unavailable')}",
-                send_notification=True,
-            )
-            messages.append(no_content_message)
+            body_text = None
 
-        return messages
+        card = build_incoming_email_card(
+            subject=subject,
+            sender=decoded_sender,
+            recipient=recipient,
+            cc=cc,
+            bcc=bcc,
+            email_date=email_date,
+            attachments_count=attachments_count,
+            summary_html=summary_html,
+            body_text=body_text,
+        )
+
+        return [
+            MessageContent(
+                text=card,
+                parse_mode="HTML",
+                send_notification=True,
+                urls=urls,
+            )
+        ]
 
     def prepare_email_files(self, email_data: Dict[str, Any]) -> List[FileContent]:
         """

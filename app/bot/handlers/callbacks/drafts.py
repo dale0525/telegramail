@@ -10,6 +10,7 @@ from aiotdlib.api import (
     InputMessageText,
     FormattedText,
     ReplyMarkupInlineKeyboard,
+    TextParseModeHTML,
     UpdateNewCallbackQuery,
 )
 
@@ -19,6 +20,7 @@ from app.email_utils.account_manager import AccountManager
 from app.email_utils.markdown_render import render_markdown_to_html
 from app.email_utils.smtp_client import SMTPClient
 from app.i18n import _
+from app.telegram_ui.email_cards import build_outgoing_email_card
 from app.utils import Logger
 
 logger = Logger().get_logger(__name__)
@@ -659,70 +661,65 @@ async def handle_draft_callback(
             # Post a clean "sent email" representation into the topic.
             try:
                 subject_display = (subject or "").strip() or _("no_subject")
-                await client.api.send_message(
-                    chat_id=int(draft_chat_id),
-                    message_thread_id=int(draft_thread_id),
-                    input_message_content=InputMessageText(
-                        text=FormattedText(text=f"📤 {subject_display}", entities=[])
-                    ),
-                )
-                await client.api.send_message(
-                    chat_id=int(draft_chat_id),
-                    message_thread_id=int(draft_thread_id),
-                    input_message_content=InputMessageText(
-                        text=FormattedText(
-                            text=f"✍️ {_('email_from')}: {from_name} <{from_identity_email}>",
-                            entities=[],
-                        )
-                    ),
-                )
-
                 to_line = (to_addrs or "").strip()
-                if to_line:
-                    await client.api.send_message(
-                        chat_id=int(draft_chat_id),
-                        message_thread_id=int(draft_thread_id),
-                        input_message_content=InputMessageText(
-                            text=FormattedText(
-                                text=f"📮 {_('email_to')}: {to_line}", entities=[]
-                            )
-                        ),
-                    )
-
                 cc_line = (cc_addrs or "").strip()
-                if cc_line:
-                    await client.api.send_message(
-                        chat_id=int(draft_chat_id),
-                        message_thread_id=int(draft_thread_id),
-                        input_message_content=InputMessageText(
-                            text=FormattedText(
-                                text=f"👥 {_('email_cc')}: {cc_line}", entities=[]
-                            )
-                        ),
-                    )
-
                 bcc_line = (bcc_addrs or "").strip()
-                if bcc_line:
-                    await client.api.send_message(
-                        chat_id=int(draft_chat_id),
-                        message_thread_id=int(draft_thread_id),
-                        input_message_content=InputMessageText(
-                            text=FormattedText(
-                                text=f"🔒 {_('email_bcc')}: {bcc_line}", entities=[]
-                            )
-                        ),
-                    )
-
                 body = (body_markdown or "").strip()
-                if body:
-                    max_length = 4000
-                    if len(body) > max_length:
-                        body = body[:max_length] + f"...\n\n{_('content_truncated')}"
+
+                card_html = build_outgoing_email_card(
+                    subject=subject_display,
+                    from_display=f"{from_name} <{from_identity_email}>",
+                    to_addrs=to_line,
+                    cc_addrs=cc_line,
+                    bcc_addrs=bcc_line,
+                    body_text=body,
+                )
+                sent = False
+                parse_fn = getattr(client.api, "parse_text_entities", None)
+                if callable(parse_fn):
+                    try:
+                        formatted = await parse_fn(
+                            text=card_html,
+                            parse_mode=(TextParseModeHTML()),
+                        )
+                        await client.api.send_message(
+                            chat_id=int(draft_chat_id),
+                            message_thread_id=int(draft_thread_id),
+                            input_message_content=InputMessageText(text=formatted),
+                        )
+                        sent = True
+                    except Exception as parse_err:
+                        logger.debug(
+                            f"Failed to send formatted sent-email card, falling back to plain text: {parse_err}"
+                        )
+
+                if not sent:
+                    plain_lines: list[str] = [
+                        f"OUT 📤 {subject_display}",
+                        f"✍️ {_('email_from')}: {from_name} <{from_identity_email}>",
+                    ]
+                    if to_line:
+                        plain_lines.append(f"📮 {_('email_to')}: {to_line}")
+                    if cc_line:
+                        plain_lines.append(f"👥 {_('email_cc')}: {cc_line}")
+                    if bcc_line:
+                        plain_lines.append(f"🔒 {_('email_bcc')}: {bcc_line}")
+                    if body:
+                        plain_lines.append("────────────")
+                        plain_lines.append(body)
+
+                    plain_text = "\n".join([l for l in plain_lines if l]).strip()
+                    max_len = 4000
+                    if len(plain_text) > max_len:
+                        suffix = f"...\n\n{_('content_truncated')}"
+                        head = plain_text[: max(0, max_len - len(suffix))].rstrip()
+                        plain_text = head + suffix
+
                     await client.api.send_message(
                         chat_id=int(draft_chat_id),
                         message_thread_id=int(draft_thread_id),
                         input_message_content=InputMessageText(
-                            text=FormattedText(text=body, entities=[])
+                            text=FormattedText(text=plain_text, entities=[])
                         ),
                     )
             except Exception as e:
