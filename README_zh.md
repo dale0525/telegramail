@@ -228,7 +228,7 @@ TelegramMail 会定期检查 INBOX 中的未读邮件，并将新邮件发送到
 TelegramMail 使用 Draft 话题来完成撰写、回复和转发：
 
 1. **撰写新邮件**
-   - 在某个邮箱账号群组内发送 `/compose`，会创建一个新的 Draft Topic，并固定一条 Draft 卡片消息（带 Send/Cancel 按钮）。
+   - 在该邮箱账号群组的任意 Topic（例如 General）里发送 `/compose`。在群组里 Telegram 可能会自动补全成 `/compose@你的机器人` —— 两种写法都支持。它会创建一个新的 Draft Topic，并固定一条 Draft 卡片消息（带 Send/Cancel 按钮）。
 2. **回复 / 转发**
    - 在邮件 Topic 内，会有一条“Actions”消息，包含 Reply / Forward 按钮；点击后会在同一 thread 内创建 Draft。
 3. **在 Draft Topic 中编辑邮件**

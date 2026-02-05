@@ -26,6 +26,7 @@ from app.bot.handlers.accounts import (
 )
 from app.bot.handlers.check_email import check_command_handler
 from app.bot.handlers.compose import compose_command_handler
+from app.bot.handlers.command_filters import make_command_filter
 from app.bot.handlers.message import message_handler
 from app.bot.handlers.test import test_command_handler
 from app.cron.email_check_scheduler import start_email_check_scheduler
@@ -79,64 +80,50 @@ async def main():
 
     bot = BotClient().client
 
+    async def _try_delete_command_message(client: Client, update: UpdateNewMessage) -> None:
+        try:
+            await client.api.delete_messages(
+                chat_id=update.message.chat_id,
+                message_ids=[update.message.id],
+                revoke=True,
+            )
+        except Exception as e:
+            logger.debug(f"Failed to delete command message: {e}")
+
     # register /start command
-    @bot.bot_command_handler(command="start")
+    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("start"))
     async def on_start_command(client: Client, update: UpdateNewMessage):
-        await client.api.delete_messages(
-            chat_id=update.message.chat_id,
-            message_ids=[update.message.id],
-            revoke=True,
-        )
+        await _try_delete_command_message(client, update)
         await start_command_handler(client, update)
 
     # register /help command
-    @bot.bot_command_handler(command="help")
+    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("help"))
     async def on_help_command(client: Client, update: UpdateNewMessage):
-        await client.api.delete_messages(
-            chat_id=update.message.chat_id,
-            message_ids=[update.message.id],
-            revoke=True,
-        )
+        await _try_delete_command_message(client, update)
         await help_command_handler(client, update)
 
     # register /accounts command
-    @bot.bot_command_handler(command="accounts")
+    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("accounts"))
     async def on_accounts_command(client: Client, update: UpdateNewMessage):
-        await client.api.delete_messages(
-            chat_id=update.message.chat_id,
-            message_ids=[update.message.id],
-            revoke=True,
-        )
+        await _try_delete_command_message(client, update)
         await accounts_management_command_handler(client, update)
 
     # register /check command
-    @bot.bot_command_handler(command="check")
+    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("check"))
     async def on_check_command(client: Client, update: UpdateNewMessage):
-        await client.api.delete_messages(
-            chat_id=update.message.chat_id,
-            message_ids=[update.message.id],
-            revoke=True,
-        )
+        await _try_delete_command_message(client, update)
         await check_command_handler(client, update)
 
     # register /compose command
-    @bot.bot_command_handler(command="compose")
+    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("compose"))
     async def on_compose_command(client: Client, update: UpdateNewMessage):
-        await client.api.delete_messages(
-            chat_id=update.message.chat_id,
-            message_ids=[update.message.id],
-            revoke=True,
-        )
+        await _try_delete_command_message(client, update)
         await compose_command_handler(client, update)
 
     # register /test command
-    @bot.bot_command_handler(command="test")
+    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("test"))
     async def on_test_command(client: Client, update: UpdateNewMessage):
-        await client.api.delete_messages(
-            chat_id=update.message.chat_id,
-            message_ids=[update.message.id],
-            revoke=True,
-        )
+        await _try_delete_command_message(client, update)
         await test_command_handler(client, update)
 
     # register message handler for all non-command messages

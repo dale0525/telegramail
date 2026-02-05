@@ -231,7 +231,7 @@ If you want to delete an email, just delete the corresponding Topic in Telegram.
 TelegramMail uses Draft topics for composing, replying, and forwarding:
 
 1. **Compose new email**
-   - Send `/compose` inside an account group. It creates a new Draft topic and pins a Draft card message (Send/Cancel).
+   - Send `/compose` inside an account group (in any topic, e.g. “General”). In group chats Telegram may auto-complete it as `/compose@YourBot` — both work. It creates a new Draft topic and pins a Draft card message (Send/Cancel).
 2. **Reply / Forward**
    - Each email thread has an “Actions” message with Reply / Forward buttons. Click to create a Draft in the same thread.
 3. **Edit inside Draft topic**
