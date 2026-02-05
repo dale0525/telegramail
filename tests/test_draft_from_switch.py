@@ -169,3 +169,70 @@ class TestDraftFromSwitch(unittest.IsolatedAsyncioTestCase):
         draft = db.get_active_draft(chat_id=123, thread_id=456)
         self.assertIsNotNone(draft)
         self.assertEqual((draft.get("body_markdown") or "").strip(), "")
+
+    async def test_message_handler_from_creates_default_identity_when_missing(self):
+        from app.database import DBManager
+
+        db = DBManager()
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM account_identities WHERE account_id = ?", (int(self.account["id"]),))
+        conn.commit()
+        conn.close()
+
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(draft_id=draft_id, updates={"card_message_id": 99})
+
+        client = _FakeClient()
+        update = _FakeUpdate(_FakeMessage(chat_id=123, thread_id=456, user_id=1, text="/from"))
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.message.validate_admin", lambda _u: True), mock.patch(
+            "app.bot.handlers.message.Conversation.get_instance", lambda *_args, **_kwargs: None
+        ):
+            from app.bot.handlers.message import message_handler
+
+            await message_handler(client, update)
+
+        self.assertTrue(client.sent_messages)
+        identities = db.list_account_identities(account_id=self.account["id"])
+        self.assertTrue(any(i.get("from_email") == "a@example.com" for i in identities))
+
+    async def test_message_handler_to_without_arg_sends_help_instead_of_appending_body(self):
+        from app.database import DBManager
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(draft_id=draft_id, updates={"card_message_id": 99})
+
+        client = _FakeClient()
+        update = _FakeUpdate(
+            _FakeMessage(chat_id=123, thread_id=456, user_id=1, text="/to@LogicEmailBot")
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.message.validate_admin", lambda _u: True), mock.patch(
+            "app.bot.handlers.message.Conversation.get_instance", lambda *_args, **_kwargs: None
+        ):
+            from app.bot.handlers.message import message_handler
+
+            await message_handler(client, update)
+
+        self.assertTrue(client.sent_messages)
+        draft = db.get_active_draft(chat_id=123, thread_id=456)
+        self.assertIsNotNone(draft)
+        self.assertEqual((draft.get("body_markdown") or "").strip(), "")

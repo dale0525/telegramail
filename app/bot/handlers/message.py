@@ -65,6 +65,43 @@ async def message_handler(client: Client, update: UpdateNewMessage):
         cmd_arg = " ".join(args).strip() if args else ""
         updates = None
 
+        async def _send_draft_help() -> None:
+            try:
+                await client.api.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=thread_id,
+                    input_message_content=InputMessageText(
+                        text=FormattedText(text=_("draft_help_commands"), entities=[])
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Failed to send draft help message: {e}")
+
+        def _ensure_identities():
+            identities = db.list_account_identities(account_id=draft["account_id"])
+            if identities:
+                return identities
+
+            account = db.get_account(id=draft["account_id"])
+            if not account:
+                return identities
+
+            account_email = (account.get("email") or "").strip().lower()
+            if not account_email:
+                return identities
+
+            db.upsert_account_identity(
+                account_id=int(draft["account_id"]),
+                from_email=account_email,
+                display_name=account.get("alias") or account_email,
+                is_default=True,
+            )
+            return db.list_account_identities(account_id=draft["account_id"])
+
+        if cmd in {"to", "cc", "bcc", "subject"} and not args:
+            await _send_draft_help()
+            return
+
         # Manage attachments
         if cmd in {"attachments", "attach"} and not args:
             attachments = db.list_draft_attachments(draft_id=draft["id"])
@@ -122,7 +159,7 @@ async def message_handler(client: Client, update: UpdateNewMessage):
 
         # Choose from identity
         if cmd == "from" and not args:
-            identities = db.list_account_identities(account_id=draft["account_id"])
+            identities = _ensure_identities()
             rows = []
             for identity in identities:
                 if int(identity.get("enabled") or 0) != 1:
@@ -144,18 +181,21 @@ async def message_handler(client: Client, update: UpdateNewMessage):
                     ]
                 )
 
-            if rows:
-                try:
-                    await client.api.send_message(
-                        chat_id=chat_id,
-                        message_thread_id=thread_id,
-                        input_message_content=InputMessageText(
-                            text=FormattedText(text=_("draft_choose_from"), entities=[])
-                        ),
-                        reply_markup=ReplyMarkupInlineKeyboard(rows=rows),
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send from-identity selector: {e}")
+            if not rows:
+                await _send_draft_help()
+                return
+
+            try:
+                await client.api.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=thread_id,
+                    input_message_content=InputMessageText(
+                        text=FormattedText(text=_("draft_choose_from"), entities=[])
+                    ),
+                    reply_markup=ReplyMarkupInlineKeyboard(rows=rows),
+                )
+            except Exception as e:
+                logger.error(f"Failed to send from-identity selector: {e}")
             return
 
         if cmd == "to" and args:
@@ -166,15 +206,18 @@ async def message_handler(client: Client, update: UpdateNewMessage):
             updates = {"bcc_addrs": cmd_arg}
         elif cmd == "from" and args:
             requested = cmd_arg.strip()
-            identities = db.list_account_identities(account_id=draft["account_id"])
+            identities = _ensure_identities()
             match = None
             for identity in identities:
                 addr = (identity.get("from_email") or "").strip().lower()
                 if addr and addr == requested.lower():
                     match = identity
                     break
-            if match:
-                updates = {"from_identity_email": match["from_email"]}
+            if not match:
+                await _send_draft_help()
+                return
+
+            updates = {"from_identity_email": match["from_email"]}
         elif cmd == "subject" and args:
             updates = {"subject": cmd_arg}
 
