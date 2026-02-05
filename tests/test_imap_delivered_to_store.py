@@ -61,10 +61,13 @@ class TestImapDeliveredToStore(unittest.TestCase):
             "body_text": "Hi",
             "body_html": "<p>Hi</p>",
             "uid": "100",
+            "mailbox": "INBOX",
             "delivered_to": json.dumps(delivered_to),
         }
 
-        email_db_id, is_new = imap._execute_db_transaction(email_data, email_data["uid"])
+        email_db_id, is_new = imap._execute_db_transaction(
+            email_data, email_data["uid"], mailbox=email_data["mailbox"]
+        )
         self.assertTrue(is_new)
 
         db = DBManager()
@@ -75,4 +78,3 @@ class TestImapDeliveredToStore(unittest.TestCase):
         conn.close()
 
         self.assertEqual(json.loads(row[0]), delivered_to)
-

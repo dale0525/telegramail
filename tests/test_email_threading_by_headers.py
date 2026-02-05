@@ -125,17 +125,17 @@ class TestEmailThreadingByHeaders(unittest.TestCase):
         # Topic contains both an INBOX message and an outgoing synthetic row for account 1.
         cur.execute(
             """
-            INSERT INTO emails (email_account, message_id, subject, uid, telegram_thread_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO emails (email_account, message_id, subject, uid, telegram_thread_id, mailbox)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (1, "<in1@example.com>", "Hello", "42", "123"),
+            (1, "<in1@example.com>", "Hello", "42", "123", "INBOX"),
         )
         cur.execute(
             """
-            INSERT INTO emails (email_account, message_id, subject, uid, telegram_thread_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO emails (email_account, message_id, subject, uid, telegram_thread_id, mailbox)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (1, "<m1@example.com>", "OUT", "outgoing:<m1@example.com>", "123"),
+            (1, "<m1@example.com>", "OUT", "outgoing:<m1@example.com>", "123", "OUTGOING"),
         )
 
         # Same thread_id for a different chat/account should not be returned for chat_id=777.
@@ -152,5 +152,8 @@ class TestEmailThreadingByHeaders(unittest.TestCase):
 
         targets = db.get_deletion_targets_for_topic(chat_id=777, thread_id="123")
         self.assertEqual(set(targets.keys()), {1})
-        self.assertEqual(targets[1]["inbox_uids"], ["42"])
+        self.assertEqual(
+            targets[1]["imap_uids"],
+            [{"uid": "42", "mailbox": "INBOX"}],
+        )
         self.assertEqual(targets[1]["outgoing_message_ids"], ["<m1@example.com>"])

@@ -67,7 +67,12 @@ class _FakeDbManager:
         self._pending.add((chat_id, thread_id))
 
     def get_deletion_targets_for_topic(self, chat_id: int, thread_id: str):
-        return {1: {"inbox_uids": ["42"], "outgoing_message_ids": ["<m1@example.com>"]}}
+        return {
+            1: {
+                "imap_uids": [{"uid": "42", "mailbox": "INBOX"}],
+                "outgoing_message_ids": ["<m1@example.com>"],
+            }
+        }
 
 
 class _FakeAccountManager:
@@ -121,7 +126,7 @@ class TestEmailDeleteListener(unittest.IsolatedAsyncioTestCase):
         ):
             await listener.check_deleted_topics_for_group(chat_id=777)
 
-        imap_instance.delete_email_by_uid.assert_called_once_with("42")
+        imap_instance.delete_email_by_uid.assert_called_once_with("42", mailbox="INBOX")
         imap_instance.delete_outgoing_email_by_message_id.assert_called_once_with(
             "<m1@example.com>"
         )

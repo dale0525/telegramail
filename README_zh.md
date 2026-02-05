@@ -24,7 +24,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 - [x] 手动刷新邮件
 - [x] 回复邮件
 - [x] 转发邮件
-- [ ] 接收 INBOX 之外的邮件
+- [x] 接收 INBOX 之外的邮件
 - [ ] 获取所有邮件
 - [ ] 为每个邮箱设置签名
 - [ ] 邮件信息中显示邮箱所在文件夹
@@ -201,7 +201,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 
 ### 接收邮件
 
-TelegramMail 会定期检查 INBOX 中的未读邮件，并将新邮件发送到 Telegram 以邮箱账户 Alias 命名的群组中。每封邮件以一个 Forum Topic 呈现，包含：
+TelegramMail 会定期检查 INBOX（默认）中的未读邮件，并将新邮件发送到 Telegram 以邮箱账户 Alias 命名的群组中。每封邮件以一个 Forum Topic 呈现，包含：
 - 邮件主题、发件人和收件人信息
 - 邮件总结(如果进行了 LLM 相关配置)
 - 邮件正文
@@ -211,6 +211,9 @@ TelegramMail 会定期检查 INBOX 中的未读邮件，并将新邮件发送到
 ![20250428155652](https://imagehost.daletan.win/20250428155652.png)
 
 你可以通过修改`.env`中的`POLLING_INTERVAL`来更改定期检查的频率。默认为 300 秒。
+
+如果要监听额外的 IMAP 文件夹，可以设置 `TELEGRAMAIL_IMAP_MONITORED_MAILBOXES`（逗号分隔），例如：`INBOX,Archive,Spam`。
+你也可以通过 `/accounts` → 选择账户 → **IMAP 文件夹** 来为单个账户配置覆盖（支持“探测文件夹”+ 点击选择）。
 
 ### 手动获取邮件
 #### 手动获取所有邮件

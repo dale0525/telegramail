@@ -7,6 +7,7 @@ from app.utils import Logger
 from app.utils.decorators import Singleton
 from app.database.mixins.topic_tracking import TopicTrackingMixin
 from app.database.mixins.drafts import DraftsMixin
+from app.database.emails_schema import ensure_emails_mailbox_schema
 
 logger = Logger().get_logger(__name__)
 
@@ -53,7 +54,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     smtp_port INTEGER NOT NULL,
     smtp_ssl INTEGER NOT NULL,
     alias TEXT NOT NULL,
-    tg_group_id INTEGER
+    tg_group_id INTEGER,
+    imap_monitored_mailboxes TEXT
 );
 CREATE TABLE IF NOT EXISTS emails (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,8 +70,12 @@ CREATE TABLE IF NOT EXISTS emails (
     body_text TEXT,
     body_html TEXT,
     uid TEXT,
+    mailbox TEXT NOT NULL DEFAULT 'INBOX',
     telegram_thread_id TEXT,
-    UNIQUE(email_account, uid)
+    delivered_to TEXT,
+    in_reply_to TEXT,
+    references_header TEXT,
+    UNIQUE(email_account, mailbox, uid)
 );
 CREATE TABLE IF NOT EXISTS chat_event_cursors (
     chat_id INTEGER PRIMARY KEY,
@@ -156,6 +162,17 @@ CREATE TABLE IF NOT EXISTS draft_messages (
 );
 """
         )
+
+        # Emails: mailbox + UID uniqueness migration (UID is per mailbox in IMAP).
+        ensure_emails_mailbox_schema(conn)
+
+        # Accounts: per-account IMAP monitored mailbox override.
+        cursor.execute("PRAGMA table_info(accounts)")
+        account_columns = {row[1] for row in cursor.fetchall()}
+        if "imap_monitored_mailboxes" not in account_columns:
+            cursor.execute(
+                "ALTER TABLE accounts ADD COLUMN imap_monitored_mailboxes TEXT"
+            )
 
         # Lightweight migrations (SQLite doesn't support ADD COLUMN IF NOT EXISTS).
         cursor.execute("PRAGMA table_info(emails)")
@@ -610,7 +627,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT email_account, uid FROM emails WHERE telegram_thread_id = ?",
+                "SELECT email_account, uid, mailbox FROM emails WHERE telegram_thread_id = ?",
                 (telegram_thread_id,),
             )
             results = cursor.fetchall()  # Fetch all matching records
@@ -624,13 +641,16 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             # Assuming all rows for a thread belong to the same account
             account_id = results[0][0]
             email_uids: List[str] = []
-            for _account_id, uid in results:
+            for _account_id, uid, mailbox in results:
                 if uid is None:
                     continue
                 uid_str = str(uid).strip()
+                mailbox_str = str(mailbox).strip() if mailbox is not None else ""
                 # IMAP UIDs are numeric; filter out synthetic/outgoing ids to avoid
                 # attempting server-side deletion for non-INBOX messages.
                 if not uid_str or not uid_str.isdigit():
+                    continue
+                if mailbox_str and mailbox_str.lower() != "inbox":
                     continue
                 email_uids.append(uid_str)
 
@@ -642,7 +662,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
 
     def get_deletion_targets_for_topic(
         self, *, chat_id: int, thread_id: str
-    ) -> Dict[int, Dict[str, List[str]]]:
+    ) -> Dict[int, Dict[str, Any]]:
         """
         Resolve server-side deletion targets for a deleted Telegram topic.
 
@@ -651,7 +671,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
 
         Returns:
             Dict[int, Dict[str, List[str]]]: Mapping from account_id to:
-                - inbox_uids: numeric IMAP UIDs (INBOX)
+                - imap_uids: list of {"uid": str, "mailbox": str} for provider deletions
                 - outgoing_message_ids: Message-ID values for synthetic outgoing rows
         """
         conn = None
@@ -670,7 +690,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             placeholders = ", ".join(["?"] * len(account_ids))
             cursor.execute(
                 f"""
-                SELECT email_account, uid, message_id
+                SELECT email_account, uid, message_id, mailbox
                 FROM emails
                 WHERE telegram_thread_id = ? AND email_account IN ({placeholders})
                 """,
@@ -679,7 +699,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             rows = cursor.fetchall()
 
             targets: Dict[int, Dict[str, List[str]]] = {}
-            for email_account, uid, message_id in rows:
+            for email_account, uid, message_id, mailbox in rows:
                 try:
                     account_id = int(email_account)
                 except Exception:
@@ -687,15 +707,19 @@ CREATE TABLE IF NOT EXISTS draft_messages (
 
                 entry = targets.setdefault(
                     account_id,
-                    {"inbox_uids": [], "outgoing_message_ids": []},
+                    {"imap_uids": [], "outgoing_message_ids": []},
                 )
 
                 uid_str = str(uid).strip() if uid is not None else ""
                 message_id_str = str(message_id).strip() if message_id is not None else ""
+                mailbox_str = str(mailbox).strip() if mailbox is not None else ""
+                if not mailbox_str:
+                    mailbox_str = "INBOX"
 
                 if uid_str and uid_str.isdigit():
-                    if uid_str not in entry["inbox_uids"]:
-                        entry["inbox_uids"].append(uid_str)
+                    item = {"uid": uid_str, "mailbox": mailbox_str}
+                    if item not in entry["imap_uids"]:
+                        entry["imap_uids"].append(item)
                     continue
 
                 outgoing_mid = message_id_str
@@ -709,7 +733,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             return {
                 aid: v
                 for aid, v in targets.items()
-                if v["inbox_uids"] or v["outgoing_message_ids"]
+                if v["imap_uids"] or v["outgoing_message_ids"]
             }
         except Exception as e:
             logger.error(
@@ -843,7 +867,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
                     """
                     UPDATE emails
                     SET sender = ?, recipient = ?, cc = ?, bcc = ?, subject = ?, email_date = ?,
-                        body_text = ?, body_html = ?, uid = ?, telegram_thread_id = ?,
+                        body_text = ?, body_html = ?, uid = ?, mailbox = ?, telegram_thread_id = ?,
                         in_reply_to = ?, references_header = ?
                     WHERE id = ?
                     """,
@@ -857,6 +881,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
                         body_text,
                         body_html,
                         synthetic_uid,
+                        "OUTGOING",
                         str(int(telegram_thread_id)),
                         in_reply_to,
                         references_header,
@@ -870,9 +895,9 @@ CREATE TABLE IF NOT EXISTS draft_messages (
                 """
                 INSERT INTO emails
                   (email_account, message_id, sender, recipient, cc, bcc, subject, email_date,
-                   body_text, body_html, uid, telegram_thread_id, in_reply_to, references_header)
+                   body_text, body_html, uid, mailbox, telegram_thread_id, in_reply_to, references_header)
                 VALUES
-                  (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(account_id),
@@ -886,6 +911,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
                     body_text,
                     body_html,
                     synthetic_uid,
+                    "OUTGOING",
                     str(int(telegram_thread_id)),
                     in_reply_to,
                     references_header,
@@ -904,23 +930,31 @@ CREATE TABLE IF NOT EXISTS draft_messages (
                 except Exception:
                     pass
 
-    def delete_email_by_uid(self, account_info: dict[str, Any], uid: str) -> bool:
+    def delete_email_by_uid(
+        self, account_info: dict[str, Any], uid: str, mailbox: Optional[str] = None
+    ) -> bool:
         """
         Delete email by UID from local database
 
         Args:
             email_account: Email address of the account
             uid: Email UID to delete
+            mailbox: IMAP mailbox name (default: INBOX/OUTGOING inferred)
 
         Returns:
             bool: True if email was deleted, False otherwise
         """
         try:
+            uid_str = str(uid).strip()
+            mailbox_str = (mailbox or "").strip().strip('"')
+            if not mailbox_str:
+                mailbox_str = "OUTGOING" if uid_str.startswith("outgoing:") else "INBOX"
+
             conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
-                "DELETE FROM emails WHERE email_account = ? AND uid = ?",
-                (account_info["id"], uid),
+                "DELETE FROM emails WHERE email_account = ? AND uid = ? AND mailbox = ?",
+                (account_info["id"], uid_str, mailbox_str),
             )
             conn.commit()
             rows_affected = cursor.rowcount

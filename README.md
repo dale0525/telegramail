@@ -26,7 +26,7 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 - [x] Manually refresh emails
 - [x] Reply to emails
 - [x] Forward emails
-- [ ] Receive emails from folders other than INBOX
+- [x] Receive emails from folders other than INBOX
 - [ ] Fetch all emails
 - [ ] Set signature for each email account
 - [ ] Display email folder information
@@ -204,7 +204,7 @@ Use Docker Compose for production deployment with pre-built images from Docker H
 
 ### Receiving Emails
 
-TelegramMail regularly checks for unread emails in the INBOX and sends new emails to the Telegram group named after your email account Alias. Each email is presented as a Forum Topic, including:
+TelegramMail regularly checks for unread emails in the INBOX (default) and sends new emails to the Telegram group named after your email account Alias. Each email is presented as a Forum Topic, including:
 - Email subject, sender, and recipient information
 - Email summary (if LLM is configured)
 - Email body
@@ -214,6 +214,9 @@ TelegramMail regularly checks for unread emails in the INBOX and sends new email
 ![20250428160226](https://imagehost.daletan.win/20250428160226.png)
 
 You can change the frequency of regular checks by modifying `POLLING_INTERVAL` in the `.env` file. The default is 300 seconds.
+
+To monitor additional IMAP folders, set `TELEGRAMAIL_IMAP_MONITORED_MAILBOXES` (comma-separated), e.g. `INBOX,Archive,Spam`.
+You can also set per-account overrides via `/accounts` → select an account → **IMAP Folders** (includes “Detect folders” + an interactive picker).
 
 ### Manually Fetching Emails
 #### Manually Fetch All Emails

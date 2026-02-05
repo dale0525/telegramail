@@ -149,7 +149,7 @@ async def check_deleted_topics_for_group(chat_id):
             attempted_count_in_loop = 0
             all_ok = True
             for account_id, targets in targets_by_account.items():
-                inbox_uids = list((targets or {}).get("inbox_uids") or [])
+                imap_uids = list((targets or {}).get("imap_uids") or [])
                 outgoing_message_ids = list(
                     (targets or {}).get("outgoing_message_ids") or []
                 )
@@ -163,9 +163,13 @@ async def check_deleted_topics_for_group(chat_id):
                     # keep retrying and accidentally thread future replies into a deleted topic.
                     try:
                         stub_account = {"id": int(account_id)}
-                        for email_uid in inbox_uids:
+                        for item in imap_uids:
+                            uid_val = str((item or {}).get("uid") or "").strip()
+                            mailbox_val = str((item or {}).get("mailbox") or "").strip()
+                            if not uid_val:
+                                continue
                             db_manager.delete_email_by_uid(
-                                stub_account, str(email_uid).strip()
+                                stub_account, uid_val, mailbox=mailbox_val
                             )
                         for mid in outgoing_message_ids:
                             mid_norm = str(mid).strip()
@@ -183,16 +187,17 @@ async def check_deleted_topics_for_group(chat_id):
 
                 imap_client = IMAPClient(account)
 
-                for email_uid in inbox_uids:
-                    email_uid = str(email_uid).strip()
-                    if not email_uid:
+                for item in imap_uids:
+                    uid_val = str((item or {}).get("uid") or "").strip()
+                    mailbox_val = str((item or {}).get("mailbox") or "").strip() or "INBOX"
+                    if not uid_val:
                         continue
                     attempted_count_in_loop += 1
                     try:
                         logger.info(
-                            f"Attempting to delete INBOX email UID {email_uid} for topic {thread_id}"
+                            f"Attempting to delete email UID {uid_val} in '{mailbox_val}' for topic {thread_id}"
                         )
-                        ok = imap_client.delete_email_by_uid(email_uid)
+                        ok = imap_client.delete_email_by_uid(uid_val, mailbox=mailbox_val)
                         if ok:
                             deleted_count_in_loop += 1
                         else:
@@ -200,7 +205,7 @@ async def check_deleted_topics_for_group(chat_id):
                     except Exception as delete_error:
                         all_ok = False
                         logger.error(
-                            f"Error deleting email UID {email_uid} for topic {thread_id}: {delete_error}"
+                            f"Error deleting email UID {uid_val} in '{mailbox_val}' for topic {thread_id}: {delete_error}"
                         )
 
                 for message_id in outgoing_message_ids:
