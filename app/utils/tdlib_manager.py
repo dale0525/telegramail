@@ -305,6 +305,12 @@ class TDLibManager:
                 logger.error("Missing SSL libraries. Install libssl packages.")
             elif "libz" in error_msg or "zlib" in error_msg:
                 logger.error("Missing zlib libraries. Install zlib packages.")
+            elif "libunwind" in error_msg:
+                logger.error(
+                    "Missing libunwind. Install LLVM libunwind (e.g. Debian/Ubuntu: sudo apt-get install libunwind-14)."
+                )
+                if self._is_container_environment():
+                    logger.error("In Docker: RUN apt-get install -y libunwind-14")
 
             return False
         except Exception as e:

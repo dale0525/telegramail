@@ -13,19 +13,19 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 - Can implement AI-related features using LLM APIs
 
 ### Disadvantages
-- Cannot handle emails with a large number of recipients, CC, or BCC
-- Not convenient for composing emails, no WYSIWYG editor
+- If there are many recipients (especially large BCC lists), it may send multiple emails in batches
+- No WYSIWYG editor for composing (currently authored in Markdown)
 
 ## Features
 
 - [x] Add multiple email accounts
 - [x] Receive emails and forward to Telegram
 - [x] Delete emails
-- [ ] Compose new emails
+- [x] Compose new emails
 - [x] Fetch emails on schedule
 - [x] Manually refresh emails
-- [ ] Reply to emails
-- [ ] Forward emails
+- [x] Reply to emails
+- [x] Forward emails
 - [ ] Receive emails from folders other than INBOX
 - [ ] Fetch all emails
 - [ ] Set signature for each email account
@@ -51,7 +51,6 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 **Windows is not yet supported for local development. If you need Windows support, please compile TDLib library files yourself (or use WSL/Docker).**
 
 1. [Install pixi](https://pixi.sh/)
-> You can also skip pixi and use python3.10 and pip directly
 
 1. Clone the repository:
    ```bash
@@ -84,26 +83,50 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 4. Init development environment:
    ```bash
    # Install dependencies and setup TDLib libraries
-   pixi install
+   pixi install --locked
    pixi run init
-   # Or directly
-   pip install -r requirements.txt && python scripts/setup_tdlib.py
    ```
 
 5. Start the application:
    ```bash
    # Start development server
    pixi run dev
-   # Or directly
-   python -m app.main
    ```
 
 6. Check i18n:
    ```bash
    pixi run i18n
-   # Or directly
-   python scripts/check_i18n.py
    ```
+
+#### (Optional) Local Container Runtime (macOS: Lima + Docker, driven by pixi)
+
+If you want a lightweight Docker setup on macOS (without Docker Desktop), you can run Docker Engine inside a Lima VM and keep all VM state under this repo’s `.pixi/` directory.
+
+1. Install Lima (the only system prerequisite):
+   ```bash
+   brew install lima
+   ```
+
+2. Initialize the project-scoped Docker engine (data dir: `.pixi/lima`):
+   ```bash
+   pixi run container-init
+   ```
+
+3. Use Docker / Compose via pixi (does not touch `~/.lima` or `~/.docker`):
+   ```bash
+   pixi run docker -- version
+   pixi run docker -- ps
+
+   pixi run compose -- version
+   pixi run compose -- up -d
+   pixi run compose -- down
+   ```
+
+Optional environment variables (tune resources / instance name):
+- `TELEGRAMAIL_LIMA_INSTANCE` (default `telegramail-docker`)
+- `TELEGRAMAIL_LIMA_CPUS` (default `2`)
+- `TELEGRAMAIL_LIMA_MEMORY` (GiB, default `2`)
+- `TELEGRAMAIL_LIMA_DISK` (GiB, default `20`)
 
 #### TDLib Management
 
@@ -112,6 +135,8 @@ The project includes automated TDLib library management for cross-platform devel
 - **Automatic Setup**: The setup_tdlib.py script automatically detects your platform and configures the appropriate TDLib libraries
 - **Separate Libraries**: Creates separate library files for bot and user clients (required by aiotdlib limitation)
 - **Cross-Environment**: Works consistently in both development and production/container environments
+
+> On Linux, the TDLib shared library also depends on runtime libraries such as the C++ runtime, OpenSSL, zlib (installed via pixi/conda), and LLVM libunwind (`libunwind.so.1`), which needs to come from your system packages (Debian/Ubuntu: `libunwind-14`, or any package that provides `libunwind.so.1`).
 
 **Platform Support**:
 - ✅ **macOS**: Automatic setup from included ARM64 library
@@ -145,6 +170,8 @@ Use Docker Compose for production deployment with pre-built images from Docker H
    docker-compose up -d
    ```
 
+> If you want to build the image from source instead: `docker build -t telegramail .`. The project's `Dockerfile` installs dependencies using `pixi.toml` + `pixi.lock` to keep dev/prod dependencies aligned.
+
 ## Usage
 
 ### Telegram Bot Commands
@@ -153,6 +180,7 @@ Use Docker Compose for production deployment with pre-built images from Docker H
 - `/help` - Display help information
 - `/accounts` - Manage added email accounts or add new ones
 - `/check` - Manually check for new emails
+- `/compose` - Compose a new email (creates a Draft topic)
 
 ### Adding Email Accounts
 
@@ -197,6 +225,29 @@ Use the `/accounts` command, then click on the email account you want to manuall
 ### Delete Emails
 
 If you want to delete an email, just delete the corresponding Topic in Telegram. Telegramail will search for deleted topics every 3 minutes, clean the database and delete related emails from the mail server.
+
+### Compose / Reply / Forward (Draft)
+
+TelegramMail uses Draft topics for composing, replying, and forwarding:
+
+1. **Compose new email**
+   - Send `/compose` inside an account group. It creates a new Draft topic and pins a Draft card message (Send/Cancel).
+2. **Reply / Forward**
+   - Each email thread has an “Actions” message with Reply / Forward buttons. Click to create a Draft in the same thread.
+3. **Edit inside Draft topic**
+   - `/from`: open a From-identity selector (for alias scenarios)
+   - `/from b@example.com`: set From identity directly
+   - `/to ...`, `/cc ...`, `/bcc ...`, `/subject ...`: set recipients / subject
+   - Body: send normal text messages; they are appended to the email body (Markdown supported)
+   - Attachments: send files/photos/audio in the Draft topic; they will be attached to the email; use `/attachments` to manage/remove attachments
+4. **Send**
+   - Click Send on the Draft card to send; Cancel to discard
+
+#### Body formatting (Markdown → HTML)
+
+Draft body is authored in Markdown. When sending, TelegramMail includes:
+- `text/plain`: original Markdown
+- `text/html`: rendered HTML from Markdown
 
 ### AI
 

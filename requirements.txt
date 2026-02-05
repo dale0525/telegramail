@@ -4,3 +4,4 @@ beautifulsoup4>=4.13.4
 openai>=1.75.0
 json-repair>=0.41.0
 html2text>=2025.4.15
+markdown-it-py>=3.0.0

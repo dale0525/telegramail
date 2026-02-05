@@ -1,17 +1,27 @@
 import sqlite3
 import os
+import time
 from typing import List, Dict, Any, Optional
 from app.utils import Logger
 from app.utils.decorators import Singleton
+from app.database.mixins.topic_tracking import TopicTrackingMixin
 
 logger = Logger().get_logger(__name__)
 
-# Database constants
-DB_PATH = os.path.join(os.getcwd(), "data", "telegramail.db")
+DEFAULT_DB_PATH = os.path.join(os.getcwd(), "data", "telegramail.db")
+
+
+def get_db_path() -> str:
+    """
+    Resolve database path.
+
+    Tests can override via TELEGRAMAIL_DB_PATH to avoid touching real user data.
+    """
+    return os.getenv("TELEGRAMAIL_DB_PATH") or DEFAULT_DB_PATH
 
 
 @Singleton
-class DBManager:
+class DBManager(TopicTrackingMixin):
     """Database manager for handling email operations"""
 
     def __init__(self):
@@ -21,9 +31,10 @@ class DBManager:
 
     def _initialize_db(self) -> None:
         """Initialize database with required tables"""
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        db_path = get_db_path()
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
         # Create accounts and email table if not exists
@@ -72,8 +83,81 @@ CREATE TABLE IF NOT EXISTS deleted_topics (
     last_error TEXT,
     PRIMARY KEY (chat_id, thread_id)
 );
+
+CREATE TABLE IF NOT EXISTS account_identities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    from_email TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    reply_to TEXT,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(account_id, from_email)
+);
+
+CREATE TABLE IF NOT EXISTS identity_suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    suggested_email TEXT NOT NULL,
+    source_delivered_to TEXT,
+    email_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(account_id, suggested_email)
+);
+
+CREATE TABLE IF NOT EXISTS drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    thread_id INTEGER NOT NULL,
+    draft_type TEXT NOT NULL,
+    from_identity_email TEXT NOT NULL,
+    card_message_id INTEGER,
+    to_addrs TEXT,
+    cc_addrs TEXT,
+    bcc_addrs TEXT,
+    subject TEXT,
+    in_reply_to TEXT,
+    references_header TEXT,
+    body_markdown TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS draft_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL,
+    file_id INTEGER NOT NULL,
+    remote_id TEXT,
+    file_type TEXT,
+    file_name TEXT NOT NULL,
+    mime_type TEXT,
+    size INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 """
         )
+
+        # Lightweight migrations (SQLite doesn't support ADD COLUMN IF NOT EXISTS).
+        cursor.execute("PRAGMA table_info(emails)")
+        email_columns = {row[1] for row in cursor.fetchall()}
+        if "delivered_to" not in email_columns:
+            cursor.execute("ALTER TABLE emails ADD COLUMN delivered_to TEXT")
+
+        cursor.execute("PRAGMA table_info(drafts)")
+        draft_columns = {row[1] for row in cursor.fetchall()}
+        if "card_message_id" not in draft_columns:
+            cursor.execute("ALTER TABLE drafts ADD COLUMN card_message_id INTEGER")
+        if "in_reply_to" not in draft_columns:
+            cursor.execute("ALTER TABLE drafts ADD COLUMN in_reply_to TEXT")
+        if "references_header" not in draft_columns:
+            cursor.execute("ALTER TABLE drafts ADD COLUMN references_header TEXT")
 
         conn.commit()
         conn.close()
@@ -87,7 +171,7 @@ CREATE TABLE IF NOT EXISTS deleted_topics (
         """
         # Set timeout (in seconds) for acquiring a lock
         # Use WAL mode to reduce locking issues
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(get_db_path())
 
         # Enable WAL mode which allows concurrent reads
         conn.execute("PRAGMA journal_mode=WAL")
@@ -96,6 +180,433 @@ CREATE TABLE IF NOT EXISTS deleted_topics (
         conn.execute("PRAGMA busy_timeout=10000")
 
         return conn
+
+    # --- Identities ---
+
+    def list_account_identities(self, account_id: int) -> List[Dict[str, Any]]:
+        try:
+            conn = self._get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM account_identities
+                WHERE account_id = ? AND enabled = 1
+                ORDER BY is_default DESC, id ASC
+                """,
+                (int(account_id),),
+            )
+            rows = [dict(r) for r in cursor.fetchall()]
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Error listing account identities: {e}")
+            return []
+
+    def upsert_account_identity(
+        self,
+        *,
+        account_id: int,
+        from_email: str,
+        display_name: str,
+        reply_to: Optional[str] = None,
+        is_default: bool = False,
+        enabled: bool = True,
+    ) -> Optional[int]:
+        try:
+            now = int(time.time())
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO account_identities
+                  (account_id, from_email, display_name, reply_to, is_default, enabled, created_at, updated_at)
+                VALUES
+                  (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_id, from_email) DO UPDATE SET
+                  display_name = excluded.display_name,
+                  reply_to = excluded.reply_to,
+                  is_default = CASE WHEN excluded.is_default = 1 THEN 1 ELSE account_identities.is_default END,
+                  enabled = excluded.enabled,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    int(account_id),
+                    (from_email or "").strip().lower(),
+                    (display_name or "").strip(),
+                    (reply_to or "").strip() or None,
+                    1 if is_default else 0,
+                    1 if enabled else 0,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+            # Ensure only one default identity per account when setting default.
+            if is_default:
+                cursor.execute(
+                    """
+                    UPDATE account_identities
+                    SET is_default = 0, updated_at = ?
+                    WHERE account_id = ? AND from_email != ?
+                    """,
+                    (now, int(account_id), (from_email or "").strip().lower()),
+                )
+                conn.commit()
+
+            # Get identity id
+            cursor.execute(
+                "SELECT id FROM account_identities WHERE account_id = ? AND from_email = ?",
+                (int(account_id), (from_email or "").strip().lower()),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return int(row[0]) if row else None
+        except Exception as e:
+            logger.error(f"Error upserting account identity: {e}")
+            return None
+
+    # --- Identity Suggestions ---
+
+    def upsert_identity_suggestion(
+        self,
+        *,
+        account_id: int,
+        suggested_email: str,
+        source_delivered_to: Optional[str] = None,
+        email_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create or update an identity suggestion.
+
+        Important: if an existing suggestion is already ignored, keep it ignored.
+        """
+        normalized_email = (suggested_email or "").strip().lower()
+        now = int(time.time())
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT * FROM identity_suggestions
+            WHERE account_id = ? AND suggested_email = ?
+            """,
+            (int(account_id), normalized_email),
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            existing_dict = dict(existing)
+            status = existing_dict.get("status") or "pending"
+            # Keep ignored to avoid re-prompting.
+            if status == "ignored":
+                conn.close()
+                return {"id": existing_dict["id"], "status": "ignored"}
+
+            cursor.execute(
+                """
+                UPDATE identity_suggestions
+                SET source_delivered_to = ?, email_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    (source_delivered_to or "").strip().lower() or None,
+                    int(email_id) if email_id is not None else None,
+                    now,
+                    int(existing_dict["id"]),
+                ),
+            )
+            conn.commit()
+            conn.close()
+            return {"id": existing_dict["id"], "status": status}
+
+        cursor.execute(
+            """
+            INSERT INTO identity_suggestions
+              (account_id, suggested_email, source_delivered_to, email_id, status, created_at, updated_at)
+            VALUES
+              (?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                int(account_id),
+                normalized_email,
+                (source_delivered_to or "").strip().lower() or None,
+                int(email_id) if email_id is not None else None,
+                now,
+                now,
+            ),
+        )
+        suggestion_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return {"id": suggestion_id, "status": "pending"}
+
+    def get_identity_suggestion(self, suggestion_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            conn = self._get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM identity_suggestions WHERE id = ?",
+                (int(suggestion_id),),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error getting identity suggestion: {e}")
+            return None
+
+    def mark_identity_suggestion_ignored(self, *, suggestion_id: int) -> bool:
+        try:
+            now = int(time.time())
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE identity_suggestions
+                SET status = 'ignored', updated_at = ?
+                WHERE id = ?
+                """,
+                (now, int(suggestion_id)),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error marking identity suggestion ignored: {e}")
+            return False
+
+    def mark_identity_suggestion_accepted(self, *, suggestion_id: int) -> bool:
+        try:
+            now = int(time.time())
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE identity_suggestions
+                SET status = 'accepted', updated_at = ?
+                WHERE id = ?
+                """,
+                (now, int(suggestion_id)),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error marking identity suggestion accepted: {e}")
+            return False
+
+    # --- Drafts ---
+
+    def create_draft(
+        self,
+        *,
+        account_id: int,
+        chat_id: int,
+        thread_id: int,
+        draft_type: str,
+        from_identity_email: str,
+    ) -> int:
+        now = int(time.time())
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO drafts
+              (account_id, chat_id, thread_id, draft_type, from_identity_email, status, created_at, updated_at)
+            VALUES
+              (?, ?, ?, ?, ?, 'open', ?, ?)
+            """,
+            (
+                int(account_id),
+                int(chat_id),
+                int(thread_id),
+                (draft_type or "compose").strip(),
+                (from_identity_email or "").strip().lower(),
+                now,
+                now,
+            ),
+        )
+        draft_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return int(draft_id)
+
+    def get_active_draft(self, *, chat_id: int, thread_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            conn = self._get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM drafts
+                WHERE chat_id = ? AND thread_id = ? AND status = 'open'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (int(chat_id), int(thread_id)),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error getting active draft: {e}")
+            return None
+
+    def update_draft(self, *, draft_id: int, updates: Dict[str, Any]) -> bool:
+        if not updates:
+            return True
+        allowed = {
+            "from_identity_email",
+            "card_message_id",
+            "to_addrs",
+            "cc_addrs",
+            "bcc_addrs",
+            "subject",
+            "in_reply_to",
+            "references_header",
+            "body_markdown",
+            "status",
+        }
+        filtered = {k: v for k, v in updates.items() if k in allowed}
+        if not filtered:
+            return True
+
+        filtered["updated_at"] = int(time.time())
+
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            set_clause = ", ".join([f"{k} = ?" for k in filtered.keys()])
+            params = list(filtered.values()) + [int(draft_id)]
+            cursor.execute(f"UPDATE drafts SET {set_clause} WHERE id = ?", params)
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating draft: {e}")
+            return False
+
+    def append_draft_body(self, *, draft_id: int, text: str) -> bool:
+        try:
+            conn = self._get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT body_markdown FROM drafts WHERE id = ?", (int(draft_id),))
+            row = cursor.fetchone()
+            current = (row["body_markdown"] if row else "") or ""
+            addition = (text or "").strip()
+            if not addition:
+                conn.close()
+                return True
+
+            if current.strip():
+                new_body = f"{current}\n\n{addition}"
+            else:
+                new_body = addition
+
+            cursor.execute(
+                "UPDATE drafts SET body_markdown = ?, updated_at = ? WHERE id = ?",
+                (new_body, int(time.time()), int(draft_id)),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error appending draft body: {e}")
+            return False
+
+    def add_draft_attachment(
+        self,
+        *,
+        draft_id: int,
+        file_id: int,
+        remote_id: str | None,
+        file_type: str | None,
+        file_name: str,
+        mime_type: str | None,
+        size: int | None,
+    ) -> Optional[int]:
+        try:
+            now = int(time.time())
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO draft_attachments
+                  (draft_id, file_id, remote_id, file_type, file_name, mime_type, size, created_at, updated_at)
+                VALUES
+                  (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(draft_id),
+                    int(file_id),
+                    (remote_id or "").strip() or None,
+                    (file_type or "").strip() or None,
+                    (file_name or "").strip(),
+                    (mime_type or "").strip() or None,
+                    int(size) if size is not None else None,
+                    now,
+                    now,
+                ),
+            )
+            attachment_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return int(attachment_id)
+        except Exception as e:
+            logger.error(f"Error adding draft attachment: {e}")
+            return None
+
+    def list_draft_attachments(self, *, draft_id: int) -> List[Dict[str, Any]]:
+        try:
+            conn = self._get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM draft_attachments
+                WHERE draft_id = ?
+                ORDER BY id ASC
+                """,
+                (int(draft_id),),
+            )
+            rows = [dict(r) for r in cursor.fetchall()]
+            conn.close()
+            return rows
+        except Exception as e:
+            logger.error(f"Error listing draft attachments: {e}")
+            return []
+
+    def delete_draft_attachment(self, *, draft_id: int, attachment_id: int) -> bool:
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM draft_attachments WHERE id = ? AND draft_id = ?",
+                (int(attachment_id), int(draft_id)),
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting draft attachment: {e}")
+            return False
+
+    def clear_draft_attachments(self, *, draft_id: int) -> bool:
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM draft_attachments WHERE draft_id = ?", (int(draft_id),))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing draft attachments: {e}")
+            return False
 
     def get_accounts(self) -> List[Dict[str, Any]]:
         """
@@ -311,193 +822,6 @@ CREATE TABLE IF NOT EXISTS deleted_topics (
         except Exception as e:
             logger.error(f"Error getting email uids by Telegram thread ID: {e}")
             raise
-
-    def get_chat_event_cursor(self, chat_id: int) -> int:
-        """
-        Get the last processed forum event_id for a chat.
-
-        Args:
-            chat_id: Telegram group chat ID.
-
-        Returns:
-            int: last processed event_id; 0 if not set.
-        """
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT last_forum_event_id FROM chat_event_cursors WHERE chat_id = ?",
-                (int(chat_id),),
-            )
-            row = cursor.fetchone()
-            conn.close()
-            return int(row[0]) if row else 0
-        except Exception as e:
-            logger.error(f"Error getting chat event cursor for chat {chat_id}: {e}")
-            return 0
-
-    def set_chat_event_cursor(self, chat_id: int, event_id: int) -> bool:
-        """
-        Upsert the last processed forum event_id for a chat.
-
-        Args:
-            chat_id: Telegram group chat ID.
-            event_id: Latest processed event_id.
-
-        Returns:
-            bool: True if successful, False otherwise.
-        """
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO chat_event_cursors (chat_id, last_forum_event_id)
-                VALUES (?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET last_forum_event_id = excluded.last_forum_event_id
-                """,
-                (int(chat_id), int(event_id)),
-            )
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            logger.error(
-                f"Error setting chat event cursor for chat {chat_id} to {event_id}: {e}"
-            )
-            return False
-
-    def upsert_deleted_topic(
-        self, chat_id: int, thread_id: str, event_id: int, deleted_at: int
-    ) -> bool:
-        """
-        Record a deleted topic so it can be processed reliably even after restarts.
-
-        Args:
-            chat_id: Telegram group chat ID.
-            thread_id: Telegram forum topic thread ID.
-            event_id: Chat event log event_id that recorded the deletion.
-            deleted_at: Unix timestamp of deletion event.
-
-        Returns:
-            bool: True if successful, False otherwise.
-        """
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO deleted_topics (chat_id, thread_id, event_id, deleted_at, processed_at, attempts, last_error)
-                VALUES (?, ?, ?, ?, NULL, 0, NULL)
-                ON CONFLICT(chat_id, thread_id) DO UPDATE SET
-                    event_id = excluded.event_id,
-                    deleted_at = excluded.deleted_at
-                """,
-                (int(chat_id), str(thread_id), int(event_id), int(deleted_at)),
-            )
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            logger.error(
-                f"Error upserting deleted topic (chat_id={chat_id}, thread_id={thread_id}): {e}"
-            )
-            return False
-
-    def list_pending_deleted_topics(self, chat_id: int) -> List[Dict[str, Any]]:
-        """
-        List topics deleted in Telegram that still need IMAP deletion processing.
-
-        Args:
-            chat_id: Telegram group chat ID.
-
-        Returns:
-            List[Dict[str, Any]]: Rows containing thread_id, attempts, last_error, deleted_at.
-        """
-        try:
-            conn = self._get_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT chat_id, thread_id, attempts, last_error, deleted_at
-                FROM deleted_topics
-                WHERE chat_id = ? AND processed_at IS NULL
-                ORDER BY deleted_at ASC
-                """,
-                (int(chat_id),),
-            )
-            rows = [dict(r) for r in cursor.fetchall()]
-            conn.close()
-            return rows
-        except Exception as e:
-            logger.error(f"Error listing pending deleted topics for chat {chat_id}: {e}")
-            return []
-
-    def mark_deleted_topic_processed(self, chat_id: int, thread_id: str) -> bool:
-        """
-        Mark a deleted topic as processed.
-
-        Args:
-            chat_id: Telegram group chat ID.
-            thread_id: Telegram thread ID.
-
-        Returns:
-            bool: True if successful, False otherwise.
-        """
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE deleted_topics
-                SET processed_at = strftime('%s','now'), last_error = NULL
-                WHERE chat_id = ? AND thread_id = ?
-                """,
-                (int(chat_id), str(thread_id)),
-            )
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            logger.error(
-                f"Error marking deleted topic processed (chat_id={chat_id}, thread_id={thread_id}): {e}"
-            )
-            return False
-
-    def record_deleted_topic_failure(
-        self, chat_id: int, thread_id: str, error: str
-    ) -> bool:
-        """
-        Record a failure while processing a deleted topic.
-
-        Args:
-            chat_id: Telegram group chat ID.
-            thread_id: Telegram thread ID.
-            error: Error string for debugging.
-
-        Returns:
-            bool: True if successful, False otherwise.
-        """
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE deleted_topics
-                SET attempts = attempts + 1, last_error = ?
-                WHERE chat_id = ? AND thread_id = ? AND processed_at IS NULL
-                """,
-                (str(error), int(chat_id), str(thread_id)),
-            )
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            logger.error(
-                f"Error recording deleted topic failure (chat_id={chat_id}, thread_id={thread_id}): {e}"
-            )
-            return False
 
     def delete_email_by_uid(self, account_info: dict[str, Any], uid: str) -> bool:
         """

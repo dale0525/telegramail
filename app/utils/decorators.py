@@ -137,4 +137,11 @@ def Singleton(cls):
                     _instances[cls] = cls(*args, **kwargs)
         return _instances[cls]
 
+    def _reset_instance():
+        with _lock:
+            _instances.pop(cls, None)
+
+    # Used by tests to isolate singleton state across test cases.
+    _singleton.reset_instance = _reset_instance  # type: ignore[attr-defined]
+
     return _singleton

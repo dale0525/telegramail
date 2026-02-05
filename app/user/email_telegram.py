@@ -1,18 +1,24 @@
 import os
 import re
-import html
 from typing import Dict, List, Optional, Any
 import tempfile
 import email.header
 import base64
-import asyncio
-from dataclasses import dataclass
-from functools import wraps
+import json
 
 from app.bot.bot_client import BotClient
 from app.i18n import _
 from app.utils import Logger
 from app.database import DBManager
+from app.user.atomic_email_sender import (
+    AtomicEmailSender,
+    AttachmentContent,
+    FileContent,
+    MessageContent,
+)
+from app.user.email_telegram_legacy import (
+    send_email_to_telegram_legacy as _send_email_to_telegram_legacy,
+)
 from app.user.user_client import UserClient
 from app.email_utils import (
     summarize_email,
@@ -21,6 +27,7 @@ from app.email_utils import (
     clean_html_content,
     extract_unsubscribe_urls,
 )
+from app.email_utils.identity import suggest_identity
 from aiotdlib.api import (
     FormattedText,
     InputMessageText,
@@ -32,368 +39,12 @@ from aiotdlib.api import (
     TextParseModeHTML,
     TextParseModeMarkdown,
     InlineKeyboardButton,
+    InlineKeyboardButtonTypeCallback,
     InlineKeyboardButtonTypeUrl,
     ReplyMarkupInlineKeyboard,
 )
-from aiotdlib.api import MessageSendOptions
 
 logger = Logger().get_logger(__name__)
-
-
-def retry_on_telegram_error(max_retries: int = 3, delay: float = 1.0):
-    """
-    Decorator to retry Telegram API calls on failure
-
-    Args:
-        max_retries: Maximum number of retry attempts
-        delay: Delay between retries in seconds
-    """
-
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_retries + 1):
-                try:
-                    result = await func(*args, **kwargs)
-                    if result is not None:  # Success
-                        if attempt > 0:
-                            logger.info(
-                                f"Successfully sent after {attempt} retries: {func.__name__}"
-                            )
-                        return result
-                    else:
-                        # Result is None, treat as failure
-                        if attempt < max_retries:
-                            logger.warning(
-                                f"Attempt {attempt + 1} failed for {func.__name__}, retrying in {delay}s..."
-                            )
-                            await asyncio.sleep(
-                                delay * (attempt + 1)
-                            )  # Exponential backoff
-                        else:
-                            logger.error(
-                                f"All {max_retries + 1} attempts failed for {func.__name__}"
-                            )
-                            return None
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_retries:
-                        logger.warning(
-                            f"Attempt {attempt + 1} failed for {func.__name__} with error: {e}, retrying in {delay}s..."
-                        )
-                        await asyncio.sleep(
-                            delay * (attempt + 1)
-                        )  # Exponential backoff
-                    else:
-                        logger.error(
-                            f"All {max_retries + 1} attempts failed for {func.__name__} with error: {e}"
-                        )
-                        raise last_exception
-            return None
-
-        return wrapper
-
-    return decorator
-
-
-@dataclass
-class MessageContent:
-    """Data class for storing message content to be sent"""
-
-    text: str
-    parse_mode: Optional[str] = None
-    send_notification: bool = True
-    urls: Optional[List[Dict]] = None
-
-
-@dataclass
-class PreparedMessageContent:
-    """Data class for storing prepared FormattedText to be sent"""
-
-    formatted_text: FormattedText
-    send_notification: bool = True
-    urls: Optional[List[Dict]] = None
-
-
-@dataclass
-class FileContent:
-    """Data class for storing file content to be sent"""
-
-    content: str
-    filename: str
-    send_notification: bool = False
-
-
-@dataclass
-class AttachmentContent:
-    """Data class for storing attachment content to be sent"""
-
-    data: bytes
-    filename: str
-
-
-class AtomicEmailSender:
-    """Atomic email sender that ensures topic creation and message sending are atomic operations"""
-
-    def __init__(self, email_sender: "EmailTelegramSender"):
-        self.email_sender = email_sender
-        self.created_topic_id: Optional[int] = None
-        self.sent_messages: List[Message] = []
-        self.db_updated = False
-
-    async def send_email_atomically(
-        self,
-        chat_id: int,
-        topic_title: str,
-        messages: List[MessageContent],
-        files: List[FileContent],
-        attachments: List[AttachmentContent],
-        email_id: int,
-        account_id: int,
-    ) -> bool:
-        """
-        Atomically send an email to a Telegram chat
-
-        This method ensures that topic creation happens after all content is prepared,
-        and all message sending operations include retry mechanisms.
-
-        Args:
-            chat_id: Telegram chat ID
-            topic_title: Topic title for the forum
-            messages: List of message content to be sent
-            files: List of file content to be sent
-            attachments: List of attachment content to be sent
-            email_id: Email database ID
-            account_id: Account database ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            logger.info(f"Starting atomic email send for topic: {topic_title}")
-
-            # 0. Parse/validate all message text BEFORE creating topic.
-            prepared_messages = await self._prepare_formatted_messages(messages)
-
-            # 1. First check if a thread already exists
-            thread_id = await self.email_sender.get_thread_id_by_subject(
-                topic_title, account_id
-            )
-
-            # 2. If no thread exists, create a new one AFTER content is prepared
-            if not thread_id:
-                logger.info(
-                    f"No existing thread found, creating new topic: {topic_title}"
-                )
-                thread_id = await self._create_forum_topic_with_retry(
-                    chat_id, topic_title
-                )
-                if not thread_id:
-                    logger.error("Failed to create forum topic after retries")
-                    return False
-                self.created_topic_id = thread_id
-
-            # 3. Update database with thread ID
-            if not self.email_sender.db_manager.update_thread_id_in_db(
-                email_id, thread_id
-            ):
-                logger.error("Failed to update thread ID in database")
-                await self._rollback()
-                return False
-            self.db_updated = True
-
-            # 4. Send all messages in order with retry mechanism
-            logger.info(f"Sending {len(prepared_messages)} messages to thread {thread_id}")
-            for i, message in enumerate(prepared_messages):
-                sent_message = await self._send_formatted_text_message_with_retry(
-                    chat_id=chat_id,
-                    thread_id=thread_id,
-                    formatted_text=message.formatted_text,
-                    send_notification=message.send_notification,
-                    urls=message.urls,
-                )
-                if not sent_message:
-                    logger.error(
-                        f"Failed to send message {i+1}/{len(prepared_messages)}: {message.formatted_text.text[:50]}..."
-                    )
-                    await self._rollback()
-                    return False
-                self.sent_messages.append(sent_message)
-
-            # 5. Send all files with retry mechanism
-            logger.info(f"Sending {len(files)} files to thread {thread_id}")
-            for i, file in enumerate(files):
-                sent_message = await self._send_html_as_file_with_retry(
-                    chat_id=chat_id,
-                    thread_id=thread_id,
-                    content=file.content,
-                    filename=file.filename,
-                    send_notification=file.send_notification,
-                )
-                if not sent_message:
-                    logger.error(
-                        f"Failed to send file {i+1}/{len(files)}: {file.filename}"
-                    )
-                    await self._rollback()
-                    return False
-                self.sent_messages.append(sent_message)
-
-            # 6. Send all attachments with retry mechanism
-            logger.info(f"Sending {len(attachments)} attachments to thread {thread_id}")
-            for i, attachment in enumerate(attachments):
-                sent_message = await self._send_attachment_with_retry(
-                    chat_id=chat_id,
-                    thread_id=thread_id,
-                    attachment={
-                        "data": attachment.data,
-                        "filename": attachment.filename,
-                    },
-                )
-                if not sent_message:
-                    logger.error(
-                        f"Failed to send attachment {i+1}/{len(attachments)}: {attachment.filename}"
-                    )
-                    await self._rollback()
-                    return False
-                self.sent_messages.append(sent_message)
-
-            logger.info(
-                f"Successfully sent email atomically. Topic: {topic_title}, Messages: {len(self.sent_messages)}"
-            )
-            return True
-
-        except Exception as e:
-            logger.error(f"Error in atomic email sending: {e}")
-            await self._rollback()
-            return False
-
-    @retry_on_telegram_error(max_retries=3, delay=1.0)
-    async def _create_forum_topic_with_retry(
-        self, chat_id: int, title: str
-    ) -> Optional[int]:
-        """Create forum topic with retry mechanism"""
-        return await self.email_sender.create_forum_topic(chat_id, title)
-
-    @retry_on_telegram_error(max_retries=3, delay=1.0)
-    async def _send_formatted_text_message_with_retry(
-        self,
-        chat_id: int,
-        thread_id: int,
-        formatted_text: FormattedText,
-        send_notification: bool = True,
-        urls: Optional[List[Dict]] = None,
-    ) -> Optional[Message]:
-        """Send pre-parsed text message with retry mechanism"""
-        return await self.email_sender.send_formatted_text_message(
-            chat_id=chat_id,
-            thread_id=thread_id,
-            formatted_text=formatted_text,
-            send_notification=send_notification,
-            urls=urls,
-        )
-
-    @retry_on_telegram_error(max_retries=3, delay=1.0)
-    async def _send_html_as_file_with_retry(
-        self,
-        chat_id: int,
-        thread_id: int,
-        content: str,
-        filename: str,
-        send_notification: bool = False,
-    ) -> Optional[Message]:
-        """Send HTML file with retry mechanism"""
-        return await self.email_sender.send_html_as_file(
-            chat_id=chat_id,
-            thread_id=thread_id,
-            content=content,
-            filename=filename,
-            send_notification=send_notification,
-        )
-
-    @retry_on_telegram_error(max_retries=3, delay=1.0)
-    async def _send_attachment_with_retry(
-        self,
-        chat_id: int,
-        thread_id: int,
-        attachment: Dict[str, Any],
-    ) -> Optional[Message]:
-        """Send attachment with retry mechanism"""
-        return await self.email_sender.send_attachment(
-            chat_id=chat_id,
-            thread_id=thread_id,
-            attachment=attachment,
-        )
-
-    async def _rollback(self):
-        """
-        Rollback all operations if any step fails
-
-        This is a simple implementation that only logs the actions.
-        Actual rollback in Telegram might not be possible.
-        """
-        try:
-            # Delete sent messages
-            # Telegram Bot API typically does not allow deleting messages
-            if self.sent_messages:
-                logger.warning(
-                    f"Rollback: {len(self.sent_messages)} messages were sent but operation failed"
-                )
-
-            # If a new topic was created, try to delete it (Telegram API might not support deleting topics)
-            if self.created_topic_id:
-                logger.warning(
-                    f"Rollback: Created topic {self.created_topic_id} but operation failed"
-                )
-                # Here you can try to delete the topic, but Telegram API might not support it
-                # await self.email_sender.bot_client.api.delete_forum_topic(...)
-
-            # Rollback database update
-            if self.db_updated:
-                # Here you can implement the rollback logic for the database
-                logger.warning("Rollback: Database was updated but operation failed")
-
-        except Exception as e:
-            logger.error(f"Error during rollback: {e}")
-
-    async def _prepare_formatted_messages(
-        self, messages: List[MessageContent]
-    ) -> List["PreparedMessageContent"]:
-        prepared_messages: List[PreparedMessageContent] = []
-        for message in messages:
-            formatted_text = await self._parse_message_text(
-                text=message.text,
-                parse_mode=message.parse_mode,
-            )
-            prepared_messages.append(
-                PreparedMessageContent(
-                    formatted_text=formatted_text,
-                    send_notification=message.send_notification,
-                    urls=message.urls,
-                )
-            )
-        return prepared_messages
-
-    async def _parse_message_text(
-        self, *, text: str, parse_mode: Optional[str]
-    ) -> FormattedText:
-        try:
-            return await self.email_sender.str_to_formatted(text, parse_mode)
-        except Exception as e:
-            fallback_text = self._fallback_plain_text(text, parse_mode)
-            logger.warning(
-                "Failed to parse message text, sending plain text instead "
-                f"(parse_mode={parse_mode}): {e}"
-            )
-            return FormattedText(text=fallback_text, entities=[])
-
-    def _fallback_plain_text(self, text: str, parse_mode: Optional[str]) -> str:
-        if isinstance(parse_mode, str) and parse_mode.lower() == "html":
-            # Convert common HTML newlines before stripping tags.
-            plain = re.sub(r"<br\\s*/?>", "\n", text, flags=re.IGNORECASE)
-            plain = re.sub(r"<[^>]+>", "", plain)
-            return html.unescape(plain).strip()
-        return text
 
 
 class EmailTelegramSender:
@@ -1152,6 +803,15 @@ class EmailTelegramSender:
 
             if success:
                 logger.info(f"Successfully sent email to Telegram: {clean_subject}")
+                try:
+                    if atomic_sender.thread_id:
+                        await self._send_email_actions(
+                            chat_id=group_id,
+                            thread_id=atomic_sender.thread_id,
+                            email_data=email_data,
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to send action buttons: {e}")
                 return True
             else:
                 logger.error(f"Failed to send email to Telegram: {clean_subject}")
@@ -1161,155 +821,87 @@ class EmailTelegramSender:
             logger.error(f"Error sending email to Telegram: {e}")
             return False
 
+    async def _send_email_actions(
+        self, *, chat_id: int, thread_id: int, email_data: Dict[str, Any]
+    ) -> None:
+        """
+        Send action buttons (Reply/Forward + optional alias suggestion) into the email topic.
+        """
+        email_id = email_data["id"]
+        account_id = email_data["email_account"]
+
+        rows: list[list[InlineKeyboardButton]] = [
+            [
+                InlineKeyboardButton(
+                    text=f"↩️ {_('reply')}",
+                    type=InlineKeyboardButtonTypeCallback(
+                        data=f"email:reply:{email_id}:{thread_id}".encode("utf-8")
+                    ),
+                ),
+                InlineKeyboardButton(
+                    text=f"➡️ {_('forward')}",
+                    type=InlineKeyboardButtonTypeCallback(
+                        data=f"email:forward:{email_id}:{thread_id}".encode("utf-8")
+                    ),
+                ),
+            ]
+        ]
+
+        # Optional: identity suggestion based on Delivered-To (+ plus-addressing).
+        candidates: list[str] = []
+        delivered_to = email_data.get("delivered_to")
+        if delivered_to:
+            try:
+                candidates = json.loads(delivered_to) or []
+            except Exception:
+                candidates = []
+
+        identities = self.db_manager.list_account_identities(account_id=account_id)
+        identity_emails = {i["from_email"] for i in identities}
+        suggestion_email = suggest_identity(
+            candidates=candidates, identity_emails=identity_emails
+        )
+        if suggestion_email:
+            suggestion = self.db_manager.upsert_identity_suggestion(
+                account_id=account_id,
+                suggested_email=suggestion_email,
+                source_delivered_to=(candidates[0] if candidates else None),
+                email_id=email_id,
+            )
+            if suggestion.get("status") == "pending":
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"➕ {_('add_identity')} {suggestion_email}",
+                            type=InlineKeyboardButtonTypeCallback(
+                                data=f"id_suggest:add:{suggestion['id']}".encode("utf-8")
+                            ),
+                        ),
+                        InlineKeyboardButton(
+                            text=f"🙈 {_('ignore')}",
+                            type=InlineKeyboardButtonTypeCallback(
+                                data=f"id_suggest:ignore:{suggestion['id']}".encode(
+                                    "utf-8"
+                                )
+                            ),
+                        ),
+                    ]
+                )
+
+        await self.bot_client.api.send_message(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            input_message_content=InputMessageText(
+                text=FormattedText(text=f"⚡ {_('actions')}", entities=[])
+            ),
+            reply_markup=ReplyMarkupInlineKeyboard(rows=rows),
+            options=MessageSendOptions(
+                paid_message_star_count=0,
+                sending_id=0,
+                disable_notification=True,
+                from_background=True,
+            ),
+        )
+
     async def send_email_to_telegram_legacy(self, email_data: Dict[str, Any]) -> bool:
-        """
-        Legacy email sending method (kept as backup)
-
-        Args:
-            email_data: Email data dictionary
-
-        Returns:
-            bool: True if email was sent successfully, False otherwise
-        """
-        try:
-            account_id = email_data["email_account"]
-            account_manager = AccountManager()
-            account = account_manager.get_account(id=account_id)
-            group_id = account["tg_group_id"]
-
-            # Clean subject (remove Re: prefix)
-            subject = email_data["subject"]
-            clean_subject = re.sub(
-                r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
-            )
-
-            # Decode sender name
-            original_sender = email_data.get("sender", "")
-            decoded_sender = self.decode_mime_header_value(original_sender)
-
-            # Check for existing thread ID
-            thread_id = await self.get_thread_id_by_subject(clean_subject, account_id)
-
-            # If no thread exists, create a new forum topic
-            if not thread_id:
-                thread_id = await self.create_forum_topic(group_id, clean_subject)
-                if not thread_id:
-                    logger.error("Failed to create forum topic")
-                    return False
-
-            # Update database with thread ID
-            self.db_manager.update_thread_id_in_db(email_data["id"], thread_id)
-
-            # 2. Send email title
-            await self.send_text_message(
-                chat_id=group_id,
-                text=f"*{email_data['subject']}*",
-                thread_id=thread_id,
-                parse_mode="Markdown",
-                send_notification=False,
-            )
-
-            # 3. Send email headers - From
-            await self.send_text_message(
-                chat_id=group_id,
-                text=f"✍️ {_('email_from')}: {decoded_sender}",
-                thread_id=thread_id,
-                send_notification=False,
-            )
-
-            # 4. CC (if exists)
-            if email_data.get("cc"):
-                await self.send_text_message(
-                    chat_id=group_id,
-                    text=f"👥 {_('email_cc')}: {email_data['cc']}",
-                    thread_id=thread_id,
-                    send_notification=False,
-                )
-
-            # 5. BCC (if exists)
-            if email_data.get("bcc"):
-                await self.send_text_message(
-                    chat_id=group_id,
-                    text=f"🔒 {_('email_bcc')}: {email_data['bcc']}",
-                    thread_id=thread_id,
-                    send_notification=False,
-                )
-
-            # 6. Email Summary - Use enhanced processing logic, prioritize HTML, fallback to plain text
-            processed_content = self.get_processed_email_content(email_data)
-            if processed_content:
-                unsubscribe_urls = []
-                body_html = email_data.get("body_html", "")
-                if body_html and body_html.strip():
-                    unsubscribe_urls = extract_unsubscribe_urls(
-                        body_html, default_language=os.getenv("DEFAULT_LANGUAGE", "en_US")
-                    )
-
-                summary = summarize_email(processed_content, extra_urls=unsubscribe_urls)
-                if summary is not None:
-                    # Use new formatting function to display enhanced email summary
-                    formatted_summary = format_enhanced_email_summary(summary)
-                    summary_header = f"<b>{_('email_summary')}:</b>\n"
-
-                    await self.send_text_message(
-                        chat_id=group_id,
-                        text=f"{summary_header}{formatted_summary}",
-                        urls=summary.get("urls", []),
-                        thread_id=thread_id,
-                        parse_mode="HTML",
-                        send_notification=True,
-                    )
-                else:
-                    # If summary failed, send processed original content
-                    # Limit content length to avoid overly long messages
-                    max_length = 4000  # Telegram message length limit
-                    if len(processed_content) > max_length:
-                        truncated_content = (
-                            processed_content[:max_length]
-                            + f"...\n\n{_('content_truncated')}"
-                        )
-                    else:
-                        truncated_content = processed_content
-
-                    await self.send_text_message(
-                        chat_id=group_id,
-                        text=truncated_content,
-                        urls=unsubscribe_urls,
-                        thread_id=thread_id,
-                        send_notification=True,
-                    )
-            else:
-                # If no usable email content, send notification message
-                await self.send_text_message(
-                    chat_id=group_id,
-                    text=f"📧 {_('email_content_unavailable')}",
-                    thread_id=thread_id,
-                    send_notification=True,
-                )
-
-            # 7. Send original HTML as a file attachment if needed
-            if email_data.get("body_html"):
-                # Generate a filename based on the email subject
-                sanitized_subject = re.sub(r'[\\/*?:"<>|]', "_", clean_subject)[
-                    :50
-                ]  # Sanitize and limit length
-                html_filename = f"{sanitized_subject}.html"
-                await self.send_html_as_file(
-                    chat_id=group_id,
-                    thread_id=thread_id,
-                    content=email_data["body_html"],
-                    filename=html_filename,
-                    send_notification=False,
-                )
-
-            # 8. Send attachments if any
-            if email_data.get("attachments"):
-                await self.send_attachments(
-                    group_id, thread_id, email_data["attachments"]
-                )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Error sending email to Telegram: {e}")
-            return False
+        return await _send_email_to_telegram_legacy(self, email_data)

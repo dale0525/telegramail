@@ -1,6 +1,7 @@
 import email
 import time
 import re
+import json
 import sqlite3
 import imaplib
 from typing import Any  # Import imaplib for specific exceptions
@@ -12,6 +13,7 @@ from app.email_utils.text import (
     decode_email_subject,
     get_email_body,
 )
+from app.email_utils.identity import extract_delivered_to_candidates
 from app.utils.decorators import retry_on_fail
 
 logger = Logger().get_logger(__name__)
@@ -197,6 +199,7 @@ class IMAPClient:
                     bcc = decode_email_address(msg.get("Bcc", ""))
                     subject = decode_email_subject(msg.get("Subject", ""))
                     email_date = msg.get("Date", "")
+                    delivered_to = extract_delivered_to_candidates(msg)
 
                     # Get email body
                     body_text, body_html = get_email_body(msg)
@@ -214,6 +217,7 @@ class IMAPClient:
                         "body_text": body_text,
                         "body_html": body_html,
                         "uid": uid,
+                        "delivered_to": json.dumps(delivered_to),
                         "raw_email": raw_email,  # Store raw email for later processing
                     }
 
@@ -397,8 +401,8 @@ class IMAPClient:
                 """
                 INSERT OR IGNORE INTO emails
                 (email_account, message_id, sender, recipient, cc, bcc, subject, email_date,
-                 body_text, body_html, uid)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 body_text, body_html, uid, delivered_to)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     email_data["email_account"],
@@ -412,6 +416,7 @@ class IMAPClient:
                     email_data["body_text"],
                     email_data["body_html"],
                     email_data["uid"],
+                    email_data.get("delivered_to"),
                 ),
             )
 

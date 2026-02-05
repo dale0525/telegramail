@@ -2,19 +2,41 @@
 authors = ["TelegramMail contributors"]
 channels = ["conda-forge"]
 name = "telegramail"
-platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64"]
+platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64", "win-64"]
 version = "0.1.0"
 
 [tasks]
 dev = "python -m app.main"
 i18n = "python scripts/check_i18n.py"
 setup-tdlib = "python scripts/setup_tdlib.py"
-init = { cmd = "echo 'Init complete'", depends-on = ["setup-tdlib"] }
+tdlib-info = "python scripts/setup_tdlib.py --info"
+tdlib-validate = "python scripts/setup_tdlib.py --validate"
+container-init = "python scripts/container_runtime.py init"
+container-stop = "python scripts/container_runtime.py stop"
+container-delete = "python scripts/container_runtime.py delete"
+container-status = "python scripts/container_runtime.py status"
+docker = "python scripts/container_runtime.py docker"
+compose = "python scripts/container_runtime.py compose"
+compose-up = "python scripts/container_runtime.py compose up -d"
+compose-down = "python scripts/container_runtime.py compose down"
+init = { cmd = "echo 'Init complete'", depends-on = ["tdlib-validate"] }
 test = 'python -m unittest discover -s tests -p "test_*.py"'
 
 [dependencies]
 python = "3.10.*"
 pip = "*"
+docker-cli = "*"
+docker-compose = "*"
+
+[target.linux-64.dependencies]
+# TDLib runtime dependencies (libtdjson_*.so depends on these)
+libcxx = "*"
+libcxxabi = "*"
+
+[target.linux-aarch64.dependencies]
+# TDLib runtime dependencies (libtdjson_*.so depends on these)
+libcxx = "*"
+libcxxabi = "*"
 
 [pypi-dependencies]
 aiotdlib = "==0.27.6"
@@ -23,3 +45,4 @@ html2text = ">=2025.4.15"
 json-repair = ">=0.41.0"
 openai = ">=1.75.0"
 python-dotenv = "*"
+markdown-it-py = "*"

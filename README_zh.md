@@ -11,19 +11,19 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 - 可以使用大语言模型 API 实现 AI 相关功能
 
 ### 缺点
-- 无法处理含有大量收件人、抄送、密送的情况
-- 撰写邮件不方便，没有所见即所得的编辑器
+- 如果收件人很多（尤其大量 BCC），需要分批发送多封邮件
+- 撰写邮件没有所见即所得编辑器（当前以 Markdown 撰写）
 
 ## 功能
 
 - [x] 添加多个邮箱
 - [x] 接收邮件并转发到 Telegram
 - [x] 删除邮件
-- [ ] 撰写新邮件
+- [x] 撰写新邮件
 - [x] 定时获取邮件
 - [x] 手动刷新邮件
-- [ ] 回复邮件
-- [ ] 转发邮件
+- [x] 回复邮件
+- [x] 转发邮件
 - [ ] 接收 INBOX 之外的邮件
 - [ ] 获取所有邮件
 - [ ] 为每个邮箱设置签名
@@ -48,7 +48,6 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 ### 本地开发
 *暂不支持 Windows，如果需要 Windows 支持，请自行编译 TDLib 库文件（或使用 WSL/Docker）*
 1. [安装 pixi](https://pixi.sh/)
-> 也可以不安装，直接使用 python3.10 和 pip
 
 2. 克隆仓库:
    ```bash
@@ -81,26 +80,50 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 5. 初始化开发环境：
    ```bash
    # 安装依赖、设置 TDLib 库文件
-   pixi install
+   pixi install --locked
    pixi run init
-   # 或者
-   pip install -r requirements.txt && python scripts/setup_tdlib.py
    ```
 
 6. 启动应用：
    ```bash
    # 启动应用
    pixi run dev
-   # 或者
-   python -m app.main
    ```
 
 7. 检查 i18n 是否完善
    ```bash
    pixi run i18n
-   # 或者
-   python scripts/check_i18n.py
    ```
+
+#### （可选）本地容器运行时（macOS：Lima + Docker，全部通过 pixi 驱动）
+
+如果你希望在 macOS 上使用更轻量、占用更可控的 Docker 方案（避免 Docker Desktop），可以使用 Lima 在虚拟机里运行 Docker Engine，并把所有 VM 数据放到项目的 `.pixi/` 目录中。
+
+1. 安装 Lima（系统唯一前置）：
+   ```bash
+   brew install lima
+   ```
+
+2. 初始化项目专用的 Docker 引擎（数据目录：`.pixi/lima`）：
+   ```bash
+   pixi run container-init
+   ```
+
+3. 通过 pixi 使用 Docker / Compose（不会污染 `~/.lima`、`~/.docker`）：
+   ```bash
+   pixi run docker -- version
+   pixi run docker -- ps
+
+   pixi run compose -- version
+   pixi run compose -- up -d
+   pixi run compose -- down
+   ```
+
+可选环境变量（调整资源/实例名）：
+- `TELEGRAMAIL_LIMA_INSTANCE`（默认 `telegramail-docker`）
+- `TELEGRAMAIL_LIMA_CPUS`（默认 `2`）
+- `TELEGRAMAIL_LIMA_MEMORY`（GiB，默认 `2`）
+- `TELEGRAMAIL_LIMA_DISK`（GiB，默认 `20`）
 
 #### TDLib 库文件管理
 
@@ -109,6 +132,8 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 - **自动设置**：setup_tdlib.py脚本会自动检测你的平台并配置相应的 TDLib 库文件
 - **独立库文件**：为 bot 和 user 客户端创建独立的库文件（aiotdlib 限制要求）
 - **跨环境一致性**：在开发和生产/容器环境中都能一致工作
+
+> Linux 下 TDLib 动态库还依赖 C++ 运行时、OpenSSL、zlib（通过 pixi/conda 安装），以及 LLVM libunwind（`libunwind.so.1`）。其中 `libunwind.so.1` 需要系统包提供（Debian/Ubuntu: `libunwind-14`，或任何能提供 `libunwind.so.1` 的版本）。
 
 **平台支持**：
 - ✅ **macOS**：从包含的 ARM64 库文件自动设置
@@ -142,6 +167,8 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
    docker-compose up -d
    ```
 
+> 如果你希望从源码自行构建镜像：`docker build -t telegramail .`。项目的 `Dockerfile` 会使用 `pixi.toml` + `pixi.lock` 来安装依赖，从而保证开发/生产依赖一致。
+
 ## 使用方法
 
 ### Telegram Bot 命令
@@ -150,6 +177,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 - `/help` - 显示帮助信息
 - `/accounts` - 管理已添加的邮箱账户、添加新邮箱账户
 - `/check` - 手动检查新邮件
+- `/compose` - 撰写新邮件（创建一个 Draft 话题）
 
 ### 添加邮箱账户
 
@@ -194,6 +222,35 @@ TelegramMail 会定期检查 INBOX 中的未读邮件，并将新邮件发送到
 ### 删除邮件
 
 如果要删除邮件，直接删除 Telegram 中邮件对应的 Topic 即可。程序会每隔 3 分钟检查被删除的 Topic，并清理数据库并删除服务器上的对应邮件。
+
+### 撰写 / 回复 / 转发邮件（Draft）
+
+TelegramMail 使用 Draft 话题来完成撰写、回复和转发：
+
+1. **撰写新邮件**
+   - 在某个邮箱账号群组内发送 `/compose`，会创建一个新的 Draft Topic，并固定一条 Draft 卡片消息（带 Send/Cancel 按钮）。
+2. **回复 / 转发**
+   - 在邮件 Topic 内，会有一条“Actions”消息，包含 Reply / Forward 按钮；点击后会在同一 thread 内创建 Draft。
+3. **在 Draft Topic 中编辑邮件**
+   - `/from`：弹出发件人身份列表（用于 alias 场景），点击即可切换
+   - `/from b@example.com`：直接切换到指定发件人身份
+   - `/to ...`、`/cc ...`、`/bcc ...`、`/subject ...`：设置收件人/主题
+   - 正文：直接发送普通文本消息，会追加到邮件正文（支持 Markdown）
+   - 附件：直接在 Draft Topic 里发送文件/图片/音频等，会作为邮件附件；用 `/attachments` 管理/移除附件
+4. **发送**
+   - 点击 Draft 卡片上的 Send 按钮发送邮件；Cancel 会取消草稿
+
+#### From 身份（alias）说明
+
+部分邮件服务商存在 alias 投递：你实际收到了 `a@example.com` 的邮件，但投递头（Delivered-To 等）显示是发给 `b@example.com`（`b` 是 `a` 的 alias）。
+
+TelegramMail 会基于 Delivered-To 等投递头自动匹配并默认选择更合适的 From 身份（如 `b@example.com`），并允许你在 Draft 中用 `/from` 手动切换。
+
+#### 正文格式（Markdown → HTML）
+
+Draft 正文以 Markdown 撰写。发送时会同时生成：
+- `text/plain`：原 Markdown 文本
+- `text/html`：Markdown 渲染后的 HTML
 
 ### AI
 

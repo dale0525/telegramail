@@ -20,6 +20,10 @@ app_dir = project_root / "app"
 # This pattern captures the key within quotes regardless of whether parameters follow
 i18n_func_pattern = re.compile(r'_\([\'"](.+?)[\'"](,|\))')
 
+# Regular expression to find dynamic i18n usage like _(f"prefix_{var}") and keep the
+# static prefix ("prefix_") so we don't delete keys that are referenced via f-strings.
+dynamic_i18n_fstring_prefix_pattern = re.compile(r'_\(\s*f[\'"]([^\'"{]+)\{')
+
 # Regular expression to find i18n usage in dicts like "some_key": "i18n_key"
 # Corrected: Use [\'"] to match either single or double quote.
 i18n_dict_pattern = re.compile(r'[\'"](\w+_key)[\'"]\s*:\s*[\'"](.+?)[\'"]')
@@ -52,7 +56,19 @@ def save_json_data(file_path, data):
             json.dump(sorted_data, f, ensure_ascii=False, indent=4)
         print(f"Successfully saved changes to {file_path}")
     except IOError as e:
-        print(f"Error saving file {file_path}: {e}")
+            print(f"Error saving file {file_path}: {e}")
+
+def expand_keys_for_dynamic_prefixes(used_keys, dynamic_prefixes, defined_keys):
+    """
+    Expand a used-keys set based on dynamic i18n prefixes.
+
+    If code contains _(f"email_category_{category}") we should treat all keys
+    starting with "email_category_" as used so they are not auto-deleted.
+    """
+    expanded = set(used_keys or set())
+    for prefix in dynamic_prefixes or set():
+        expanded.update({k for k in defined_keys if k.startswith(prefix)})
+    return expanded
 
 def find_used_keys_and_params(directory):
     """
@@ -62,6 +78,7 @@ def find_used_keys_and_params(directory):
     # Returns a set of keys and a dict of key -> params
     used_keys = set()
     key_params = defaultdict(set)  # Store parameters used with each key
+    dynamic_prefixes = set()
     
     # Read all python files once to collect all usage examples for testing
     i18n_usage_examples = []
@@ -100,6 +117,12 @@ def find_used_keys_and_params(directory):
                             for param in param_matches:
                                 key_params[key].add(param)
 
+                    # Find dynamic i18n usage like _(f"prefix_{var}") and keep the prefix.
+                    dyn_matches = dynamic_i18n_fstring_prefix_pattern.findall(line)
+                    for prefix in dyn_matches:
+                        if prefix:
+                            dynamic_prefixes.add(prefix)
+
                     # Find matches using the "..._key": "value" pattern in the current line
                     dict_matches = i18n_dict_pattern.findall(line)
                     # For dict matches, the key is the second element in the tuple
@@ -113,7 +136,7 @@ def find_used_keys_and_params(directory):
         if params:
             print(f"Key '{key}' used with parameters: {params}")
 
-    return used_keys, key_params
+    return used_keys, key_params, dynamic_prefixes
 
 def check_placeholders(i18n_data_map, key_params):
     """
@@ -204,7 +227,10 @@ if __name__ == "__main__":
 
     print(f"\nScanning '{app_dir}' for used i18n keys...")
     # Find all keys actually used in the source code using both patterns
-    used_keys_in_code, key_params = find_used_keys_and_params(app_dir)
+    used_keys_in_code, key_params, dynamic_prefixes = find_used_keys_and_params(app_dir)
+    used_keys_in_code = expand_keys_for_dynamic_prefixes(
+        used_keys_in_code, dynamic_prefixes, all_defined_keys
+    )
     print(f"Found {len(used_keys_in_code)} used keys in code.")
 
     # --- Key Management ---

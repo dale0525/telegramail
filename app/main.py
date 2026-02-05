@@ -25,6 +25,7 @@ from app.bot.handlers.accounts import (
     accounts_management_command_handler,
 )
 from app.bot.handlers.check_email import check_command_handler
+from app.bot.handlers.compose import compose_command_handler
 from app.bot.handlers.message import message_handler
 from app.bot.handlers.test import test_command_handler
 from app.cron.email_check_scheduler import start_email_check_scheduler
@@ -118,6 +119,16 @@ async def main():
         )
         await check_command_handler(client, update)
 
+    # register /compose command
+    @bot.bot_command_handler(command="compose")
+    async def on_compose_command(client: Client, update: UpdateNewMessage):
+        await client.api.delete_messages(
+            chat_id=update.message.chat_id,
+            message_ids=[update.message.id],
+            revoke=True,
+        )
+        await compose_command_handler(client, update)
+
     # register /test command
     @bot.bot_command_handler(command="test")
     async def on_test_command(client: Client, update: UpdateNewMessage):
@@ -157,6 +168,7 @@ async def main():
                 BotCommand(command="help", description=_("command_desc_help")),
                 BotCommand(command="accounts", description=_("command_desc_accounts")),
                 BotCommand(command="check", description=_("command_desc_check")),
+                BotCommand(command="compose", description=_("command_desc_compose")),
             ]
         )
 

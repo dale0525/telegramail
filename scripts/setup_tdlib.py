@@ -99,7 +99,7 @@ def validate_setup(manager):
     else:
         print("✗ TDLib setup is invalid")
         print("\n🔧 Troubleshooting steps:")
-        print("1. Run 'python scripts/setup_tdlib.py' to fix the setup")
+        print("1. Run 'pixi run tdlib-validate' to fix the setup")
         print("2. Check the error messages above for missing dependencies")
         print("3. Install required system packages if needed")
 
@@ -107,7 +107,7 @@ def validate_setup(manager):
         if platform_name == "linux":
             print("\n📦 For Linux systems, you may need to install:")
             print("   sudo apt-get update")
-            print("   sudo apt-get install libc++1 libc++abi1 libssl3 zlib1g")
+            print("   sudo apt-get install libc++1 libc++abi1 libssl3 zlib1g libunwind-14")
         elif platform_name == "darwin":
             print("\n📦 For macOS, ensure you have Xcode command line tools:")
             print("   xcode-select --install")
@@ -136,8 +136,8 @@ def setup_development_libraries(manager, force=False):
         print("✅ TDLib development libraries setup completed successfully!")
         print("\n📋 Next steps:")
         print("1. Make sure your .env file is configured with Telegram credentials")
-        print("2. Run 'python -m app.main' to start the application")
-        print("3. Use 'python scripts/setup_tdlib.py --validate' to verify setup")
+        print("2. Run 'pixi run dev' to start the application")
+        print("3. Use 'pixi run tdlib-validate' to verify setup")
     else:
         print("❌ Failed to setup TDLib development libraries")
         print("\n🔍 Troubleshooting:")

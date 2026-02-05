@@ -67,6 +67,21 @@ class AccountManager:
         if not self.db_manager.add_account(account):
             logger.error("Failed to add account to database")
             return False
+
+        # Create default sending identity for this account (From = login email).
+        try:
+            created = self.db_manager.get_account(
+                email=account["email"], smtp_server=account["smtp_server"]
+            )
+            if created:
+                self.db_manager.upsert_account_identity(
+                    account_id=created["id"],
+                    from_email=account["email"],
+                    display_name=account.get("alias") or account["email"],
+                    is_default=True,
+                )
+        except Exception as e:
+            logger.error(f"Failed to create default identity for account: {e}")
         return True
 
     def remove_account(

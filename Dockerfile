@@ -1,55 +1,54 @@
-# Multi-stage build for TelegramMail
-FROM python:3.10-slim AS builder
+# Multi-stage build for TelegramMail (Pixi-managed dependencies)
+FROM debian:bookworm-slim AS pixi-builder
 
-# Set working directory
+ARG PIXI_VERSION=v0.62.2
+ENV PIXI_VERSION=${PIXI_VERSION}
+
 WORKDIR /app
 
-# Install system dependencies required for building Python packages
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for better caching
-COPY requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir --user -r requirements.txt
-
-# Production stage
-FROM python:3.10-slim
-
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONPATH=/app
-
-# Install runtime dependencies including C++ runtime for TDLib
-RUN apt-get update && apt-get install -y \
+# Install Pixi
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libc++1 \
-    libc++abi1 \
-    libssl3 \
-    zlib1g \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    curl \
+    libunwind-14 \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://pixi.sh/install.sh | sh
+ENV PATH=/root/.pixi/bin:$PATH
+ENV LD_LIBRARY_PATH=/app/.pixi/envs/default/lib
 
-# Set working directory
-WORKDIR /app
-
-# Copy Python packages from builder stage to root location temporarily
-COPY --from=builder /root/.local /root/.local
+# Copy Pixi manifest & lockfile first for better caching
+COPY pixi.toml pixi.lock ./
+# Skip dev-only tooling packages inside the image
+RUN pixi install --locked --skip docker-cli --skip docker-compose
 
 # Copy application code and scripts
 COPY app/ ./app/
 COPY scripts/ ./scripts/
+COPY requirements.txt .
 
-# Add Python packages to PATH for setup script
-ENV PATH=/root/.local/bin:$PATH
+# Setup & validate TDLib libraries for the target architecture
+RUN pixi run tdlib-validate --verbose
 
-# Setup TDLib libraries for the target architecture
-RUN python3 scripts/setup_tdlib.py --verbose
+# Runtime stage
+FROM debian:bookworm-slim
 
-# Default command
-CMD ["python", "-m", "app.main"]
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app
+ENV LD_LIBRARY_PATH=/app/.pixi/envs/default/lib
+ENV SSL_CERT_FILE=/app/.pixi/envs/default/ssl/cacert.pem
+
+WORKDIR /app
+
+# TDLib depends on LLVM libunwind (libunwind.so.1), which is not available in conda-forge
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libunwind-14 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pixi binary + project environment (includes Python + runtime libs)
+COPY --from=pixi-builder /root/.pixi /root/.pixi
+COPY --from=pixi-builder /app /app
+
+ENV PATH=/root/.pixi/bin:$PATH
+
+CMD ["pixi", "run", "dev"]

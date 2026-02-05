@@ -12,8 +12,6 @@ on:
       - "docs/**"
       - "*.md"
       - ".gitignore"
-      - "pixi.toml"
-      - "pixi.lock"
       - ".vscode/**"
       - ".idea/**"
       - "data/**"
