@@ -648,6 +648,9 @@ async def handle_draft_callback(
                     await client.api.edit_forum_topic(
                         chat_id=int(draft_chat_id),
                         message_thread_id=int(draft_thread_id),
+                        # aiotdlib requires icon_custom_emoji_id even if we only rename.
+                        icon_custom_emoji_id=0,
+                        edit_icon_custom_emoji=False,
                         name=topic_title,
                     )
                 except Exception as e:

@@ -258,6 +258,12 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
         with mock.patch("app.bot.handlers.callbacks.drafts.SMTPClient", _FakeSMTPClient):
             await callback_handler(client, update)
 
+        self.assertEqual(len(client.api.edited_forum_topics), 1)
+        edit_call = client.api.edited_forum_topics[0]
+        self.assertEqual(edit_call["chat_id"], 123)
+        self.assertEqual(edit_call["message_thread_id"], 456)
+        self.assertIn("icon_custom_emoji_id", edit_call)
+
         conn = db._get_connection()
         cur = conn.cursor()
         cur.execute(
