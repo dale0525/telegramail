@@ -7,6 +7,9 @@ from aiotdlib.api import (
     InlineKeyboardButton,
     InlineKeyboardButtonTypeCallback,
     LinkPreviewOptions,
+    InputFileId,
+    InputFileRemote,
+    InputMessageDocument,
     InputMessageText,
     FormattedText,
     ReplyMarkupInlineKeyboard,
@@ -613,33 +616,6 @@ async def handle_draft_callback(
             except Exception as e:
                 logger.error(f"Failed to persist outgoing email row: {e}")
 
-            # Clean up draft UI messages (draft card + user typed body/commands) so the topic
-            # only keeps the final sent email presentation.
-            try:
-                tracked_ids = db.list_draft_message_ids(draft_id=draft_id)
-            except Exception:
-                tracked_ids = []
-            to_delete = {int(message_id)}
-            for mid in tracked_ids:
-                try:
-                    to_delete.add(int(mid))
-                except Exception:
-                    continue
-            delete_ids = sorted([mid for mid in to_delete if int(mid) > 0])
-            if delete_ids:
-                try:
-                    await client.api.delete_messages(
-                        chat_id=int(draft_chat_id),
-                        message_ids=delete_ids,
-                        revoke=True,
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to delete draft messages after send: {e}")
-            try:
-                db.clear_draft_messages(draft_id=draft_id)
-            except Exception:
-                pass
-
             # For compose drafts, turn the draft topic into a real email topic by renaming it.
             if str(draft_type) == "compose" and int(draft_thread_id or 0) > 0:
                 try:
@@ -658,7 +634,9 @@ async def handle_draft_callback(
                 except Exception as e:
                     logger.debug(f"Failed to rename compose topic after send: {e}")
 
-            # Post a clean "sent email" representation into the topic.
+            # Post a clean "sent email" representation into the topic,
+            # then re-post attachments under it (like incoming emails).
+            card_sent = False
             try:
                 subject_display = (subject or "").strip() or _("no_subject")
                 to_line = (to_addrs or "").strip()
@@ -722,8 +700,90 @@ async def handle_draft_callback(
                             text=FormattedText(text=plain_text, entities=[])
                         ),
                     )
+                card_sent = True
             except Exception as e:
                 logger.error(f"Failed to send sent-email card to topic: {e}")
+
+            attachments_sent = False
+            if card_sent:
+                attachments_sent = True
+                for att in (rows or [])[:40]:
+                    att_file_id = att.get("file_id")
+                    att_remote_id = att.get("remote_id")
+                    if not att_file_id and not att_remote_id:
+                        continue
+                    try:
+                        input_file = (
+                            InputFileId(id=int(att_file_id))
+                            if att_file_id
+                            else InputFileRemote(id=str(att_remote_id))
+                        )
+                        await client.api.send_message(
+                            chat_id=int(draft_chat_id),
+                            message_thread_id=int(draft_thread_id),
+                            input_message_content=InputMessageDocument(
+                                document=input_file,
+                                caption=FormattedText(text="", entities=[]),
+                            ),
+                        )
+                    except Exception as e:
+                        attachments_sent = False
+                        logger.error(f"Failed to send outgoing attachment to topic: {e}")
+                        break
+
+            # Clean up draft UI messages (draft card + user typed body/commands). We also
+            # delete the original attachment messages if we successfully re-posted them
+            # under the sent-email card.
+            tracked_text_ids: list[int] = []
+            tracked_attachment_ids: list[int] = []
+            try:
+                conn = db._get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT message_id, message_type
+                    FROM draft_messages
+                    WHERE draft_id = ?
+                    ORDER BY message_id ASC
+                    """,
+                    (int(draft_id),),
+                )
+                tracked_rows = cur.fetchall()
+                conn.close()
+            except Exception:
+                tracked_rows = []
+            for row in tracked_rows:
+                try:
+                    mid = int(row[0])
+                except Exception:
+                    continue
+                mtype = (str(row[1] or "").strip() or "").lower()
+                if not mtype or mtype == "text":
+                    tracked_text_ids.append(mid)
+                else:
+                    tracked_attachment_ids.append(mid)
+
+            to_delete = {int(message_id)}
+            for mid in tracked_text_ids:
+                to_delete.add(int(mid))
+            if attachments_sent:
+                for mid in tracked_attachment_ids:
+                    to_delete.add(int(mid))
+
+            delete_ids = sorted([mid for mid in to_delete if int(mid) > 0])
+            if delete_ids:
+                try:
+                    await client.api.delete_messages(
+                        chat_id=int(draft_chat_id),
+                        message_ids=delete_ids,
+                        revoke=True,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to delete draft messages after send: {e}")
+            try:
+                db.clear_draft_messages(draft_id=draft_id)
+            except Exception:
+                pass
         else:
             try:
                 await client.api.answer_callback_query(

@@ -44,11 +44,12 @@ class _FakeMessageDocument:
 
 
 class _FakeMessage:
-    def __init__(self, *, chat_id: int, thread_id: int, user_id: int, content):
+    def __init__(self, *, chat_id: int, thread_id: int, user_id: int, content, message_id: int = 0):
         self.chat_id = chat_id
         self.message_thread_id = thread_id
         self.sender_id = _FakeSenderId(user_id)
         self.content = content
+        self.id = int(message_id)
 
 
 class _FakeUpdate:
@@ -120,11 +121,13 @@ class TestDraftMessageAttachments(unittest.IsolatedAsyncioTestCase):
         db.update_draft(draft_id=draft_id, updates={"card_message_id": 99})
 
         client = _FakeClient()
+        attachment_message_id = 1234
         update = _FakeUpdate(
             _FakeMessage(
                 chat_id=123,
                 thread_id=456,
                 user_id=1,
+                message_id=attachment_message_id,
                 content=_FakeMessageDocument(
                     file_name="a.txt",
                     mime_type="text/plain",
@@ -147,6 +150,11 @@ class TestDraftMessageAttachments(unittest.IsolatedAsyncioTestCase):
         attachments = db.list_draft_attachments(draft_id=draft_id)
         self.assertEqual(len(attachments), 1)
         self.assertEqual(attachments[0]["file_name"], "a.txt")
+
+        # Regression: attachment messages must be tracked so they can be deleted
+        # when the draft is sent (keep the topic tidy).
+        tracked_message_ids = db.list_draft_message_ids(draft_id=draft_id)
+        self.assertIn(attachment_message_id, tracked_message_ids)
 
         self.assertTrue(client.edits)
         last_text = client.edits[-1].get("text") or ""

@@ -93,3 +93,64 @@ class TestEmailThreadingByHeaders(unittest.TestCase):
         self.assertEqual(account_id, 1)
         self.assertEqual(uids, ["42"])
 
+    def test_get_deletion_targets_for_topic_scopes_by_chat(self):
+        from app.database import DBManager
+
+        db = DBManager()
+        conn = db._get_connection()
+        cur = conn.cursor()
+
+        # Two accounts with different tg_group_id to verify scoping.
+        cur.execute(
+            """
+            INSERT INTO accounts
+              (id, email, password, imap_server, imap_port, imap_ssl,
+               smtp_server, smtp_port, smtp_ssl, alias, tg_group_id)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, "a@example.com", "pw", "imap", 993, 1, "smtp", 465, 1, "a", 777),
+        )
+        cur.execute(
+            """
+            INSERT INTO accounts
+              (id, email, password, imap_server, imap_port, imap_ssl,
+               smtp_server, smtp_port, smtp_ssl, alias, tg_group_id)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (2, "b@example.com", "pw", "imap", 993, 1, "smtp", 465, 1, "b", 888),
+        )
+
+        # Topic contains both an INBOX message and an outgoing synthetic row for account 1.
+        cur.execute(
+            """
+            INSERT INTO emails (email_account, message_id, subject, uid, telegram_thread_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (1, "<in1@example.com>", "Hello", "42", "123"),
+        )
+        cur.execute(
+            """
+            INSERT INTO emails (email_account, message_id, subject, uid, telegram_thread_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (1, "<m1@example.com>", "OUT", "outgoing:<m1@example.com>", "123"),
+        )
+
+        # Same thread_id for a different chat/account should not be returned for chat_id=777.
+        cur.execute(
+            """
+            INSERT INTO emails (email_account, message_id, subject, uid, telegram_thread_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (2, "<in2@example.com>", "Other", "99", "123"),
+        )
+
+        conn.commit()
+        conn.close()
+
+        targets = db.get_deletion_targets_for_topic(chat_id=777, thread_id="123")
+        self.assertEqual(set(targets.keys()), {1})
+        self.assertEqual(targets[1]["inbox_uids"], ["42"])
+        self.assertEqual(targets[1]["outgoing_message_ids"], ["<m1@example.com>"])

@@ -640,6 +640,89 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             logger.error(f"Error getting email uids by Telegram thread ID: {e}")
             raise
 
+    def get_deletion_targets_for_topic(
+        self, *, chat_id: int, thread_id: str
+    ) -> Dict[int, Dict[str, List[str]]]:
+        """
+        Resolve server-side deletion targets for a deleted Telegram topic.
+
+        We scope by chat_id to avoid collisions where different groups may reuse the
+        same numeric thread_id.
+
+        Returns:
+            Dict[int, Dict[str, List[str]]]: Mapping from account_id to:
+                - inbox_uids: numeric IMAP UIDs (INBOX)
+                - outgoing_message_ids: Message-ID values for synthetic outgoing rows
+        """
+        conn = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT id FROM accounts WHERE tg_group_id = ?",
+                (int(chat_id),),
+            )
+            account_ids = [int(r[0]) for r in cursor.fetchall() if r and r[0] is not None]
+            if not account_ids:
+                return {}
+
+            placeholders = ", ".join(["?"] * len(account_ids))
+            cursor.execute(
+                f"""
+                SELECT email_account, uid, message_id
+                FROM emails
+                WHERE telegram_thread_id = ? AND email_account IN ({placeholders})
+                """,
+                [str(thread_id), *account_ids],
+            )
+            rows = cursor.fetchall()
+
+            targets: Dict[int, Dict[str, List[str]]] = {}
+            for email_account, uid, message_id in rows:
+                try:
+                    account_id = int(email_account)
+                except Exception:
+                    continue
+
+                entry = targets.setdefault(
+                    account_id,
+                    {"inbox_uids": [], "outgoing_message_ids": []},
+                )
+
+                uid_str = str(uid).strip() if uid is not None else ""
+                message_id_str = str(message_id).strip() if message_id is not None else ""
+
+                if uid_str and uid_str.isdigit():
+                    if uid_str not in entry["inbox_uids"]:
+                        entry["inbox_uids"].append(uid_str)
+                    continue
+
+                outgoing_mid = message_id_str
+                if not outgoing_mid and uid_str.startswith("outgoing:"):
+                    outgoing_mid = uid_str[len("outgoing:") :].strip()
+
+                if outgoing_mid and outgoing_mid not in entry["outgoing_message_ids"]:
+                    entry["outgoing_message_ids"].append(outgoing_mid)
+
+            # Prune empty entries.
+            return {
+                aid: v
+                for aid, v in targets.items()
+                if v["inbox_uids"] or v["outgoing_message_ids"]
+            }
+        except Exception as e:
+            logger.error(
+                f"Error getting deletion targets for topic (chat_id={chat_id}, thread_id={thread_id}): {e}"
+            )
+            raise
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
     def find_thread_id_for_reply_headers(
         self,
         *,

@@ -130,8 +130,8 @@ async def check_deleted_topics_for_group(chat_id):
             thread_id = str(topic["thread_id"])
 
             try:
-                account_id, email_uids = (
-                    db_manager.get_email_uid_by_telegram_thread_id(thread_id)
+                targets_by_account = db_manager.get_deletion_targets_for_topic(
+                    chat_id=chat_id, thread_id=thread_id
                 )
             except Exception as db_err:
                 db_manager.record_deleted_topic_failure(
@@ -139,42 +139,89 @@ async def check_deleted_topics_for_group(chat_id):
                 )
                 continue
 
-            if not account_id or not email_uids:
+            if not targets_by_account:
                 # Nothing left to delete (already processed, or mapping missing). Mark processed to avoid retries.
                 db_manager.mark_deleted_topic_processed(chat_id, thread_id)
                 continue
 
-            logger.info(
-                f"Found {len(email_uids)} emails associated with topic {thread_id} for account {account_id}"
-            )
-
             account_manager = AccountManager()
-            account = account_manager.get_account(id=account_id)
-            if not account:
-                logger.warning(
-                    f"Account with ID {account_id} not found for topic {thread_id}; marking processed"
-                )
-                db_manager.mark_deleted_topic_processed(chat_id, thread_id)
-                continue
-
-            imap_client = IMAPClient(account)
             deleted_count_in_loop = 0
+            attempted_count_in_loop = 0
             all_ok = True
-            for email_uid in email_uids:
-                try:
-                    logger.info(
-                        f"Attempting to delete email with UID {email_uid} for topic {thread_id}"
+            for account_id, targets in targets_by_account.items():
+                inbox_uids = list((targets or {}).get("inbox_uids") or [])
+                outgoing_message_ids = list(
+                    (targets or {}).get("outgoing_message_ids") or []
+                )
+
+                account = account_manager.get_account(id=account_id)
+                if not account:
+                    logger.warning(
+                        f"Account with ID {account_id} not found for topic {thread_id}; cleaning local mapping"
                     )
-                    ok = imap_client.delete_email_by_uid(email_uid)
-                    if ok:
-                        deleted_count_in_loop += 1
-                    else:
+                    # We can't delete from provider without credentials; still remove local rows so we don't
+                    # keep retrying and accidentally thread future replies into a deleted topic.
+                    try:
+                        stub_account = {"id": int(account_id)}
+                        for email_uid in inbox_uids:
+                            db_manager.delete_email_by_uid(
+                                stub_account, str(email_uid).strip()
+                            )
+                        for mid in outgoing_message_ids:
+                            mid_norm = str(mid).strip()
+                            if not mid_norm:
+                                continue
+                            db_manager.delete_email_by_uid(
+                                stub_account, f"outgoing:{mid_norm}"
+                            )
+                    except Exception as cleanup_err:
+                        logger.debug(
+                            f"Failed to cleanup local mapping for missing account {account_id}: {cleanup_err}"
+                        )
                         all_ok = False
-                except Exception as delete_error:
-                    all_ok = False
-                    logger.error(
-                        f"Error deleting email UID {email_uid} for topic {thread_id}: {delete_error}"
-                    )
+                    continue
+
+                imap_client = IMAPClient(account)
+
+                for email_uid in inbox_uids:
+                    email_uid = str(email_uid).strip()
+                    if not email_uid:
+                        continue
+                    attempted_count_in_loop += 1
+                    try:
+                        logger.info(
+                            f"Attempting to delete INBOX email UID {email_uid} for topic {thread_id}"
+                        )
+                        ok = imap_client.delete_email_by_uid(email_uid)
+                        if ok:
+                            deleted_count_in_loop += 1
+                        else:
+                            all_ok = False
+                    except Exception as delete_error:
+                        all_ok = False
+                        logger.error(
+                            f"Error deleting email UID {email_uid} for topic {thread_id}: {delete_error}"
+                        )
+
+                for message_id in outgoing_message_ids:
+                    message_id = str(message_id).strip()
+                    if not message_id:
+                        continue
+                    attempted_count_in_loop += 1
+                    try:
+                        logger.info(
+                            f"Attempting to delete Sent email Message-ID {message_id} for topic {thread_id}"
+                        )
+                        ok = imap_client.delete_outgoing_email_by_message_id(message_id)
+                        if ok:
+                            deleted_count_in_loop += 1
+                        else:
+                            all_ok = False
+                    except Exception as delete_error:
+                        all_ok = False
+                        logger.error(
+                            f"Error deleting outgoing Message-ID {message_id} for topic {thread_id}: {delete_error}"
+                        )
 
             if all_ok:
                 db_manager.mark_deleted_topic_processed(chat_id, thread_id)
@@ -185,7 +232,7 @@ async def check_deleted_topics_for_group(chat_id):
 
             if deleted_count_in_loop > 0:
                 logger.info(
-                    f"Deleted {deleted_count_in_loop}/{len(email_uids)} emails for topic {thread_id}"
+                    f"Deleted {deleted_count_in_loop}/{attempted_count_in_loop} emails for topic {thread_id}"
                 )
 
             processed_count += 1

@@ -324,6 +324,21 @@ async def message_handler(client: Client, update: UpdateNewMessage):
         if not file_id or not file_name:
             return
 
+        # Track user attachment messages created while editing a draft so we can clean them up
+        # after the draft is sent (keep the topic tidy).
+        try:
+            msg_id = getattr(update.message, "id", None)
+            if msg_id:
+                db.record_draft_message(
+                    draft_id=int(draft["id"]),
+                    chat_id=int(chat_id),
+                    thread_id=int(thread_id),
+                    message_id=int(msg_id),
+                    message_type=(file_type or "").strip() or "attachment",
+                )
+        except Exception:
+            pass
+
         db.add_draft_attachment(
             draft_id=draft["id"],
             file_id=int(file_id),

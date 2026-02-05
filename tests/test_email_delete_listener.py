@@ -66,8 +66,8 @@ class _FakeDbManager:
         # Keep pending; just record would happen in real DB.
         self._pending.add((chat_id, thread_id))
 
-    def get_email_uid_by_telegram_thread_id(self, telegram_thread_id: str):
-        return 1, ["42"]
+    def get_deletion_targets_for_topic(self, chat_id: int, thread_id: str):
+        return {1: {"inbox_uids": ["42"], "outgoing_message_ids": ["<m1@example.com>"]}}
 
 
 class _FakeAccountManager:
@@ -111,6 +111,7 @@ class TestEmailDeleteListener(unittest.IsolatedAsyncioTestCase):
 
         imap_instance = mock.Mock()
         imap_instance.delete_email_by_uid.return_value = True
+        imap_instance.delete_outgoing_email_by_message_id.return_value = True
 
         with (
             mock.patch("app.user.user_client.UserClient", return_value=fake_user_client),
@@ -121,3 +122,6 @@ class TestEmailDeleteListener(unittest.IsolatedAsyncioTestCase):
             await listener.check_deleted_topics_for_group(chat_id=777)
 
         imap_instance.delete_email_by_uid.assert_called_once_with("42")
+        imap_instance.delete_outgoing_email_by_message_id.assert_called_once_with(
+            "<m1@example.com>"
+        )

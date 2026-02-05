@@ -18,11 +18,12 @@ class _FakeCallbackUpdate:
 
 
 class _FakeApi:
-    def __init__(self):
+    def __init__(self, *, file_path: str | None = None):
         self.deleted_forum_topics = []
         self.deleted_messages = []
         self.edited_forum_topics = []
         self.sent_messages = []
+        self.file_path = file_path
 
     async def answer_callback_query(self, callback_query_id: int, text: str, url: str, cache_time: int):
         return None
@@ -44,10 +45,20 @@ class _FakeApi:
         self.sent_messages.append(kwargs)
         return type("Msg", (), {"id": 999})
 
+    async def download_file(self, file_id: int, priority: int, offset: int, limit: int, synchronous: bool = False):
+        if not self.file_path:
+            raise RuntimeError("file_path not set for fake download_file")
+        local = type(
+            "_Local",
+            (),
+            {"path": self.file_path, "is_downloading_completed": True},
+        )()
+        return type("_File", (), {"id": file_id, "local": local, "size": 3, "expected_size": 3})()
+
 
 class _FakeClient:
-    def __init__(self):
-        self.api = _FakeApi()
+    def __init__(self, api: _FakeApi | None = None):
+        self.api = api or _FakeApi()
         self.edits = []
 
     async def edit_text(self, **kwargs):
@@ -490,3 +501,78 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
             client.api.deleted_messages,
             [{"chat_id": 123, "message_ids": [10, 11, 12], "revoke": True}],
         )
+
+    async def test_draft_send_posts_attachments_below_sent_card(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+
+        # Create a temp file to simulate downloaded telegram file for SMTP sending.
+        file_path = os.path.join(self._tmp.name, "a.txt")
+        with open(file_path, "wb") as f:
+            f.write(b"abc")
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={
+                "to_addrs": "to@example.com",
+                "subject": "Hello",
+                "body_markdown": "Hi",
+            },
+        )
+        db.add_draft_attachment(
+            draft_id=draft_id,
+            file_id=777,
+            remote_id="remote777",
+            file_type="document",
+            file_name="a.txt",
+            mime_type="text/plain",
+            size=3,
+        )
+
+        # Simulate the original attachment message in the draft topic (should be cleaned up).
+        db.record_draft_message(
+            draft_id=draft_id,
+            chat_id=123,
+            thread_id=456,
+            message_id=20,
+            message_type="document",
+        )
+
+        class _FakeSMTPClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def send_email_sync(self, **kwargs):
+                return True
+
+        client = _FakeClient(api=_FakeApi(file_path=file_path))
+        update = _FakeCallbackUpdate(
+            chat_id=123, user_id=1, message_id=10, data=f"draft:send:{draft_id}"
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.callbacks.drafts.SMTPClient", _FakeSMTPClient):
+            await callback_handler(client, update)
+
+        # First message is the sent-email card, followed by attachment messages.
+        self.assertEqual(len(client.api.sent_messages), 2)
+        first_content = client.api.sent_messages[0].get("input_message_content")
+        second_content = client.api.sent_messages[1].get("input_message_content")
+        self.assertEqual(getattr(first_content, "ID", None), "inputMessageText")
+        self.assertEqual(getattr(second_content, "ID", None), "inputMessageDocument")
+        self.assertEqual(client.api.sent_messages[1].get("message_thread_id"), 456)
+
+        # Original attachment message should be deleted after successful send.
+        deleted_ids = []
+        for call in client.api.deleted_messages:
+            deleted_ids.extend(call.get("message_ids") or [])
+        self.assertIn(20, deleted_ids)

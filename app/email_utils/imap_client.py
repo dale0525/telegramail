@@ -4,6 +4,7 @@ import re
 import json
 import sqlite3
 import imaplib
+import os
 from typing import Any  # Import imaplib for specific exceptions
 from app.utils import Logger
 from app.database import DBManager
@@ -528,6 +529,203 @@ class IMAPClient:
             return False
         except Exception as e:
             logger.error(f"Error deleting email with UID {uid}: {e}")
+            return False
+        finally:
+            self.disconnect()
+
+    def _resolve_sent_mailbox(self) -> str:
+        """
+        Best-effort sent mailbox resolution.
+
+        Priority:
+          1) TELEGRAMAIL_IMAP_SENT_MAILBOX env var
+          2) LIST special-use flag \\Sent (RFC 6154) if available
+          3) Common mailbox name heuristics
+          4) Fallback to 'Sent'
+        """
+        configured = (os.getenv("TELEGRAMAIL_IMAP_SENT_MAILBOX") or "").strip()
+        if configured:
+            return configured
+
+        if not self.conn:
+            return "Sent"
+
+        try:
+            status, data = self.conn.list()
+            if status != "OK" or not data:
+                return "Sent"
+
+            mailboxes: list[tuple[str, str]] = []
+            for raw in data:
+                if not raw:
+                    continue
+                try:
+                    line = raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+
+                attrs = ""
+                name = ""
+                m = re.match(
+                    r'^\((?P<attrs>[^)]*)\)\s+"(?P<delim>[^"]+)"\s+(?P<name>.+)$',
+                    line,
+                )
+                if not m:
+                    m = re.match(
+                        r"^\((?P<attrs>[^)]*)\)\s+(?P<delim>\\S+)\s+(?P<name>.+)$",
+                        line,
+                    )
+                if m:
+                    attrs = (m.group("attrs") or "").strip()
+                    name = (m.group("name") or "").strip()
+                else:
+                    name = line.strip()
+
+                # Strip surrounding quotes from mailbox name.
+                if name.startswith('"') and name.endswith('"') and len(name) >= 2:
+                    name = name[1:-1]
+
+                if name:
+                    mailboxes.append((attrs, name))
+
+            # 1) Special-use \\Sent
+            for attrs, name in mailboxes:
+                if re.search(r"\\Sent\\b", attrs):
+                    return name
+
+            # 2) Common names (case-insensitive exact match)
+            common_exact = [
+                "Sent",
+                "Sent Messages",
+                "Sent Mail",
+                "Sent Items",
+                "[Gmail]/Sent Mail",
+                "[Google Mail]/Sent Mail",
+            ]
+            for candidate in common_exact:
+                for _attrs, name in mailboxes:
+                    if name.lower() == candidate.lower():
+                        return name
+
+            # 3) Substring heuristics
+            for _attrs, name in mailboxes:
+                if "sent" in name.lower():
+                    return name
+        except Exception as e:
+            logger.debug(f"Failed to resolve sent mailbox via LIST: {e}")
+
+        return "Sent"
+
+    def delete_outgoing_email_by_message_id(self, message_id: str) -> bool:
+        """
+        Delete an outgoing (sent) email from the provider by Message-ID.
+
+        This is used when a Telegram topic is deleted: outgoing emails persisted locally
+        use synthetic UIDs (outgoing:<message-id>), so we locate the provider copy in the
+        Sent mailbox by Message-ID and delete it.
+        """
+        if not self.conn:
+            if not self.connect():
+                logger.error(f"Failed to connect to IMAP server for {self.email_addr}")
+                return False
+
+        normalized_mid = (message_id or "").strip()
+        if not normalized_mid:
+            return True
+
+        synthetic_uid = f"outgoing:{normalized_mid}"
+
+        try:
+            sent_box = self._resolve_sent_mailbox()
+            status, _ = self.conn.select(sent_box)
+            if status != "OK":
+                logger.error(f"Failed to select sent mailbox '{sent_box}' for {self.email_addr}")
+                return False
+
+            # Search by header in Sent; use UID SEARCH so results are UIDs.
+            search_status, search_data = self.conn.uid(
+                "SEARCH", None, "HEADER", "Message-ID", normalized_mid
+            )
+            if search_status != "OK":
+                logger.error(
+                    f"Failed to search Sent for Message-ID {normalized_mid}: {search_data}"
+                )
+                return False
+
+            found_uids_bytes = (search_data[0] or b"").strip()
+            if not found_uids_bytes:
+                logger.info(
+                    f"Outgoing Message-ID {normalized_mid} not found in '{sent_box}'; treating as already deleted"
+                )
+                db_result = self.db_manager.delete_email_by_uid(
+                    self.account_info, synthetic_uid
+                )
+                if not db_result:
+                    logger.warning(
+                        f"Could not remove outgoing email {synthetic_uid} from database"
+                    )
+                return True
+
+            try:
+                found_uids = found_uids_bytes.decode("utf-8", errors="ignore").split()
+            except Exception:
+                found_uids = [u for u in str(found_uids_bytes).split() if u]
+
+            all_ok = True
+            for uid in found_uids:
+                del_status, del_resp = self.conn.uid(
+                    "STORE", uid, "+FLAGS", r"(\Deleted)"
+                )
+                if del_status != "OK":
+                    logger.error(
+                        f"Failed to mark outgoing uid {uid} (Message-ID {normalized_mid}) deleted: {del_resp}"
+                    )
+                    all_ok = False
+                    continue
+
+                expunged = False
+                try:
+                    expunge_status, expunge_resp = self.conn.uid("EXPUNGE", uid)
+                    if expunge_status == "OK":
+                        expunged = True
+                    else:
+                        logger.warning(
+                            f"UID EXPUNGE failed for outgoing uid {uid}: {expunge_resp}"
+                        )
+                except Exception as uid_expunge_err:
+                    logger.debug(
+                        f"UID EXPUNGE not supported or failed for outgoing uid {uid}: {uid_expunge_err}"
+                    )
+
+                if not expunged:
+                    expunge_status, expunge_resp = self.conn.expunge()
+                    if expunge_status != "OK":
+                        logger.error(
+                            f"EXPUNGE failed after marking outgoing uid {uid} deleted: {expunge_resp}"
+                        )
+                        all_ok = False
+
+            if not all_ok:
+                return False
+
+            db_result = self.db_manager.delete_email_by_uid(self.account_info, synthetic_uid)
+            if not db_result:
+                logger.warning(
+                    f"Could not remove outgoing email {synthetic_uid} from database"
+                )
+            return True
+
+        except (
+            imaplib.IMAP4.abort,
+            imaplib.IMAP4.error,
+            ConnectionResetError,
+        ) as conn_err:
+            logger.error(
+                f"IMAP connection error while deleting outgoing Message-ID {normalized_mid}: {conn_err}"
+            )
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting outgoing Message-ID {normalized_mid}: {e}")
             return False
         finally:
             self.disconnect()
