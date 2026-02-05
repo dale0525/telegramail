@@ -322,12 +322,12 @@ class EmailTelegramSender:
                     inject_pos = head_match.end()
                     content = (
                         content[:inject_pos]
-                        + '\\n<meta charset="UTF-8">'
+                        + '<meta charset="UTF-8">'
                         + content[inject_pos:]
                     )
                 else:
                     # If no <head> tag, prepend to the whole content
-                    content = '<meta charset="UTF-8">\\n' + content
+                    content = '<meta charset="UTF-8">' + content
 
             with open(temp_path, "wb") as f:
                 f.write(content.encode("utf-8"))

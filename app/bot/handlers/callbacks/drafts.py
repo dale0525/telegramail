@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from aiotdlib import Client
@@ -18,6 +19,31 @@ from app.i18n import _
 from app.utils import Logger
 
 logger = Logger().get_logger(__name__)
+
+_DEFAULT_COMPOSE_DRAFT_DELETE_DELAY_SECONDS = 3.0
+
+
+def _get_compose_draft_delete_delay_seconds() -> float:
+    raw = os.getenv("TELEGRAMAIL_COMPOSE_DRAFT_DELETE_DELAY_SECONDS")
+    if raw is None or raw == "":
+        return _DEFAULT_COMPOSE_DRAFT_DELETE_DELAY_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except Exception:
+        return _DEFAULT_COMPOSE_DRAFT_DELETE_DELAY_SECONDS
+
+
+async def _delete_compose_draft_topic_after_delay(
+    *, client: Client, chat_id: int, thread_id: int, delay_seconds: float
+) -> None:
+    try:
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+        await client.api.delete_forum_topic(
+            chat_id=int(chat_id), message_thread_id=int(thread_id)
+        )
+    except Exception as e:
+        logger.error(f"Failed to delete compose draft topic {thread_id}: {e}")
 
 
 async def handle_draft_callback(
@@ -384,7 +410,7 @@ async def handle_draft_callback(
         conn.row_factory = None
         cur = conn.cursor()
         cur.execute(
-            "SELECT account_id, from_identity_email, to_addrs, cc_addrs, bcc_addrs, subject, body_markdown, in_reply_to, references_header, status FROM drafts WHERE id = ?",
+            "SELECT account_id, chat_id, thread_id, draft_type, from_identity_email, to_addrs, cc_addrs, bcc_addrs, subject, body_markdown, in_reply_to, references_header, status FROM drafts WHERE id = ?",
             (draft_id,),
         )
         row = cur.fetchone()
@@ -395,6 +421,9 @@ async def handle_draft_callback(
 
         (
             account_id,
+            draft_chat_id,
+            draft_thread_id,
+            draft_type,
             from_identity_email,
             to_addrs,
             cc_addrs,
@@ -553,6 +582,17 @@ async def handle_draft_callback(
                 )
             except Exception as e:
                 logger.error(f"Failed to edit message after draft sent: {e}")
+
+            if str(draft_type) == "compose" and int(draft_thread_id or 0) > 0:
+                delay_seconds = _get_compose_draft_delete_delay_seconds()
+                asyncio.create_task(
+                    _delete_compose_draft_topic_after_delay(
+                        client=client,
+                        chat_id=int(draft_chat_id),
+                        thread_id=int(draft_thread_id),
+                        delay_seconds=delay_seconds,
+                    )
+                )
         else:
             try:
                 await client.api.answer_callback_query(

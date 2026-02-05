@@ -69,7 +69,7 @@
     "draft_attachment_removed": "附件已移除",
     "draft_cancelled": "草稿已取消",
     "draft_choose_from": "选择发件人身份：",
-    "draft_help_commands": "用法：/from 发件人；/to 收件人；/cc 抄送；/bcc 密送；/subject 主题；/attachments 管理附件。正文直接发送消息（支持 Markdown）。",
+    "draft_help_commands": "用法：/from 发件人；/to 收件人；/cc 抄送；/bcc 密送；/subject 主题；/attachments 管理附件。多个收件人用英文逗号`,`分隔。正文直接发送消息（支持 Markdown）。",
     "draft_no_attachments": "暂无附件。",
     "draft_sent": "草稿已发送",
     "edit_account": "编辑账户",

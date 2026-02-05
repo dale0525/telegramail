@@ -237,7 +237,8 @@ TelegramMail uses Draft topics for composing, replying, and forwarding:
 3. **Edit inside Draft topic**
    - `/from`: open a From-identity selector (for alias scenarios)
    - `/from b@example.com`: set From identity directly
-   - `/to ...`, `/cc ...`, `/bcc ...`, `/subject ...`: set recipients / subject
+   - `/to ...`, `/cc ...`, `/bcc ...`: set recipients (multiple addresses are comma-separated, e.g. `/to a@example.com, b@example.com`; same for `/cc` and `/bcc`)
+   - `/subject ...`: set subject
    - Body: send normal text messages; they are appended to the email body (Markdown supported)
    - Attachments: send files/photos/audio in the Draft topic; they will be attached to the email; use `/attachments` to manage/remove attachments
 4. **Send**

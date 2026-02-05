@@ -202,6 +202,57 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
         # Draft should no longer be active
         self.assertIsNone(db.get_active_draft(chat_id=123, thread_id=456))
 
+    async def test_draft_send_deletes_compose_topic_after_success(self):
+        import asyncio
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+
+        os.environ["TELEGRAMAIL_COMPOSE_DRAFT_DELETE_DELAY_SECONDS"] = "0"
+        try:
+            db = DBManager()
+            draft_id = db.create_draft(
+                account_id=self.account["id"],
+                chat_id=123,
+                thread_id=456,
+                draft_type="compose",
+                from_identity_email="a@example.com",
+            )
+            db.update_draft(
+                draft_id=draft_id,
+                updates={
+                    "to_addrs": "to@example.com",
+                    "subject": "Hello",
+                    "body_markdown": "Hi",
+                },
+            )
+
+            class _FakeSMTPClient:
+                def __init__(self, **kwargs):
+                    pass
+
+                def send_email_sync(self, **kwargs):
+                    return True
+
+            client = _FakeClient()
+            update = _FakeCallbackUpdate(
+                chat_id=123, user_id=1, message_id=10, data=f"draft:send:{draft_id}"
+            )
+
+            from unittest import mock
+
+            with mock.patch("app.bot.handlers.callbacks.drafts.SMTPClient", _FakeSMTPClient):
+                await callback_handler(client, update)
+
+            # Allow any scheduled deletion task to run.
+            await asyncio.sleep(0)
+
+            self.assertEqual(
+                client.api.deleted_forum_topics,
+                [{"chat_id": 123, "message_thread_id": 456}],
+            )
+        finally:
+            os.environ.pop("TELEGRAMAIL_COMPOSE_DRAFT_DELETE_DELAY_SECONDS", None)
+
     async def test_draft_send_passes_reply_headers_when_present(self):
         from app.database import DBManager
         from app.bot.handlers.callback import callback_handler

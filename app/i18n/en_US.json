@@ -68,7 +68,7 @@
     "draft_attachment_removed": "Attachment removed",
     "draft_cancelled": "Draft cancelled",
     "draft_choose_from": "Choose From identity:",
-    "draft_help_commands": "Commands: /from /to /cc /bcc /subject /attachments. Send body as normal messages (Markdown supported).",
+    "draft_help_commands": "Commands: /from /to /cc /bcc /subject /attachments. Multiple recipients: comma-separated. Send body as normal messages (Markdown supported).",
     "draft_no_attachments": "No attachments.",
     "draft_sent": "Draft sent",
     "edit_account": "Edit Account",
