@@ -124,6 +124,7 @@ class AtomicEmailSender:
         attachments: List[AttachmentContent],
         email_id: int,
         account_id: int,
+        thread_id_hint: Optional[int] = None,
     ) -> bool:
         """
         Atomically send an email to a Telegram chat
@@ -149,10 +150,14 @@ class AtomicEmailSender:
             # 0. Parse/validate all message text BEFORE creating topic.
             prepared_messages = await self._prepare_formatted_messages(messages)
 
-            # 1. First check if a thread already exists
-            thread_id = await self.email_sender.get_thread_id_by_subject(
-                topic_title, account_id
-            )
+            # 1. Resolve thread id:
+            #    - prefer explicit hint (reply threading), then
+            #    - fall back to subject-based grouping.
+            thread_id = int(thread_id_hint) if thread_id_hint else None
+            if not thread_id:
+                thread_id = await self.email_sender.get_thread_id_by_subject(
+                    topic_title, account_id
+                )
 
             # 2. If no thread exists, create a new one AFTER content is prepared
             if not thread_id:
@@ -368,4 +373,3 @@ class AtomicEmailSender:
             plain = re.sub(r"<[^>]+>", "", plain)
             return html.unescape(plain).strip()
         return text
-

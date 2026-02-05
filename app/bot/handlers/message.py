@@ -61,6 +61,21 @@ async def message_handler(client: Client, update: UpdateNewMessage):
         text = (content.text.text or "").strip()
         if not text:
             return
+
+        # Track user text messages created while editing a draft so we can clean them up
+        # after the draft is sent (keep the topic tidy).
+        try:
+            msg_id = getattr(update.message, "id", None)
+            if msg_id:
+                db.record_draft_message(
+                    draft_id=int(draft["id"]),
+                    chat_id=int(chat_id),
+                    thread_id=int(thread_id),
+                    message_id=int(msg_id),
+                    message_type="text",
+                )
+        except Exception:
+            pass
         cmd, _mentioned_bot, args = parse_bot_command(text)
         cmd_arg = " ".join(args).strip() if args else ""
         updates = None

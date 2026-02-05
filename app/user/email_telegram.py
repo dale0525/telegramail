@@ -574,8 +574,9 @@ class EmailTelegramSender:
         messages = []
 
         # 1. Email title
+        subject = (email_data.get("subject") or "").strip() or _("no_subject")
         title_message = MessageContent(
-            text=f"*{email_data['subject']}*",
+            text=f"*📥 {subject}*",
             parse_mode="Markdown",
             send_notification=False,
         )
@@ -674,6 +675,7 @@ class EmailTelegramSender:
             clean_subject = re.sub(
                 r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
             )
+            clean_subject = clean_subject.strip() or _("no_subject")
             sanitized_subject = re.sub(r'[\\/*?:"<>|]', "_", clean_subject)[:50]
             html_filename = f"{sanitized_subject}.html"
 
@@ -774,6 +776,13 @@ class EmailTelegramSender:
                 r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
             )
 
+            # 2.1 Prefer threading by headers (In-Reply-To / References) if present.
+            thread_id_hint = self.db_manager.find_thread_id_for_reply_headers(
+                account_id=account_id,
+                in_reply_to=email_data.get("in_reply_to"),
+                references_header=email_data.get("references_header"),
+            )
+
             # 3. Prepare all content to be sent
             logger.info(f"Preparing email content for subject: {clean_subject}")
 
@@ -799,6 +808,7 @@ class EmailTelegramSender:
                 attachments=attachments,
                 email_id=email_data["id"],
                 account_id=account_id,
+                thread_id_hint=thread_id_hint,
             )
 
             if success:

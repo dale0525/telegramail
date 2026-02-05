@@ -1,11 +1,14 @@
 import asyncio
 import os
+from email.utils import formatdate, make_msgid
 
 from aiotdlib import Client
 from aiotdlib.api import (
     InlineKeyboardButton,
     InlineKeyboardButtonTypeCallback,
     LinkPreviewOptions,
+    InputMessageText,
+    FormattedText,
     ReplyMarkupInlineKeyboard,
     UpdateNewCallbackQuery,
 )
@@ -484,6 +487,15 @@ async def handle_draft_callback(
         if references_header and str(references_header).strip():
             refs = [p for p in str(references_header).split() if p]
 
+        # Generate a stable Message-ID for threading, so future incoming replies can
+        # be grouped into the same Telegram topic via In-Reply-To / References.
+        try:
+            domain = (from_identity_email or "").split("@", 1)[1].strip() or None
+        except Exception:
+            domain = None
+        outgoing_message_id = make_msgid(domain=domain) if domain else make_msgid()
+        outgoing_date = formatdate(localtime=True)
+
         attachments_payload = []
         try:
             rows = db.list_draft_attachments(draft_id=draft_id)
@@ -567,32 +579,151 @@ async def handle_draft_callback(
             reply_to=reply_to,
             in_reply_to=in_reply_to or None,
             references=refs,
+            message_id=outgoing_message_id,
+            date=outgoing_date,
             attachments=attachments_payload,
         )
 
         if ok:
             db.update_draft(draft_id=draft_id, updates={"status": "sent"})
+
+            # Persist an outgoing email row so we can thread future incoming replies
+            # back into this same topic (and show sent emails as their own history).
             try:
-                await client.edit_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=f"✅ {_('draft_sent')}",
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                    clear_draft=False,
+                sender_value = f"{from_name} <{from_identity_email}>"
+                db.upsert_outgoing_email(
+                    account_id=int(account_id),
+                    message_id=str(outgoing_message_id),
+                    telegram_thread_id=int(draft_thread_id),
+                    sender=sender_value,
+                    recipient=str(to_addrs or ""),
+                    cc=str(cc_addrs or ""),
+                    bcc=str(bcc_addrs or ""),
+                    subject=str(subject or ""),
+                    email_date=str(outgoing_date),
+                    body_text=str(body_markdown or ""),
+                    body_html=str(html_body or ""),
+                    in_reply_to=(str(in_reply_to).strip() if in_reply_to else None),
+                    references_header=(
+                        str(references_header).strip() if references_header else None
+                    ),
                 )
             except Exception as e:
-                logger.error(f"Failed to edit message after draft sent: {e}")
+                logger.error(f"Failed to persist outgoing email row: {e}")
 
-            if str(draft_type) == "compose" and int(draft_thread_id or 0) > 0:
-                delay_seconds = _get_compose_draft_delete_delay_seconds()
-                asyncio.create_task(
-                    _delete_compose_draft_topic_after_delay(
-                        client=client,
+            # Clean up draft UI messages (draft card + user typed body/commands) so the topic
+            # only keeps the final sent email presentation.
+            try:
+                tracked_ids = db.list_draft_message_ids(draft_id=draft_id)
+            except Exception:
+                tracked_ids = []
+            to_delete = {int(message_id)}
+            for mid in tracked_ids:
+                try:
+                    to_delete.add(int(mid))
+                except Exception:
+                    continue
+            delete_ids = sorted([mid for mid in to_delete if int(mid) > 0])
+            if delete_ids:
+                try:
+                    await client.api.delete_messages(
                         chat_id=int(draft_chat_id),
-                        thread_id=int(draft_thread_id),
-                        delay_seconds=delay_seconds,
+                        message_ids=delete_ids,
+                        revoke=True,
                     )
+                except Exception as e:
+                    logger.error(f"Failed to delete draft messages after send: {e}")
+            try:
+                db.clear_draft_messages(draft_id=draft_id)
+            except Exception:
+                pass
+
+            # For compose drafts, turn the draft topic into a real email topic by renaming it.
+            if str(draft_type) == "compose" and int(draft_thread_id or 0) > 0:
+                try:
+                    topic_title = (subject or "").strip() or _("no_subject")
+                    topic_title = " ".join(topic_title.split())
+                    if len(topic_title) > 128:
+                        topic_title = topic_title[:125] + "..."
+                    await client.api.edit_forum_topic(
+                        chat_id=int(draft_chat_id),
+                        message_thread_id=int(draft_thread_id),
+                        name=topic_title,
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to rename compose topic after send: {e}")
+
+            # Post a clean "sent email" representation into the topic.
+            try:
+                subject_display = (subject or "").strip() or _("no_subject")
+                await client.api.send_message(
+                    chat_id=int(draft_chat_id),
+                    message_thread_id=int(draft_thread_id),
+                    input_message_content=InputMessageText(
+                        text=FormattedText(text=f"📤 {subject_display}", entities=[])
+                    ),
                 )
+                await client.api.send_message(
+                    chat_id=int(draft_chat_id),
+                    message_thread_id=int(draft_thread_id),
+                    input_message_content=InputMessageText(
+                        text=FormattedText(
+                            text=f"✍️ {_('email_from')}: {from_name} <{from_identity_email}>",
+                            entities=[],
+                        )
+                    ),
+                )
+
+                to_line = (to_addrs or "").strip()
+                if to_line:
+                    await client.api.send_message(
+                        chat_id=int(draft_chat_id),
+                        message_thread_id=int(draft_thread_id),
+                        input_message_content=InputMessageText(
+                            text=FormattedText(
+                                text=f"📮 {_('email_to')}: {to_line}", entities=[]
+                            )
+                        ),
+                    )
+
+                cc_line = (cc_addrs or "").strip()
+                if cc_line:
+                    await client.api.send_message(
+                        chat_id=int(draft_chat_id),
+                        message_thread_id=int(draft_thread_id),
+                        input_message_content=InputMessageText(
+                            text=FormattedText(
+                                text=f"👥 {_('email_cc')}: {cc_line}", entities=[]
+                            )
+                        ),
+                    )
+
+                bcc_line = (bcc_addrs or "").strip()
+                if bcc_line:
+                    await client.api.send_message(
+                        chat_id=int(draft_chat_id),
+                        message_thread_id=int(draft_thread_id),
+                        input_message_content=InputMessageText(
+                            text=FormattedText(
+                                text=f"🔒 {_('email_bcc')}: {bcc_line}", entities=[]
+                            )
+                        ),
+                    )
+
+                body = (body_markdown or "").strip()
+                if body:
+                    max_length = 4000
+                    if len(body) > max_length:
+                        body = body[:max_length] + f"...\n\n{_('content_truncated')}"
+                    await client.api.send_message(
+                        chat_id=int(draft_chat_id),
+                        message_thread_id=int(draft_thread_id),
+                        input_message_content=InputMessageText(
+                            text=FormattedText(text=body, entities=[])
+                        ),
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send sent-email card to topic: {e}")
         else:
             try:
                 await client.api.answer_callback_query(

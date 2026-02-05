@@ -20,6 +20,9 @@ class _FakeCallbackUpdate:
 class _FakeApi:
     def __init__(self):
         self.deleted_forum_topics = []
+        self.deleted_messages = []
+        self.edited_forum_topics = []
+        self.sent_messages = []
 
     async def answer_callback_query(self, callback_query_id: int, text: str, url: str, cache_time: int):
         return None
@@ -28,6 +31,18 @@ class _FakeApi:
         self.deleted_forum_topics.append(
             {"chat_id": int(chat_id), "message_thread_id": int(message_thread_id)}
         )
+
+    async def delete_messages(self, *, chat_id: int, message_ids: list[int], revoke: bool):
+        self.deleted_messages.append(
+            {"chat_id": int(chat_id), "message_ids": list(message_ids), "revoke": bool(revoke)}
+        )
+
+    async def edit_forum_topic(self, **kwargs):
+        self.edited_forum_topics.append(kwargs)
+
+    async def send_message(self, **kwargs):
+        self.sent_messages.append(kwargs)
+        return type("Msg", (), {"id": 999})
 
 
 class _FakeClient:
@@ -192,6 +207,9 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
             await callback_handler(client, update)
 
         self.assertIn("send", called)
+        self.assertIn("message_id", called["send"])
+        self.assertTrue(str(called["send"]["message_id"]).startswith("<"))
+        self.assertTrue(str(called["send"]["message_id"]).endswith(">"))
         self.assertEqual(called["send"]["from_email"], "a@example.com")
         self.assertEqual(called["send"]["to_addrs"], ["to@example.com"])
         self.assertEqual(called["send"]["subject"], "Hello")
@@ -201,6 +219,66 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
 
         # Draft should no longer be active
         self.assertIsNone(db.get_active_draft(chat_id=123, thread_id=456))
+
+    async def test_draft_send_persists_outgoing_email_record(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={
+                "to_addrs": "to@example.com",
+                "subject": "Hello",
+                "body_markdown": "Hi",
+            },
+        )
+
+        class _FakeSMTPClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def send_email_sync(self, **kwargs):
+                return True
+
+        client = _FakeClient()
+        update = _FakeCallbackUpdate(
+            chat_id=123, user_id=1, message_id=10, data=f"draft:send:{draft_id}"
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.callbacks.drafts.SMTPClient", _FakeSMTPClient):
+            await callback_handler(client, update)
+
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT message_id, uid, telegram_thread_id, subject
+            FROM emails
+            WHERE email_account = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (self.account["id"],),
+        )
+        row = cur.fetchone()
+        conn.close()
+
+        self.assertIsNotNone(row)
+        msg_id, uid, thread_id, subject = row
+        self.assertTrue(str(msg_id).startswith("<") and str(msg_id).endswith(">"))
+        self.assertTrue(str(uid).startswith("outgoing:"))
+        self.assertEqual(str(thread_id), "456")
+        self.assertEqual(subject, "Hello")
 
     async def test_draft_send_deletes_compose_topic_after_success(self):
         import asyncio
@@ -246,10 +324,7 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
             # Allow any scheduled deletion task to run.
             await asyncio.sleep(0)
 
-            self.assertEqual(
-                client.api.deleted_forum_topics,
-                [{"chat_id": 123, "message_thread_id": 456}],
-            )
+            self.assertEqual(client.api.deleted_forum_topics, [])
         finally:
             os.environ.pop("TELEGRAMAIL_COMPOSE_DRAFT_DELETE_DELAY_SECONDS", None)
 
@@ -350,3 +425,62 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
             await callback_handler(client, update)
 
         self.assertEqual(called["send"]["from_name"], "Primary Identity")
+
+    async def test_draft_send_deletes_card_and_tracked_messages(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="reply",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={
+                "to_addrs": "to@example.com",
+                "subject": "Re: Hello",
+                "body_markdown": "Hi",
+            },
+        )
+
+        # Simulate user typing 2 body messages that should be cleaned up after send.
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.executemany(
+            """
+            INSERT INTO draft_messages (draft_id, chat_id, thread_id, message_id, message_type, created_at)
+            VALUES (?, ?, ?, ?, ?, strftime('%s','now'))
+            """,
+            [
+                (draft_id, 123, 456, 11, "text"),
+                (draft_id, 123, 456, 12, "text"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        class _FakeSMTPClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def send_email_sync(self, **kwargs):
+                return True
+
+        client = _FakeClient()
+        update = _FakeCallbackUpdate(
+            chat_id=123, user_id=1, message_id=10, data=f"draft:send:{draft_id}"
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.callbacks.drafts.SMTPClient", _FakeSMTPClient):
+            await callback_handler(client, update)
+
+        self.assertEqual(
+            client.api.deleted_messages,
+            [{"chat_id": 123, "message_ids": [10, 11, 12], "revoke": True}],
+        )

@@ -4,7 +4,7 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import formataddr
+from email.utils import formataddr, formatdate, make_msgid
 from typing import Iterable, Optional, Any
 
 from app.utils import Logger
@@ -44,6 +44,8 @@ def build_email_message(
     reply_to: Optional[str] = None,
     in_reply_to: Optional[str] = None,
     references: Optional[list[str]] = None,
+    message_id: Optional[str] = None,
+    date: Optional[str] = None,
     attachments: Optional[list[dict[str, Any]]] = None,
 ) -> MIMEMultipart:
     attachments = attachments or []
@@ -56,6 +58,8 @@ def build_email_message(
     msg["Subject"] = subject
     msg["From"] = formataddr(((from_name or "").strip(), from_email))
     msg["To"] = ", ".join(_normalize_addrs(to_addrs))
+    msg["Date"] = date or formatdate(localtime=True)
+    msg["Message-ID"] = message_id or make_msgid()
 
     cc = _normalize_addrs(cc_addrs)
     if cc:
@@ -146,6 +150,8 @@ class SMTPClient:
         reply_to: Optional[str] = None,
         in_reply_to: Optional[str] = None,
         references: Optional[list[str]] = None,
+        message_id: Optional[str] = None,
+        date: Optional[str] = None,
         attachments: Optional[list[dict[str, Any]]] = None,
     ) -> bool:
         to_list = _normalize_addrs(to_addrs)
@@ -167,6 +173,8 @@ class SMTPClient:
                 reply_to=reply_to,
                 in_reply_to=in_reply_to,
                 references=references,
+                message_id=message_id,
+                date=date,
                 attachments=attachments,
             )
             self._send_via_smtp(from_email=from_email, recipients=rcpt, message=msg)

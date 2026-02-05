@@ -193,6 +193,8 @@ class IMAPClient:
 
                     # Get email details
                     message_id = msg.get("Message-ID", "")
+                    in_reply_to = msg.get("In-Reply-To", "")
+                    references_header = msg.get("References", "")
                     sender = decode_email_address(msg.get("From", ""))
                     recipient = decode_email_address(msg.get("To", ""))
                     cc = decode_email_address(msg.get("Cc", ""))
@@ -208,6 +210,8 @@ class IMAPClient:
                     email_data = {
                         "email_account": self.account_info["id"],
                         "message_id": message_id,
+                        "in_reply_to": in_reply_to,
+                        "references_header": references_header,
                         "sender": sender,
                         "recipient": recipient,
                         "cc": cc,
@@ -291,6 +295,8 @@ class IMAPClient:
                         "id": email_db_id,
                         "email_account": email_data["email_account"],
                         "message_id": email_data["message_id"],
+                        "in_reply_to": email_data.get("in_reply_to"),
+                        "references_header": email_data.get("references_header"),
                         "sender": email_data["sender"],
                         "recipient": email_data["recipient"],
                         "cc": email_data["cc"],
@@ -401,8 +407,8 @@ class IMAPClient:
                 """
                 INSERT OR IGNORE INTO emails
                 (email_account, message_id, sender, recipient, cc, bcc, subject, email_date,
-                 body_text, body_html, uid, delivered_to)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 body_text, body_html, uid, delivered_to, in_reply_to, references_header)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     email_data["email_account"],
@@ -417,6 +423,8 @@ class IMAPClient:
                     email_data["body_html"],
                     email_data["uid"],
                     email_data.get("delivered_to"),
+                    email_data.get("in_reply_to"),
+                    email_data.get("references_header"),
                 ),
             )
 
