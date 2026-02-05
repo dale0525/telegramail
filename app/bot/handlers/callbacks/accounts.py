@@ -509,7 +509,7 @@ async def handle_accounts_callback(
             )
             return True
 
-        effective, _ = _resolve_effective_mailboxes(account)
+        effective, _source = _resolve_effective_mailboxes(account)
         eff_lower = {str(x).strip().lower() for x in (effective or []) if str(x).strip()}
         selected: set[int] = {
             idx for idx, name in enumerate(mailboxes) if name.strip().lower() in eff_lower
