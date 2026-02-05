@@ -30,7 +30,16 @@ class _FakeUpdate:
 
 class _FakeClient:
     def __init__(self):
+        class _Api:
+            def __init__(self, outer):
+                self._outer = outer
+
+            async def send_message(self, **kwargs):
+                self._outer.sent_messages.append(kwargs)
+
         self.edits = []
+        self.sent_messages = []
+        self.api = _Api(self)
 
     async def edit_text(self, **kwargs):
         self.edits.append(kwargs)
@@ -120,3 +129,43 @@ class TestDraftFromSwitch(unittest.IsolatedAsyncioTestCase):
         last_text = client.edits[-1].get("text") or ""
         self.assertIn("From: b@example.com", last_text)
 
+    async def test_message_handler_from_with_bot_mention_opens_selector(self):
+        from app.database import DBManager
+
+        db = DBManager()
+        db.upsert_account_identity(
+            account_id=self.account["id"],
+            from_email="a@example.com",
+            display_name="Work",
+            is_default=True,
+        )
+
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(draft_id=draft_id, updates={"card_message_id": 99})
+
+        client = _FakeClient()
+        update = _FakeUpdate(
+            _FakeMessage(chat_id=123, thread_id=456, user_id=1, text="/from@LogicEmailBot")
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.message.validate_admin", lambda _u: True), mock.patch(
+            "app.bot.handlers.message.Conversation.get_instance", lambda *_args, **_kwargs: None
+        ):
+            from app.bot.handlers.message import message_handler
+
+            await message_handler(client, update)
+
+        self.assertTrue(client.sent_messages)
+        self.assertFalse(client.edits)
+
+        draft = db.get_active_draft(chat_id=123, thread_id=456)
+        self.assertIsNotNone(draft)
+        self.assertEqual((draft.get("body_markdown") or "").strip(), "")

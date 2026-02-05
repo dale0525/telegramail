@@ -4,6 +4,7 @@ from aiotdlib import Client
 from aiotdlib.api import UpdateNewMessage
 from app.bot.conversation import Conversation
 from app.bot.handlers.access import validate_admin
+from app.bot.handlers.command_filters import parse_bot_command
 from app.utils import Logger
 from app.database import DBManager
 from app.i18n import _
@@ -60,17 +61,12 @@ async def message_handler(client: Client, update: UpdateNewMessage):
         text = (content.text.text or "").strip()
         if not text:
             return
-
-        def _is_cmd(prefix: str) -> bool:
-            return text.lower().startswith(prefix)
-
-        def _cmd_arg(prefix: str) -> str:
-            return text[len(prefix) :].strip()
-
+        cmd, _mentioned_bot, args = parse_bot_command(text)
+        cmd_arg = " ".join(args).strip() if args else ""
         updates = None
 
         # Manage attachments
-        if text.lower() in {"/attachments", "/attach"}:
+        if cmd in {"attachments", "attach"} and not args:
             attachments = db.list_draft_attachments(draft_id=draft["id"])
             if not attachments:
                 try:
@@ -125,7 +121,7 @@ async def message_handler(client: Client, update: UpdateNewMessage):
             return
 
         # Choose from identity
-        if text.lower() == "/from":
+        if cmd == "from" and not args:
             identities = db.list_account_identities(account_id=draft["account_id"])
             rows = []
             for identity in identities:
@@ -162,14 +158,14 @@ async def message_handler(client: Client, update: UpdateNewMessage):
                     logger.error(f"Failed to send from-identity selector: {e}")
             return
 
-        if _is_cmd("/to "):
-            updates = {"to_addrs": _cmd_arg("/to ")}
-        elif _is_cmd("/cc "):
-            updates = {"cc_addrs": _cmd_arg("/cc ")}
-        elif _is_cmd("/bcc "):
-            updates = {"bcc_addrs": _cmd_arg("/bcc ")}
-        elif _is_cmd("/from "):
-            requested = _cmd_arg("/from ").strip()
+        if cmd == "to" and args:
+            updates = {"to_addrs": cmd_arg}
+        elif cmd == "cc" and args:
+            updates = {"cc_addrs": cmd_arg}
+        elif cmd == "bcc" and args:
+            updates = {"bcc_addrs": cmd_arg}
+        elif cmd == "from" and args:
+            requested = cmd_arg.strip()
             identities = db.list_account_identities(account_id=draft["account_id"])
             match = None
             for identity in identities:
@@ -179,8 +175,8 @@ async def message_handler(client: Client, update: UpdateNewMessage):
                     break
             if match:
                 updates = {"from_identity_email": match["from_email"]}
-        elif _is_cmd("/subject "):
-            updates = {"subject": _cmd_arg("/subject ")}
+        elif cmd == "subject" and args:
+            updates = {"subject": cmd_arg}
 
         if updates is not None:
             db.update_draft(draft_id=draft["id"], updates=updates)

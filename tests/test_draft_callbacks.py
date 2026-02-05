@@ -18,8 +18,16 @@ class _FakeCallbackUpdate:
 
 
 class _FakeApi:
+    def __init__(self):
+        self.deleted_forum_topics = []
+
     async def answer_callback_query(self, callback_query_id: int, text: str, url: str, cache_time: int):
         return None
+
+    async def delete_forum_topic(self, *, chat_id: int, message_thread_id: int):
+        self.deleted_forum_topics.append(
+            {"chat_id": int(chat_id), "message_thread_id": int(message_thread_id)}
+        )
 
 
 class _FakeClient:
@@ -93,6 +101,53 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
         await callback_handler(client, update)
 
         self.assertIsNone(db.get_active_draft(chat_id=123, thread_id=456))
+
+    async def test_draft_cancel_deletes_compose_topic(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+
+        client = _FakeClient()
+        update = _FakeCallbackUpdate(
+            chat_id=123, user_id=1, message_id=10, data=f"draft:cancel:{draft_id}"
+        )
+
+        await callback_handler(client, update)
+
+        self.assertEqual(
+            client.api.deleted_forum_topics,
+            [{"chat_id": 123, "message_thread_id": 456}],
+        )
+
+    async def test_draft_cancel_does_not_delete_topic_for_reply_draft(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="reply",
+            from_identity_email="a@example.com",
+        )
+
+        client = _FakeClient()
+        update = _FakeCallbackUpdate(
+            chat_id=123, user_id=1, message_id=10, data=f"draft:cancel:{draft_id}"
+        )
+
+        await callback_handler(client, update)
+
+        self.assertEqual(client.api.deleted_forum_topics, [])
 
     async def test_draft_send_marks_sent_and_calls_smtp(self):
         from app.database import DBManager

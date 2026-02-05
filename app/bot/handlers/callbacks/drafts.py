@@ -39,7 +39,26 @@ async def handle_draft_callback(
             return True
 
         db = DBManager()
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT chat_id, thread_id, draft_type FROM drafts WHERE id = ?", (draft_id,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            logger.warning(f"Draft not found for cancel: {draft_id}")
+            return True
+
+        draft_chat_id, draft_thread_id, draft_type = row
         db.update_draft(draft_id=draft_id, updates={"status": "cancelled"})
+
+        if str(draft_type) == "compose" and int(draft_thread_id or 0) > 0:
+            try:
+                await client.api.delete_forum_topic(
+                    chat_id=int(draft_chat_id), message_thread_id=int(draft_thread_id)
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Failed to delete compose draft topic {draft_thread_id}: {e}")
 
         try:
             await client.edit_text(
@@ -545,4 +564,3 @@ async def handle_draft_callback(
         return True
 
     return False
-
