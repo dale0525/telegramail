@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     smtp_ssl INTEGER NOT NULL,
     alias TEXT NOT NULL,
     tg_group_id INTEGER,
-    imap_monitored_mailboxes TEXT
+    imap_monitored_mailboxes TEXT,
+    signature TEXT
 );
 CREATE TABLE IF NOT EXISTS emails (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +175,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             cursor.execute(
                 "ALTER TABLE accounts ADD COLUMN imap_monitored_mailboxes TEXT"
             )
+        if "signature" not in account_columns: cursor.execute("ALTER TABLE accounts ADD COLUMN signature TEXT")
 
         # Lightweight migrations (SQLite doesn't support ADD COLUMN IF NOT EXISTS).
         cursor.execute("PRAGMA table_info(emails)")
@@ -461,7 +463,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO accounts (email, password, imap_server, imap_port, imap_ssl, smtp_server, smtp_port, smtp_ssl, alias, tg_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO accounts (email, password, imap_server, imap_port, imap_ssl, smtp_server, smtp_port, smtp_ssl, alias, tg_group_id, signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     account["email"],
                     account["password"],
@@ -473,6 +475,7 @@ CREATE TABLE IF NOT EXISTS draft_messages (
                     account["smtp_ssl"],
                     account["alias"],
                     account.get("tg_group_id"),
+                    account.get("signature"),
                 ),
             )
             conn.commit()

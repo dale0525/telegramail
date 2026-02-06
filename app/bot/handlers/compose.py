@@ -14,6 +14,12 @@ from aiotdlib.api import (
 from app.bot.handlers.access import validate_admin
 from app.database import DBManager
 from app.email_utils.account_manager import AccountManager
+from app.email_utils.signatures import (
+    format_signature_choice_label,
+    get_account_last_signature_choice,
+    normalize_signature_choice,
+    set_draft_signature_choice,
+)
 from app.i18n import _
 from app.utils import Logger
 
@@ -68,6 +74,15 @@ async def compose_command_handler(client: Client, update: UpdateNewMessage) -> N
         draft_type="compose",
         from_identity_email=from_email,
     )
+    signature_choice = normalize_signature_choice(
+        account.get("signature"),
+        get_account_last_signature_choice(account_id=int(account["id"])),
+    )
+    set_draft_signature_choice(draft_id=int(draft_id), choice=signature_choice)
+    signature_label = format_signature_choice_label(
+        account.get("signature"),
+        signature_choice,
+    )
 
     card_text = (
         f"📝 {_('draft')}\n\n"
@@ -76,6 +91,7 @@ async def compose_command_handler(client: Client, update: UpdateNewMessage) -> N
         f"Cc: \n"
         f"Bcc: \n"
         f"Subject: \n\n"
+        f"{_('draft_signature')}: {signature_label}\n\n"
         f"{_('draft_help_commands')}"
     )
     keyboard = [
@@ -113,4 +129,3 @@ async def compose_command_handler(client: Client, update: UpdateNewMessage) -> N
         )
     except Exception as e:
         logger.debug(f"Failed to pin draft card message: {e}")
-

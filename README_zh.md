@@ -26,7 +26,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 - [x] 转发邮件
 - [x] 接收 INBOX 之外的邮件
 - [ ] 获取所有邮件
-- [ ] 为每个邮箱设置签名
+- [x] 为每个邮箱设置签名
 - [x] 邮件信息中显示邮箱所在文件夹
 - [x] 使用 LLM 总结邮件
 - [x] 使用 LLM 判断邮件标签
@@ -214,6 +214,7 @@ TelegramMail 会定期检查 INBOX（默认）中的未读邮件，并将新邮�
 
 如果要监听额外的 IMAP 文件夹，可以设置 `TELEGRAMAIL_IMAP_MONITORED_MAILBOXES`（逗号分隔），例如：`INBOX,Archive,Spam`。
 你也可以通过 `/accounts` → 选择账户 → **IMAP 文件夹** 来为单个账户配置覆盖（支持“探测文件夹”+ 点击选择）。
+你也可以通过 `/accounts` → 选择账户 → **签名** 来为单个账户设置多个发信签名（签名内容使用 Markdown，发送时自动渲染为 HTML）。
 
 ### 手动获取邮件
 #### 手动获取所有邮件
@@ -239,10 +240,14 @@ TelegramMail 使用 Draft 话题来完成撰写、回复和转发：
    - `/from b@example.com`：直接切换到指定发件人身份
    - `/to ...`、`/cc ...`、`/bcc ...`：设置收件人（多个地址用英文逗号`,`分隔，例如：`/to a@example.com, b@example.com`；`/cc`、`/bcc` 同理）
    - `/subject ...`：设置主题
+   - `/signature`：弹出签名选择（可选某个签名、默认签名或不使用签名）
+   - `/signature none`：本次发送不使用签名；`/signature default`：使用默认签名
    - 正文：直接发送普通文本消息，会追加到邮件正文（支持 Markdown）
    - 附件：直接在 Draft Topic 里发送文件/图片/音频等，会作为邮件附件；用 `/attachments` 管理/移除附件
 4. **发送**
    - 点击 Draft 卡片上的 Send 按钮发送邮件；Cancel 会取消草稿
+   - 若本草稿未显式指定签名，默认使用账户默认签名；也可在草稿中切换为其他签名或不使用签名
+   - 签名选择会持久化：系统会记住该邮箱“上次成功发送时使用的签名策略”（具体签名 / 默认签名 / 不使用签名），下次新建草稿会自动沿用
 
 #### From 身份（alias）说明
 

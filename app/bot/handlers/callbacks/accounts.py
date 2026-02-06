@@ -15,6 +15,9 @@ from app.bot.handlers.accounts import (
     edit_account_conversation_starter,
     manual_fetch_email_handler,
 )
+from app.bot.handlers.callbacks.account_signature import (
+    handle_account_signature_callback,
+)
 from app.bot.utils import answer_callback
 from app.email_utils.account_manager import AccountManager
 from app.email_utils.imap_client import IMAPClient
@@ -294,6 +297,15 @@ async def handle_accounts_callback(
         await add_account_handler(client=client, update=update)
         return True
 
+    handled_signature = await handle_account_signature_callback(
+        client=client,
+        update=update,
+        data=data,
+        account_manager=account_manager,
+    )
+    if handled_signature:
+        return True
+
     if data.startswith("manage_account:"):
         account_id = data.split(":", 1)[1]
         account = account_manager.get_account(id=account_id)
@@ -320,6 +332,14 @@ async def handle_accounts_callback(
                     text=f"📁 {_('manage_imap_folders')}",
                     type=InlineKeyboardButtonTypeCallback(
                         data=f"account_mailboxes:{account_id}".encode("utf-8")
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"✍️ {_('manage_signature')}",
+                    type=InlineKeyboardButtonTypeCallback(
+                        data=f"account_signature:{account_id}".encode("utf-8")
                     ),
                 ),
             ],

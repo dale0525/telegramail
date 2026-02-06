@@ -443,6 +443,222 @@ class TestDraftCallbacks(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(called["send"]["from_name"], "Primary Identity")
 
+    async def test_draft_send_appends_account_signature(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+
+        self.account_mgr.update_account(
+            id=self.account["id"],
+            updates={"signature": "Best regards,\nWork Team"},
+        )
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={
+                "to_addrs": "to@example.com",
+                "subject": "Hello",
+                "body_markdown": "Hi",
+            },
+        )
+
+        called = {}
+
+        class _FakeSMTPClient:
+            def __init__(self, **kwargs):
+                called["init"] = kwargs
+
+            def send_email_sync(self, **kwargs):
+                called["send"] = kwargs
+                return True
+
+        client = _FakeClient()
+        update = _FakeCallbackUpdate(
+            chat_id=123, user_id=1, message_id=10, data=f"draft:send:{draft_id}"
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.callbacks.drafts.SMTPClient", _FakeSMTPClient):
+            await callback_handler(client, update)
+
+        self.assertEqual(
+            called["send"]["text_body"],
+            "Hi\n\n-- \nBest regards,\nWork Team",
+        )
+        self.assertIn("Best regards,", called["send"]["html_body"])
+
+    async def test_draft_send_uses_selected_signature(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+        from app.email_utils.signatures import (
+            add_account_signature,
+            get_account_last_signature_choice,
+            set_draft_signature_choice,
+        )
+
+        raw = None
+        raw, _default_id = add_account_signature(
+            raw,
+            name="Default",
+            markdown="Default signature",
+        )
+        raw, alt_id = add_account_signature(
+            raw,
+            name="Alt",
+            markdown="Alt signature",
+        )
+        self.account_mgr.update_account(
+            id=self.account["id"],
+            updates={"signature": raw},
+        )
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={
+                "to_addrs": "to@example.com",
+                "subject": "Hello",
+                "body_markdown": "Hi",
+            },
+        )
+        set_draft_signature_choice(draft_id=int(draft_id), choice=alt_id)
+
+        called = {}
+
+        class _FakeSMTPClient:
+            def __init__(self, **kwargs):
+                called["init"] = kwargs
+
+            def send_email_sync(self, **kwargs):
+                called["send"] = kwargs
+                return True
+
+        client = _FakeClient()
+        update = _FakeCallbackUpdate(
+            chat_id=123, user_id=1, message_id=10, data=f"draft:send:{draft_id}"
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.callbacks.drafts.SMTPClient", _FakeSMTPClient):
+            await callback_handler(client, update)
+
+        self.assertIn("Alt signature", called["send"]["text_body"])
+        self.assertNotIn("Default signature", called["send"]["text_body"])
+        self.assertEqual(
+            get_account_last_signature_choice(account_id=int(self.account["id"])),
+            alt_id,
+        )
+
+    async def test_draft_send_can_disable_signature(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+        from app.email_utils.signatures import CHOICE_NONE, set_draft_signature_choice
+
+        self.account_mgr.update_account(
+            id=self.account["id"],
+            updates={"signature": "Best regards,\nTeam"},
+        )
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={
+                "to_addrs": "to@example.com",
+                "subject": "Hello",
+                "body_markdown": "Hi",
+            },
+        )
+        set_draft_signature_choice(draft_id=int(draft_id), choice=CHOICE_NONE)
+
+        called = {}
+
+        class _FakeSMTPClient:
+            def __init__(self, **kwargs):
+                called["init"] = kwargs
+
+            def send_email_sync(self, **kwargs):
+                called["send"] = kwargs
+                return True
+
+        client = _FakeClient()
+        update = _FakeCallbackUpdate(
+            chat_id=123, user_id=1, message_id=10, data=f"draft:send:{draft_id}"
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.callbacks.drafts.SMTPClient", _FakeSMTPClient):
+            await callback_handler(client, update)
+
+        self.assertEqual(called["send"]["text_body"], "Hi")
+
+    async def test_draft_set_signature_callback_updates_choice(self):
+        from app.database import DBManager
+        from app.bot.handlers.callback import callback_handler
+        from app.email_utils.signatures import (
+            CHOICE_NONE,
+            add_account_signature,
+            get_draft_signature_choice,
+        )
+
+        raw = None
+        raw, _sid = add_account_signature(
+            raw,
+            name="Work",
+            markdown="Work signature",
+        )
+        self.account_mgr.update_account(
+            id=self.account["id"],
+            updates={"signature": raw},
+        )
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(draft_id=draft_id, updates={"card_message_id": 77})
+
+        client = _FakeClient()
+        update = _FakeCallbackUpdate(
+            chat_id=123,
+            user_id=1,
+            message_id=10,
+            data=f"draft:set_sig:{draft_id}:{CHOICE_NONE}",
+        )
+        await callback_handler(client, update)
+
+        self.assertEqual(
+            get_draft_signature_choice(draft_id=int(draft_id)),
+            CHOICE_NONE,
+        )
+
     async def test_draft_send_deletes_card_and_tracked_messages(self):
         from app.database import DBManager
         from app.bot.handlers.callback import callback_handler

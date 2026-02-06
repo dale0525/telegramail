@@ -15,6 +15,12 @@ from app.bot.utils import answer_callback
 from app.database import DBManager
 from app.email_utils.account_manager import AccountManager
 from app.email_utils.identity import choose_recommended_from
+from app.email_utils.signatures import (
+    format_signature_choice_label,
+    get_account_last_signature_choice,
+    normalize_signature_choice,
+    set_draft_signature_choice,
+)
 from app.i18n import _
 from app.utils import Logger
 
@@ -101,6 +107,11 @@ async def handle_email_action_callback(
             draft_type="reply",
             from_identity_email=from_email,
         )
+        signature_choice = normalize_signature_choice(
+            account.get("signature"),
+            get_account_last_signature_choice(account_id=int(account_id)),
+        )
+        set_draft_signature_choice(draft_id=int(draft_id), choice=signature_choice)
         db.update_draft(
             draft_id=draft_id,
             updates={
@@ -112,11 +123,16 @@ async def handle_email_action_callback(
         )
 
         draft = db.get_active_draft(chat_id=chat_id, thread_id=thread_id)
+        signature_label = format_signature_choice_label(
+            account.get("signature"),
+            signature_choice,
+        )
         card_text = (
             f"📝 {_('draft')}\n\n"
             f"From: {from_email}\n"
             f"To: {draft.get('to_addrs') or ''}\n"
             f"Subject: {draft.get('subject') or ''}\n\n"
+            f"{_('draft_signature')}: {signature_label}\n\n"
             f"{_('draft_help_commands')}"
         )
         keyboard = [
@@ -238,6 +254,11 @@ async def handle_email_action_callback(
             draft_type="forward",
             from_identity_email=from_email,
         )
+        signature_choice = normalize_signature_choice(
+            account.get("signature"),
+            get_account_last_signature_choice(account_id=int(account_id)),
+        )
+        set_draft_signature_choice(draft_id=int(draft_id), choice=signature_choice)
         db.update_draft(
             draft_id=draft_id,
             updates={
@@ -248,11 +269,16 @@ async def handle_email_action_callback(
         )
 
         draft = db.get_active_draft(chat_id=chat_id, thread_id=thread_id)
+        signature_label = format_signature_choice_label(
+            account.get("signature"),
+            signature_choice,
+        )
         card_text = (
             f"📝 {_('draft')}\n\n"
             f"From: {from_email}\n"
             f"To: \n"
             f"Subject: {draft.get('subject') or ''}\n\n"
+            f"{_('draft_signature')}: {signature_label}\n\n"
             f"{_('draft_help_commands')}"
         )
         keyboard = [
@@ -287,4 +313,3 @@ async def handle_email_action_callback(
         return True
 
     return False
-

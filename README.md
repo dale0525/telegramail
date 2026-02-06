@@ -28,7 +28,7 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 - [x] Forward emails
 - [x] Receive emails from folders other than INBOX
 - [ ] Fetch all emails
-- [ ] Set signature for each email account
+- [x] Set signature for each email account
 - [x] Display email folder information
 - [x] Summarize emails using LLM
 - [x] Label emails using LLM
@@ -217,6 +217,7 @@ You can change the frequency of regular checks by modifying `POLLING_INTERVAL` i
 
 To monitor additional IMAP folders, set `TELEGRAMAIL_IMAP_MONITORED_MAILBOXES` (comma-separated), e.g. `INBOX,Archive,Spam`.
 You can also set per-account overrides via `/accounts` → select an account → **IMAP Folders** (includes “Detect folders” + an interactive picker).
+You can set multiple per-account signatures via `/accounts` → select an account → **Signature**. Signature content is authored in Markdown and rendered to HTML at send time.
 
 ### Manually Fetching Emails
 #### Manually Fetch All Emails
@@ -242,10 +243,14 @@ TelegramMail uses Draft topics for composing, replying, and forwarding:
    - `/from b@example.com`: set From identity directly
    - `/to ...`, `/cc ...`, `/bcc ...`: set recipients (multiple addresses are comma-separated, e.g. `/to a@example.com, b@example.com`; same for `/cc` and `/bcc`)
    - `/subject ...`: set subject
+   - `/signature`: open signature selector (choose specific/default/none)
+   - `/signature none`: disable signature for this send; `/signature default`: use account default signature
    - Body: send normal text messages; they are appended to the email body (Markdown supported)
    - Attachments: send files/photos/audio in the Draft topic; they will be attached to the email; use `/attachments` to manage/remove attachments
 4. **Send**
    - Click Send on the Draft card to send; Cancel to discard
+   - If this draft does not explicitly override signature behavior, TelegramMail uses the account default signature
+   - Signature choice is persisted: TelegramMail remembers the signature strategy used in the last successful send for that account (specific/default/none), and reuses it for the next new draft
 
 #### Body formatting (Markdown → HTML)
 

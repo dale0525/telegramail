@@ -90,4 +90,65 @@ class TestManageAccountCallback(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(client.edits)
+        reply_markup = client.edits[-1].get("reply_markup")
+        self.assertIsNotNone(reply_markup)
+        callback_data_values = []
+        for row in getattr(reply_markup, "rows", []):
+            for button in row:
+                button_type = getattr(button, "type_", None) or getattr(button, "type", None)
+                data = getattr(button_type, "data", None)
+                if isinstance(data, (bytes, bytearray)):
+                    callback_data_values.append(data.decode("utf-8"))
 
+        self.assertIn(
+            f"account_signature:{account_id}",
+            callback_data_values,
+        )
+
+    async def test_account_signature_clear_callback_updates_account(self):
+        from app.email_utils.account_manager import AccountManager
+        from app.bot.handlers.callback import callback_handler
+
+        account_mgr = AccountManager()
+        self.assertTrue(
+            account_mgr.add_account(
+                {
+                    "email": "a@example.com",
+                    "password": "pw",
+                    "imap_server": "imap.example.com",
+                    "imap_port": 993,
+                    "imap_ssl": True,
+                    "smtp_server": "smtp.example.com",
+                    "smtp_port": 465,
+                    "smtp_ssl": True,
+                    "alias": "Work",
+                    "tg_group_id": 123,
+                }
+            )
+        )
+        account = account_mgr.get_account(
+            email="a@example.com",
+            smtp_server="smtp.example.com",
+        )
+        account_id = str(account["id"])
+
+        self.assertTrue(
+            account_mgr.update_account(
+                id=account_id,
+                updates={"signature": "Best regards"},
+            )
+        )
+
+        client = _FakeClient()
+        await callback_handler(
+            client,
+            _FakeCallbackUpdate(
+                chat_id=123,
+                user_id=1,
+                message_id=10,
+                data=f"account_signature_clear:{account_id}",
+            ),
+        )
+
+        updated = account_mgr.get_account(id=account_id)
+        self.assertIsNone(updated.get("signature"))

@@ -21,6 +21,19 @@ from app.bot.utils import answer_callback
 from app.database import DBManager
 from app.email_utils.account_manager import AccountManager
 from app.email_utils.markdown_render import render_markdown_to_html
+from app.email_utils.signatures import (
+    CHOICE_DEFAULT,
+    CHOICE_NONE,
+    clear_draft_signature_choice,
+    format_signature_choice_label,
+    get_draft_signature_choice,
+    list_account_signatures,
+    normalize_signature_choice,
+    resolve_signature_for_send,
+    resolve_signature_choice_to_store,
+    set_account_last_signature_choice,
+    set_draft_signature_choice,
+)
 from app.email_utils.smtp_client import SMTPClient
 from app.i18n import _
 from app.telegram_ui.email_cards import build_outgoing_email_card
@@ -39,6 +52,53 @@ def _get_compose_draft_delete_delay_seconds() -> float:
         return max(0.0, float(raw))
     except Exception:
         return _DEFAULT_COMPOSE_DRAFT_DELETE_DELAY_SECONDS
+
+
+def _append_signature_to_markdown(body_markdown: str | None, signature: str | None) -> str:
+    body = str(body_markdown or "").rstrip()
+    sig = str(signature or "").strip()
+    if not sig:
+        return body
+    if not body:
+        return f"-- \n{sig}"
+    return f"{body}\n\n-- \n{sig}"
+
+
+def _build_draft_card_keyboard(*, draft_id: int) -> list[list[InlineKeyboardButton]]:
+    return [
+        [
+            InlineKeyboardButton(
+                text=f"📤 {_('send')}",
+                type=InlineKeyboardButtonTypeCallback(
+                    data=f"draft:send:{draft_id}".encode("utf-8")
+                ),
+            ),
+            InlineKeyboardButton(
+                text=f"❌ {_('cancel')}",
+                type=InlineKeyboardButtonTypeCallback(
+                    data=f"draft:cancel:{draft_id}".encode("utf-8")
+                ),
+            ),
+        ]
+    ]
+
+
+def _build_draft_card_text(
+    *, draft: dict, attachments_count: int, signature_label: str
+) -> str:
+    body = draft.get("body_markdown") or ""
+    return (
+        f"📝 {_('draft')}\n\n"
+        f"From: {draft.get('from_identity_email') or ''}\n"
+        f"To: {draft.get('to_addrs') or ''}\n"
+        f"Cc: {draft.get('cc_addrs') or ''}\n"
+        f"Bcc: {draft.get('bcc_addrs') or ''}\n"
+        f"Subject: {draft.get('subject') or ''}\n"
+        f"{_('draft_signature')}: {signature_label}\n"
+        f"{_('draft_attachments')}: {attachments_count}\n"
+        f"Body: {len(body)} chars\n\n"
+        f"{_('draft_help_commands')}"
+    )
 
 
 async def _delete_compose_draft_topic_after_delay(
@@ -84,6 +144,7 @@ async def handle_draft_callback(
 
         draft_chat_id, draft_thread_id, draft_type = row
         db.update_draft(draft_id=draft_id, updates={"status": "cancelled"})
+        clear_draft_signature_choice(draft_id=draft_id)
 
         if str(draft_type) == "compose" and int(draft_thread_id or 0) > 0:
             try:
@@ -104,6 +165,98 @@ async def handle_draft_callback(
             )
         except Exception as e:
             logger.error(f"Failed to edit message after draft cancel: {e}")
+        return True
+
+    if data.startswith("draft:set_sig:"):
+        try:
+            await answer_callback(client=client, update=update)
+        except Exception as e:
+            logger.warning(f"Failed to answer 'draft:set_sig' callback query: {e}")
+
+        try:
+            _p = data.split(":", 3)
+            draft_id = int(_p[2])
+            choice = (_p[3] or "").strip()
+        except Exception:
+            logger.warning(f"Invalid draft:set_sig callback data: {data}")
+            return True
+
+        db = DBManager()
+        draft = None
+        account = None
+        try:
+            conn = db._get_connection()
+            conn.row_factory = None
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT account_id, chat_id, thread_id, card_message_id, status FROM drafts WHERE id = ?",
+                (draft_id,),
+            )
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                account_id, draft_chat_id, draft_thread_id, card_message_id, status = row
+                if str(status) == "open":
+                    draft = db.get_active_draft(
+                        chat_id=int(draft_chat_id), thread_id=int(draft_thread_id)
+                    )
+                    account = db.get_account(id=int(account_id))
+                else:
+                    return True
+            else:
+                return True
+        except Exception as e:
+            logger.warning(f"Failed loading draft for signature selection: {e}")
+            return True
+
+        if not draft or not account:
+            return True
+
+        items, _default_id = list_account_signatures(account.get("signature"))
+        valid_ids = {it["id"] for it in items}
+        if choice in {CHOICE_NONE, CHOICE_DEFAULT} or choice in valid_ids:
+            set_draft_signature_choice(draft_id=draft_id, choice=choice)
+
+        card_message_id = draft.get("card_message_id")
+        if card_message_id:
+            sig_label = format_signature_choice_label(
+                account.get("signature"),
+                get_draft_signature_choice(draft_id=draft_id),
+            )
+            attachments = db.list_draft_attachments(draft_id=draft["id"])
+            card_text = _build_draft_card_text(
+                draft=draft,
+                attachments_count=len(attachments),
+                signature_label=sig_label,
+            )
+            try:
+                await client.edit_text(
+                    chat_id=int(draft["chat_id"]),
+                    message_id=int(card_message_id),
+                    text=card_text,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    clear_draft=False,
+                    reply_markup=ReplyMarkupInlineKeyboard(
+                        rows=_build_draft_card_keyboard(draft_id=int(draft["id"]))
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Failed to update draft card after set_sig: {e}")
+
+        try:
+            current_label = format_signature_choice_label(
+                account.get("signature"),
+                get_draft_signature_choice(draft_id=draft_id),
+            )
+            await client.edit_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"✅ {_('draft_signature')}: {current_label}",
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                clear_draft=False,
+            )
+        except Exception:
+            pass
         return True
 
     if data.startswith("draft:set_from:"):
@@ -163,33 +316,17 @@ async def handle_draft_callback(
             chat_id=int(draft_chat_id), thread_id=int(draft_thread_id)
         )
         if refreshed and card_message_id:
-            body = refreshed.get("body_markdown") or ""
-            card_text = (
-                f"📝 {_('draft')}\n\n"
-                f"From: {refreshed.get('from_identity_email') or ''}\n"
-                f"To: {refreshed.get('to_addrs') or ''}\n"
-                f"Cc: {refreshed.get('cc_addrs') or ''}\n"
-                f"Bcc: {refreshed.get('bcc_addrs') or ''}\n"
-                f"Subject: {refreshed.get('subject') or ''}\n"
-                f"Body: {len(body)} chars\n\n"
-                f"{_('draft_help_commands')}"
+            account = db.get_account(id=int(refreshed["account_id"]))
+            sig_label = format_signature_choice_label(
+                (account or {}).get("signature"),
+                get_draft_signature_choice(draft_id=int(refreshed["id"])),
             )
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        text=f"📤 {_('send')}",
-                        type=InlineKeyboardButtonTypeCallback(
-                            data=f"draft:send:{refreshed['id']}".encode("utf-8")
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text=f"❌ {_('cancel')}",
-                        type=InlineKeyboardButtonTypeCallback(
-                            data=f"draft:cancel:{refreshed['id']}".encode("utf-8")
-                        ),
-                    ),
-                ]
-            ]
+            attachments = db.list_draft_attachments(draft_id=refreshed["id"])
+            card_text = _build_draft_card_text(
+                draft=refreshed,
+                attachments_count=len(attachments),
+                signature_label=sig_label,
+            )
             try:
                 await client.edit_text(
                     chat_id=int(draft_chat_id),
@@ -197,7 +334,9 @@ async def handle_draft_callback(
                     text=card_text,
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
                     clear_draft=False,
-                    reply_markup=ReplyMarkupInlineKeyboard(rows=keyboard),
+                    reply_markup=ReplyMarkupInlineKeyboard(
+                        rows=_build_draft_card_keyboard(draft_id=int(refreshed["id"]))
+                    ),
                 )
             except Exception as e:
                 logger.error(f"Failed to update draft card after set_from: {e}")
@@ -252,34 +391,16 @@ async def handle_draft_callback(
         )
         if refreshed and card_message_id:
             attachments = db.list_draft_attachments(draft_id=refreshed["id"])
-            body = refreshed.get("body_markdown") or ""
-            card_text = (
-                f"📝 {_('draft')}\n\n"
-                f"From: {refreshed.get('from_identity_email') or ''}\n"
-                f"To: {refreshed.get('to_addrs') or ''}\n"
-                f"Cc: {refreshed.get('cc_addrs') or ''}\n"
-                f"Bcc: {refreshed.get('bcc_addrs') or ''}\n"
-                f"Subject: {refreshed.get('subject') or ''}\n"
-                f"{_('draft_attachments')}: {len(attachments)}\n"
-                f"Body: {len(body)} chars\n\n"
-                f"{_('draft_help_commands')}"
+            account = db.get_account(id=int(refreshed["account_id"]))
+            sig_label = format_signature_choice_label(
+                (account or {}).get("signature"),
+                get_draft_signature_choice(draft_id=int(refreshed["id"])),
             )
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        text=f"📤 {_('send')}",
-                        type=InlineKeyboardButtonTypeCallback(
-                            data=f"draft:send:{refreshed['id']}".encode("utf-8")
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text=f"❌ {_('cancel')}",
-                        type=InlineKeyboardButtonTypeCallback(
-                            data=f"draft:cancel:{refreshed['id']}".encode("utf-8")
-                        ),
-                    ),
-                ]
-            ]
+            card_text = _build_draft_card_text(
+                draft=refreshed,
+                attachments_count=len(attachments),
+                signature_label=sig_label,
+            )
             try:
                 await client.edit_text(
                     chat_id=int(draft_chat_id),
@@ -287,7 +408,9 @@ async def handle_draft_callback(
                     text=card_text,
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
                     clear_draft=False,
-                    reply_markup=ReplyMarkupInlineKeyboard(rows=keyboard),
+                    reply_markup=ReplyMarkupInlineKeyboard(
+                        rows=_build_draft_card_keyboard(draft_id=int(refreshed["id"]))
+                    ),
                 )
             except Exception as e:
                 logger.error(f"Failed to update draft card after attachment removal: {e}")
@@ -339,34 +462,16 @@ async def handle_draft_callback(
             chat_id=int(draft_chat_id), thread_id=int(draft_thread_id)
         )
         if refreshed and card_message_id:
-            body = refreshed.get("body_markdown") or ""
-            card_text = (
-                f"📝 {_('draft')}\n\n"
-                f"From: {refreshed.get('from_identity_email') or ''}\n"
-                f"To: {refreshed.get('to_addrs') or ''}\n"
-                f"Cc: {refreshed.get('cc_addrs') or ''}\n"
-                f"Bcc: {refreshed.get('bcc_addrs') or ''}\n"
-                f"Subject: {refreshed.get('subject') or ''}\n"
-                f"{_('draft_attachments')}: 0\n"
-                f"Body: {len(body)} chars\n\n"
-                f"{_('draft_help_commands')}"
+            account = db.get_account(id=int(refreshed["account_id"]))
+            sig_label = format_signature_choice_label(
+                (account or {}).get("signature"),
+                get_draft_signature_choice(draft_id=int(refreshed["id"])),
             )
-            keyboard = [
-                [
-                    InlineKeyboardButton(
-                        text=f"📤 {_('send')}",
-                        type=InlineKeyboardButtonTypeCallback(
-                            data=f"draft:send:{refreshed['id']}".encode("utf-8")
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        text=f"❌ {_('cancel')}",
-                        type=InlineKeyboardButtonTypeCallback(
-                            data=f"draft:cancel:{refreshed['id']}".encode("utf-8")
-                        ),
-                    ),
-                ]
-            ]
+            card_text = _build_draft_card_text(
+                draft=refreshed,
+                attachments_count=0,
+                signature_label=sig_label,
+            )
             try:
                 await client.edit_text(
                     chat_id=int(draft_chat_id),
@@ -374,7 +479,9 @@ async def handle_draft_callback(
                     text=card_text,
                     link_preview_options=LinkPreviewOptions(is_disabled=True),
                     clear_draft=False,
-                    reply_markup=ReplyMarkupInlineKeyboard(rows=keyboard),
+                    reply_markup=ReplyMarkupInlineKeyboard(
+                        rows=_build_draft_card_keyboard(draft_id=int(refreshed["id"]))
+                    ),
                 )
             except Exception as e:
                 logger.error(f"Failed to update draft card after attachment clear: {e}")
@@ -484,9 +591,23 @@ async def handle_draft_callback(
             use_ssl=bool(account["smtp_ssl"]),
         )
 
+        signature_choice = normalize_signature_choice(
+            account.get("signature"),
+            get_draft_signature_choice(draft_id=draft_id),
+        )
+        set_draft_signature_choice(draft_id=draft_id, choice=signature_choice)
+        signature_markdown, _signature_label = resolve_signature_for_send(
+            account.get("signature"),
+            signature_choice,
+        )
+        body_with_signature = _append_signature_to_markdown(
+            body_markdown,
+            signature_markdown,
+        )
+
         html_body = None
-        if body_markdown and str(body_markdown).strip():
-            html_body = render_markdown_to_html(body_markdown)
+        if body_with_signature and str(body_with_signature).strip():
+            html_body = render_markdown_to_html(body_with_signature)
 
         refs = None
         if references_header and str(references_header).strip():
@@ -579,7 +700,7 @@ async def handle_draft_callback(
             cc_addrs=_parse_addrs(cc_addrs),
             bcc_addrs=_parse_addrs(bcc_addrs),
             subject=subject or "",
-            text_body=body_markdown or "",
+            text_body=body_with_signature or "",
             html_body=html_body,
             reply_to=reply_to,
             in_reply_to=in_reply_to or None,
@@ -591,6 +712,14 @@ async def handle_draft_callback(
 
         if ok:
             db.update_draft(draft_id=draft_id, updates={"status": "sent"})
+            set_account_last_signature_choice(
+                account_id=int(account_id),
+                choice=resolve_signature_choice_to_store(
+                    account.get("signature"),
+                    signature_choice,
+                ),
+            )
+            clear_draft_signature_choice(draft_id=draft_id)
 
             # Persist an outgoing email row so we can thread future incoming replies
             # back into this same topic (and show sent emails as their own history).
@@ -606,7 +735,7 @@ async def handle_draft_callback(
                     bcc=str(bcc_addrs or ""),
                     subject=str(subject or ""),
                     email_date=str(outgoing_date),
-                    body_text=str(body_markdown or ""),
+                    body_text=str(body_with_signature or ""),
                     body_html=str(html_body or ""),
                     in_reply_to=(str(in_reply_to).strip() if in_reply_to else None),
                     references_header=(
@@ -642,7 +771,7 @@ async def handle_draft_callback(
                 to_line = (to_addrs or "").strip()
                 cc_line = (cc_addrs or "").strip()
                 bcc_line = (bcc_addrs or "").strip()
-                body = (body_markdown or "").strip()
+                body = (body_with_signature or "").strip()
 
                 card_html = build_outgoing_email_card(
                     subject=subject_display,

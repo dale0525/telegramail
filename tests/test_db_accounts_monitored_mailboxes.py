@@ -33,6 +33,7 @@ class TestDbAccountsMonitoredMailboxes(unittest.TestCase):
         conn.close()
 
         self.assertIn("imap_monitored_mailboxes", columns)
+        self.assertIn("signature", columns)
 
     def test_legacy_db_is_migrated_and_preserves_rows(self):
         # Create a legacy accounts table without the new column.
@@ -89,11 +90,15 @@ class TestDbAccountsMonitoredMailboxes(unittest.TestCase):
         cur.execute("PRAGMA table_info(accounts)")
         columns = {row[1] for row in cur.fetchall()}
         self.assertIn("imap_monitored_mailboxes", columns)
+        self.assertIn("signature", columns)
 
-        cur.execute("SELECT email, imap_monitored_mailboxes FROM accounts WHERE email = ?", ("a@example.com",))
+        cur.execute(
+            "SELECT email, imap_monitored_mailboxes, signature FROM accounts WHERE email = ?",
+            ("a@example.com",),
+        )
         row = cur.fetchone()
         conn.close()
 
         self.assertEqual(row[0], "a@example.com")
         self.assertIsNone(row[1])
-
+        self.assertIsNone(row[2])

@@ -206,6 +206,11 @@ ADD_ACCOUNT_STEPS = [
         "text": _("add_account_input_alias"),
         "key": "alias",
     },
+    {
+        "text": f"{_('add_account_input_signature')}\n{_('send_new_or_skip')}",
+        "key": "signature",
+        "optional": True,
+    },
     # Add verification step at the end
     VERIFICATION_STEP,
     {
@@ -294,6 +299,11 @@ EDIT_ACCOUNT_STEPS = [
     {
         "text": lambda ctx: f"{_('edit_account_alias')} ({_('current')}: {ctx.get('alias', 'N/A')}).\n{_('send_new_or_skip')}",
         "key": "alias",
+        "optional": True,
+    },
+    {
+        "text": lambda ctx: f"{_('edit_account_signature')} ({_('current')}: {ctx.get('signature') or _('signature_not_set')}).\n{_('send_new_or_skip')}",
+        "key": "signature",
         "optional": True,
     },
     # Add verification step at the end

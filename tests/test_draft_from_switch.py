@@ -236,3 +236,59 @@ class TestDraftFromSwitch(unittest.IsolatedAsyncioTestCase):
         draft = db.get_active_draft(chat_id=123, thread_id=456)
         self.assertIsNotNone(draft)
         self.assertEqual((draft.get("body_markdown") or "").strip(), "")
+
+    async def test_message_handler_signature_none_updates_selection_without_appending_body(self):
+        from app.database import DBManager
+        from app.email_utils.signatures import (
+            CHOICE_NONE,
+            add_account_signature,
+            get_draft_signature_choice,
+        )
+
+        raw = None
+        raw, _sid = add_account_signature(
+            raw,
+            name="Work",
+            markdown="Work signature",
+        )
+        self.assertTrue(
+            self.account_mgr.update_account(
+                id=self.account["id"],
+                updates={"signature": raw},
+            )
+        )
+
+        db = DBManager()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(draft_id=draft_id, updates={"card_message_id": 99})
+
+        client = _FakeClient()
+        update = _FakeUpdate(
+            _FakeMessage(chat_id=123, thread_id=456, user_id=1, text="/signature none")
+        )
+
+        from unittest import mock
+
+        with mock.patch("app.bot.handlers.message.validate_admin", lambda _u: True), mock.patch(
+            "app.bot.handlers.message.Conversation.get_instance", lambda *_args, **_kwargs: None
+        ):
+            from app.bot.handlers.message import message_handler
+
+            await message_handler(client, update)
+
+        draft = db.get_active_draft(chat_id=123, thread_id=456)
+        self.assertIsNotNone(draft)
+        self.assertEqual((draft.get("body_markdown") or "").strip(), "")
+        self.assertEqual(
+            get_draft_signature_choice(draft_id=int(draft_id)),
+            CHOICE_NONE,
+        )
+        self.assertTrue(client.edits)
+        text = client.edits[-1].get("text") or ""
+        self.assertTrue(("Signature: None" in text) or ("签名: None" in text))

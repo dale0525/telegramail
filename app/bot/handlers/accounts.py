@@ -108,6 +108,7 @@ async def add_account_handler(
             "imap_ssl": context["imap_ssl"],
             "alias": context["alias"],
             "tg_group_id": context["tg_group_id"],
+            "signature": context.get("signature"),
         }
 
         success = account_manager.add_account(account)

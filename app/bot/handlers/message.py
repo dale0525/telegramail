@@ -7,6 +7,14 @@ from app.bot.handlers.access import validate_admin
 from app.bot.handlers.command_filters import parse_bot_command
 from app.utils import Logger
 from app.database import DBManager
+from app.email_utils.signatures import (
+    CHOICE_DEFAULT,
+    CHOICE_NONE,
+    format_signature_choice_label,
+    get_draft_signature_choice,
+    list_account_signatures,
+    set_draft_signature_choice,
+)
 from app.i18n import _
 from aiotdlib.api import (
     InlineKeyboardButton,
@@ -213,6 +221,63 @@ async def message_handler(client: Client, update: UpdateNewMessage):
                 logger.error(f"Failed to send from-identity selector: {e}")
             return
 
+        if cmd in {"signature", "sig"} and not args:
+            account = db.get_account(id=draft["account_id"]) or {}
+            items, _default_id = list_account_signatures(account.get("signature"))
+            if not items:
+                await _send_draft_help()
+                return
+
+            rows = [
+                [
+                    InlineKeyboardButton(
+                        text=f"⭐ {_('signature_use_default')}",
+                        type=InlineKeyboardButtonTypeCallback(
+                            data=f"draft:set_sig:{draft['id']}:{CHOICE_DEFAULT}".encode(
+                                "utf-8"
+                            )
+                        ),
+                    ),
+                    InlineKeyboardButton(
+                        text=f"🚫 {_('signature_disable')}",
+                        type=InlineKeyboardButtonTypeCallback(
+                            data=f"draft:set_sig:{draft['id']}:{CHOICE_NONE}".encode(
+                                "utf-8"
+                            )
+                        ),
+                    ),
+                ]
+            ]
+            for item in items[:20]:
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"✍️ {item.get('name') or item.get('id')}",
+                            type=InlineKeyboardButtonTypeCallback(
+                                data=f"draft:set_sig:{draft['id']}:{item['id']}".encode(
+                                    "utf-8"
+                                )
+                            ),
+                        )
+                    ]
+                )
+
+            try:
+                await client.api.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=thread_id,
+                    input_message_content=InputMessageText(
+                        text=FormattedText(
+                            text=_("draft_choose_signature"),
+                            entities=[],
+                        )
+                    ),
+                    reply_markup=ReplyMarkupInlineKeyboard(rows=rows),
+                )
+            except Exception as e:
+                logger.error(f"Failed to send signature selector: {e}")
+            return
+
         if cmd == "to" and args:
             updates = {"to_addrs": cmd_arg}
         elif cmd == "cc" and args:
@@ -235,6 +300,38 @@ async def message_handler(client: Client, update: UpdateNewMessage):
             updates = {"from_identity_email": match["from_email"]}
         elif cmd == "subject" and args:
             updates = {"subject": cmd_arg}
+        elif cmd in {"signature", "sig"} and args:
+            account = db.get_account(id=draft["account_id"]) or {}
+            items, _default_id = list_account_signatures(account.get("signature"))
+            if not items:
+                await _send_draft_help()
+                return
+
+            requested = cmd_arg.strip()
+            lower = requested.lower()
+            choice = None
+            if lower in {"none", "off", "disable"}:
+                choice = CHOICE_NONE
+            elif lower in {"default"}:
+                choice = CHOICE_DEFAULT
+            elif requested.isdigit():
+                idx = int(requested) - 1
+                if 0 <= idx < len(items):
+                    choice = items[idx]["id"]
+            else:
+                for item in items:
+                    if lower in {
+                        str(item.get("id") or "").lower(),
+                        str(item.get("name") or "").lower(),
+                    }:
+                        choice = item["id"]
+                        break
+
+            if not choice:
+                await _send_draft_help()
+                return
+            set_draft_signature_choice(draft_id=int(draft["id"]), choice=choice)
+            updates = {}
 
         if updates is not None:
             db.update_draft(draft_id=draft["id"], updates=updates)
@@ -368,6 +465,11 @@ async def message_handler(client: Client, update: UpdateNewMessage):
         return
 
     from_email = refreshed.get("from_identity_email") or ""
+    account = db.get_account(id=refreshed["account_id"]) or {}
+    sig_label = format_signature_choice_label(
+        account.get("signature"),
+        get_draft_signature_choice(draft_id=int(refreshed["id"])),
+    )
 
     body = refreshed.get("body_markdown") or ""
     attachments = db.list_draft_attachments(draft_id=refreshed["id"])
@@ -378,6 +480,7 @@ async def message_handler(client: Client, update: UpdateNewMessage):
         f"Cc: {refreshed.get('cc_addrs') or ''}\n"
         f"Bcc: {refreshed.get('bcc_addrs') or ''}\n"
         f"Subject: {refreshed.get('subject') or ''}\n"
+        f"{_('draft_signature')}: {sig_label}\n"
         f"{_('draft_attachments')}: {len(attachments)}\n"
         f"Body: {len(body)} chars\n\n"
         f"{_('draft_help_commands')}"
