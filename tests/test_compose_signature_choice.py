@@ -77,13 +77,18 @@ class _FakeApi:
 
 
 class _FakeClient:
-    def __init__(self):
+    def __init__(self, *, reject_thread_on_send_text: bool = False):
         self.api = _FakeApi()
         self.sent_texts = []
         self.edits = []
         self._next_message_id = 100
+        self._reject_thread_on_send_text = bool(reject_thread_on_send_text)
 
     async def send_text(self, chat_id: int, text: str, **kwargs):
+        if self._reject_thread_on_send_text and "message_thread_id" in kwargs:
+            raise TypeError(
+                "Client.send_text() got an unexpected keyword argument 'message_thread_id'"
+            )
         self._next_message_id += 1
         self.sent_texts.append({"chat_id": chat_id, "text": text, "kwargs": kwargs})
         return type("_Msg", (), {"id": self._next_message_id})()
@@ -357,3 +362,31 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((draft["to_addrs"] or "").lower(), selected_email)
         self.assertEqual(draft["subject"], "Hello Subject")
         self.assertEqual(draft["body_markdown"], "Hello Body")
+
+    async def test_compose_falls_back_when_send_text_no_thread_support(self):
+        from unittest import mock
+
+        from app.bot.handlers.compose import compose_command_handler
+        from app.i18n import _
+
+        client = _FakeClient(reject_thread_on_send_text=True)
+        update = _FakeUpdate(_FakeMessage(chat_id=123, user_id=1))
+
+        with mock.patch("app.bot.handlers.compose.validate_admin", lambda _u: True):
+            await compose_command_handler(client, update)
+
+        prompt_messages = [
+            msg
+            for msg in client.api.sent_messages
+            if int(msg.get("message_thread_id") or 0) == 777
+            and (
+                getattr(
+                    getattr(msg.get("input_message_content"), "text", None),
+                    "text",
+                    "",
+                )
+                or ""
+            )
+            == _("compose_input_to")
+        ]
+        self.assertTrue(prompt_messages)

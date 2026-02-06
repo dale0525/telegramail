@@ -8,6 +8,8 @@ from aiotdlib.api import (
     KeyboardButton,
     KeyboardButtonTypeText,
     UpdateNewCallbackQuery,
+    InputMessageText,
+    FormattedText,
 )
 from app.i18n import _
 from app.utils import Logger
@@ -138,7 +140,28 @@ class Conversation:
         message_thread_id = self._get_message_thread_id()
         if message_thread_id and "message_thread_id" not in send_kwargs:
             send_kwargs["message_thread_id"] = int(message_thread_id)
-        return await self.client.send_text(**send_kwargs)
+        try:
+            return await self.client.send_text(**send_kwargs)
+        except TypeError as e:
+            # Some aiotdlib versions do not support message_thread_id on send_text.
+            err = str(e or "")
+            if (
+                "message_thread_id" not in send_kwargs
+                or "unexpected keyword argument 'message_thread_id'" not in err
+            ):
+                raise
+
+            api_kwargs: Dict[str, Any] = {
+                "chat_id": int(send_kwargs.get("chat_id") or self.chat_id),
+                "message_thread_id": int(send_kwargs["message_thread_id"]),
+                "input_message_content": InputMessageText(
+                    text=FormattedText(text=str(send_kwargs.get("text") or ""), entities=[])
+                ),
+                "disable_notification": bool(send_kwargs.get("disable_notification", True)),
+            }
+            if "reply_markup" in send_kwargs:
+                api_kwargs["reply_markup"] = send_kwargs["reply_markup"]
+            return await self.client.api.send_message(**api_kwargs)
 
     async def start(self) -> None:
         """start the conversation"""
