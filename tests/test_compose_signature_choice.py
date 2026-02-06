@@ -51,14 +51,19 @@ class _FakeCallbackUpdate:
 
 
 class _FakeApi:
-    def __init__(self):
+    def __init__(self, *, reject_disable_notification: bool = False):
         self.sent_messages = []
         self.deleted_messages = []
+        self._reject_disable_notification = bool(reject_disable_notification)
 
     async def create_forum_topic(self, **kwargs):
         return type("_Topic", (), {"message_thread_id": 777})()
 
     async def send_message(self, **kwargs):
+        if self._reject_disable_notification and "disable_notification" in kwargs:
+            raise TypeError(
+                "API.send_message() got an unexpected keyword argument 'disable_notification'"
+            )
         self.sent_messages.append(kwargs)
         return type("_Msg", (), {"id": 9001})()
 
@@ -77,8 +82,15 @@ class _FakeApi:
 
 
 class _FakeClient:
-    def __init__(self, *, reject_thread_on_send_text: bool = False):
-        self.api = _FakeApi()
+    def __init__(
+        self,
+        *,
+        reject_thread_on_send_text: bool = False,
+        reject_disable_notification_on_api_send_message: bool = False,
+    ):
+        self.api = _FakeApi(
+            reject_disable_notification=reject_disable_notification_on_api_send_message
+        )
         self.sent_texts = []
         self.edits = []
         self._next_message_id = 100
@@ -370,6 +382,37 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         from app.i18n import _
 
         client = _FakeClient(reject_thread_on_send_text=True)
+        update = _FakeUpdate(_FakeMessage(chat_id=123, user_id=1))
+
+        with mock.patch("app.bot.handlers.compose.validate_admin", lambda _u: True):
+            await compose_command_handler(client, update)
+
+        prompt_messages = [
+            msg
+            for msg in client.api.sent_messages
+            if int(msg.get("message_thread_id") or 0) == 777
+            and (
+                getattr(
+                    getattr(msg.get("input_message_content"), "text", None),
+                    "text",
+                    "",
+                )
+                or ""
+            )
+            == _("compose_input_to")
+        ]
+        self.assertTrue(prompt_messages)
+
+    async def test_compose_api_fallback_works_without_disable_notification_kwarg(self):
+        from unittest import mock
+
+        from app.bot.handlers.compose import compose_command_handler
+        from app.i18n import _
+
+        client = _FakeClient(
+            reject_thread_on_send_text=True,
+            reject_disable_notification_on_api_send_message=True,
+        )
         update = _FakeUpdate(_FakeMessage(chat_id=123, user_id=1))
 
         with mock.patch("app.bot.handlers.compose.validate_admin", lambda _u: True):

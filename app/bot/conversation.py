@@ -157,7 +157,6 @@ class Conversation:
                 "input_message_content": InputMessageText(
                     text=FormattedText(text=str(send_kwargs.get("text") or ""), entities=[])
                 ),
-                "disable_notification": bool(send_kwargs.get("disable_notification", True)),
             }
             if "reply_markup" in send_kwargs:
                 api_kwargs["reply_markup"] = send_kwargs["reply_markup"]
