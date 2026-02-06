@@ -152,3 +152,53 @@ class TestManageAccountCallback(unittest.IsolatedAsyncioTestCase):
 
         updated = account_mgr.get_account(id=account_id)
         self.assertIsNone(updated.get("signature"))
+
+    async def test_account_signature_default_ignores_message_not_modified(self):
+        from app.email_utils.account_manager import AccountManager
+        from app.bot.handlers.callback import callback_handler
+        from app.email_utils.signatures import add_account_signature
+
+        account_mgr = AccountManager()
+        self.assertTrue(
+            account_mgr.add_account(
+                {
+                    "email": "a@example.com",
+                    "password": "pw",
+                    "imap_server": "imap.example.com",
+                    "imap_port": 993,
+                    "imap_ssl": True,
+                    "smtp_server": "smtp.example.com",
+                    "smtp_port": 465,
+                    "smtp_ssl": True,
+                    "alias": "Work",
+                    "tg_group_id": 123,
+                }
+            )
+        )
+        account = account_mgr.get_account(
+            email="a@example.com",
+            smtp_server="smtp.example.com",
+        )
+        account_id = str(account["id"])
+
+        raw = None
+        raw, default_id = add_account_signature(raw, name="Default", markdown="Best regards")
+        self.assertTrue(account_mgr.update_account(id=account_id, updates={"signature": raw}))
+
+        class _NotModifiedClient(_FakeClient):
+            async def edit_text(self, **kwargs):
+                self.edits.append(kwargs)
+                raise RuntimeError("[Error 400] MESSAGE_NOT_MODIFIED")
+
+        client = _NotModifiedClient()
+        await callback_handler(
+            client,
+            _FakeCallbackUpdate(
+                chat_id=123,
+                user_id=1,
+                message_id=10,
+                data=f"account_signature_default:{account_id}:{default_id}",
+            ),
+        )
+
+        self.assertTrue(client.api.answered)

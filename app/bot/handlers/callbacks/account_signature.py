@@ -38,6 +38,18 @@ def _ellipsize(text: str, max_len: int) -> str:
     return t[: max_len - 1].rstrip() + "…"
 
 
+def _is_message_not_modified_error(error: Exception) -> bool:
+    text = str(error or "").upper()
+    if "MESSAGE_NOT_MODIFIED" in text:
+        return True
+
+    message = str(getattr(error, "message", "") or "").upper()
+    if "MESSAGE_NOT_MODIFIED" in message:
+        return True
+
+    return False
+
+
 def _render_signature_list(raw: str | None) -> str:
     items, default_id = list_account_signatures(raw)
     if not items:
@@ -132,14 +144,19 @@ async def _render_account_signature_menu(
         ]
     )
 
-    await client.edit_text(
-        chat_id=chat_id,
-        message_id=message_id,
-        text=text,
-        link_preview_options=LinkPreviewOptions(is_disabled=True),
-        clear_draft=False,
-        reply_markup=ReplyMarkupInlineKeyboard(rows=rows),
-    )
+    try:
+        await client.edit_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            clear_draft=False,
+            reply_markup=ReplyMarkupInlineKeyboard(rows=rows),
+        )
+    except Exception as e:
+        if _is_message_not_modified_error(e):
+            return
+        raise
 
 
 async def _start_add_signature_conversation(
