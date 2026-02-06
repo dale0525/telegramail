@@ -241,7 +241,7 @@ TelegramMail uses Draft topics for composing, replying, and forwarding:
 3. **Edit inside Draft topic**
    - `/from`: open a From-identity selector (for alias scenarios)
    - `/from b@example.com`: set From identity directly
-   - `/to ...`, `/cc ...`, `/bcc ...`: set recipients (multiple addresses are comma-separated, e.g. `/to a@example.com, b@example.com`; same for `/cc` and `/bcc`)
+   - `/to ...`, `/cc ...`, `/bcc ...`: set recipients. You can still enter addresses directly (multiple addresses are comma-separated, e.g. `/to a@example.com, b@example.com`; same for `/cc` and `/bcc`), or provide a keyword (or no args) to filter and pick from contacts learned from this account's email history
    - `/subject ...`: set subject
    - `/signature`: open signature selector (choose specific/default/none)
    - `/signature none`: disable signature for this send; `/signature default`: use account default signature

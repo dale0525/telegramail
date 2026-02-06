@@ -17,6 +17,11 @@ from aiotdlib.api import (
     UpdateNewCallbackQuery,
 )
 
+from app.bot.handlers.draft_contacts import (
+    append_contact_email,
+    list_draft_contacts,
+    resolve_contact_email_by_token,
+)
 from app.bot.utils import answer_callback
 from app.database import DBManager
 from app.email_utils.account_manager import AccountManager
@@ -346,6 +351,124 @@ async def handle_draft_callback(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=f"✅ {_('email_from')}: {from_email}",
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                clear_draft=False,
+            )
+        except Exception:
+            pass
+        return True
+
+    if data.startswith("draft:set_rcpt:"):
+        try:
+            await answer_callback(client=client, update=update)
+        except Exception as e:
+            logger.warning(f"Failed to answer 'draft:set_rcpt' callback query: {e}")
+
+        try:
+            _p = data.split(":", 4)
+            draft_id = int(_p[2])
+            field = (_p[3] or "").strip().lower()
+            token = (_p[4] or "").strip().lower()
+        except Exception:
+            logger.warning(f"Invalid draft:set_rcpt callback data: {data}")
+            return True
+
+        field_map = {
+            "to": "to_addrs",
+            "cc": "cc_addrs",
+            "bcc": "bcc_addrs",
+        }
+        target_field = field_map.get(field)
+        if not target_field or not token:
+            return True
+
+        db = DBManager()
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT account_id, chat_id, thread_id, card_message_id, status FROM drafts WHERE id = ?",
+            (draft_id,),
+        )
+        draft_row = cur.fetchone()
+        conn.close()
+        if not draft_row:
+            logger.warning(f"Draft not found for set_rcpt: {draft_id}")
+            return True
+
+        account_id, draft_chat_id, draft_thread_id, card_message_id, status = draft_row
+        if str(status) != "open":
+            return True
+
+        contacts = list_draft_contacts(
+            db=db,
+            account_id=int(account_id),
+            query="",
+            limit=2000,
+        )
+        selected_email = resolve_contact_email_by_token(
+            field=field,
+            contacts=contacts,
+            token=token,
+        )
+        if not selected_email:
+            logger.info(f"No matching contact for set_rcpt token: {token}")
+            return True
+
+        refreshed = db.get_active_draft(
+            chat_id=int(draft_chat_id),
+            thread_id=int(draft_thread_id),
+        )
+        if not refreshed:
+            return True
+
+        merged_addrs = append_contact_email(
+            existing_addrs=refreshed.get(target_field),
+            email_addr=selected_email,
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={target_field: merged_addrs},
+        )
+
+        refreshed = db.get_active_draft(
+            chat_id=int(draft_chat_id), thread_id=int(draft_thread_id)
+        )
+        if refreshed and card_message_id:
+            account = db.get_account(id=int(refreshed["account_id"]))
+            sig_label = format_signature_choice_label(
+                (account or {}).get("signature"),
+                get_draft_signature_choice(draft_id=int(refreshed["id"])),
+            )
+            attachments = db.list_draft_attachments(draft_id=refreshed["id"])
+            card_text = _build_draft_card_text(
+                draft=refreshed,
+                attachments_count=len(attachments),
+                signature_label=sig_label,
+            )
+            try:
+                await client.edit_text(
+                    chat_id=int(draft_chat_id),
+                    message_id=int(card_message_id),
+                    text=card_text,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    clear_draft=False,
+                    reply_markup=ReplyMarkupInlineKeyboard(
+                        rows=_build_draft_card_keyboard(draft_id=int(refreshed["id"]))
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Failed to update draft card after set_rcpt: {e}")
+
+        try:
+            field_label = {
+                "to": _("email_to"),
+                "cc": _("email_cc"),
+                "bcc": _("email_bcc"),
+            }.get(field, field.upper())
+            await client.edit_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"✅ {field_label}: {selected_email}",
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
                 clear_draft=False,
             )

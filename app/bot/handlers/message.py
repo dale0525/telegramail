@@ -3,6 +3,11 @@ import time
 from aiotdlib import Client
 from aiotdlib.api import UpdateNewMessage
 from app.bot.conversation import Conversation
+from app.bot.handlers.draft_contacts import (
+    format_contact_button_label,
+    list_draft_contacts,
+    make_contact_token,
+)
 from app.bot.handlers.access import validate_admin
 from app.bot.handlers.command_filters import parse_bot_command
 from app.utils import Logger
@@ -100,6 +105,92 @@ async def message_handler(client: Client, update: UpdateNewMessage):
             except Exception as e:
                 logger.error(f"Failed to send draft help message: {e}")
 
+        async def _send_recipient_selector(field_cmd: str, query: str = "") -> None:
+            field = (field_cmd or "").strip().lower()
+            if field not in {"to", "cc", "bcc"}:
+                await _send_draft_help()
+                return
+
+            contacts = list_draft_contacts(
+                db=db,
+                account_id=int(draft["account_id"]),
+                query=(query or "").strip(),
+                limit=20,
+            )
+
+            if not contacts:
+                try:
+                    await client.api.send_message(
+                        chat_id=chat_id,
+                        message_thread_id=thread_id,
+                        input_message_content=InputMessageText(
+                            text=FormattedText(text=_("draft_contacts_empty"), entities=[])
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send empty-contact message: {e}")
+                return
+
+            if field == "cc":
+                title_text = _("draft_choose_contact_cc")
+            elif field == "bcc":
+                title_text = _("draft_choose_contact_bcc")
+            else:
+                title_text = _("draft_choose_contact_to")
+            filter_text = (query or "").strip()
+            if filter_text:
+                title_text = f"{title_text}\n🔎 {filter_text}"
+
+            rows = []
+            for contact in contacts:
+                email_addr = (contact.get("email") or "").strip().lower()
+                if not email_addr:
+                    continue
+                label = format_contact_button_label(
+                    display_name=contact.get("display_name") or "",
+                    email_addr=email_addr,
+                )
+                if len(label) > 64:
+                    label = f"{label[:61]}..."
+                token = make_contact_token(field=field, email_addr=email_addr)
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=label,
+                            type=InlineKeyboardButtonTypeCallback(
+                                data=f"draft:set_rcpt:{draft['id']}:{field}:{token}".encode(
+                                    "utf-8"
+                                )
+                            ),
+                        )
+                    ]
+                )
+
+            if not rows:
+                try:
+                    await client.api.send_message(
+                        chat_id=chat_id,
+                        message_thread_id=thread_id,
+                        input_message_content=InputMessageText(
+                            text=FormattedText(text=_("draft_contacts_empty"), entities=[])
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send empty-contact message: {e}")
+                return
+
+            try:
+                await client.api.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=thread_id,
+                    input_message_content=InputMessageText(
+                        text=FormattedText(text=title_text, entities=[])
+                    ),
+                    reply_markup=ReplyMarkupInlineKeyboard(rows=rows),
+                )
+            except Exception as e:
+                logger.error(f"Failed to send recipient selector: {e}")
+
         def _ensure_identities():
             identities = db.list_account_identities(account_id=draft["account_id"])
             if identities:
@@ -121,7 +212,7 @@ async def message_handler(client: Client, update: UpdateNewMessage):
             )
             return db.list_account_identities(account_id=draft["account_id"])
 
-        if cmd in {"to", "cc", "bcc", "subject"} and not args:
+        if cmd == "subject" and not args:
             await _send_draft_help()
             return
 
@@ -278,12 +369,17 @@ async def message_handler(client: Client, update: UpdateNewMessage):
                 logger.error(f"Failed to send signature selector: {e}")
             return
 
-        if cmd == "to" and args:
-            updates = {"to_addrs": cmd_arg}
-        elif cmd == "cc" and args:
-            updates = {"cc_addrs": cmd_arg}
-        elif cmd == "bcc" and args:
-            updates = {"bcc_addrs": cmd_arg}
+        if cmd in {"to", "cc", "bcc"}:
+            if "@" in cmd_arg:
+                field_map = {
+                    "to": "to_addrs",
+                    "cc": "cc_addrs",
+                    "bcc": "bcc_addrs",
+                }
+                updates = {field_map[cmd]: cmd_arg}
+            else:
+                await _send_recipient_selector(field_cmd=cmd, query=cmd_arg)
+                return
         elif cmd == "from" and args:
             requested = cmd_arg.strip()
             identities = _ensure_identities()

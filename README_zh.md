@@ -238,7 +238,7 @@ TelegramMail 使用 Draft 话题来完成撰写、回复和转发：
 3. **在 Draft Topic 中编辑邮件**
    - `/from`：弹出发件人身份列表（用于 alias 场景），点击即可切换
    - `/from b@example.com`：直接切换到指定发件人身份
-   - `/to ...`、`/cc ...`、`/bcc ...`：设置收件人（多个地址用英文逗号`,`分隔，例如：`/to a@example.com, b@example.com`；`/cc`、`/bcc` 同理）
+   - `/to ...`、`/cc ...`、`/bcc ...`：设置收件人。可直接输入邮箱（多个地址用英文逗号`,`分隔，例如：`/to a@example.com, b@example.com`；`/cc`、`/bcc` 同理）；也可输入关键词（或不带参数）从该邮箱账号往来邮件联系人中筛选并点击选择
    - `/subject ...`：设置主题
    - `/signature`：弹出签名选择（可选某个签名、默认签名或不使用签名）
    - `/signature none`：本次发送不使用签名；`/signature default`：使用默认签名
