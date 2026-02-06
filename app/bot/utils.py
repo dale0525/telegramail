@@ -301,8 +301,12 @@ async def get_group_id(context: dict[str, Any]) -> tuple[bool, str, int]:
             logger.error(f"Failed to get group {group_id}: {e}")
 
     if not group:
+        group_name = (
+            (context.get("alias") or context.get("email") or "Email").strip()
+            or "Email"
+        )
         group = await _create_super_group(
-            name=context["alias"],
+            name=group_name,
             desc=context["email"],
             provider_name=(
                 context["common_provider_name"]

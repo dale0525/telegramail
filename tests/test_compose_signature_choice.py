@@ -9,9 +9,23 @@ class _FakeSenderId:
 
 
 class _FakeMessage:
-    def __init__(self, *, chat_id: int, user_id: int):
+    def __init__(
+        self,
+        *,
+        chat_id: int,
+        user_id: int,
+        text: str | None = None,
+        message_id: int = 1,
+    ):
         self.chat_id = chat_id
         self.sender_id = _FakeSenderId(user_id)
+        self.id = message_id
+        if text is not None:
+            self.content = type(
+                "_TextContent",
+                (),
+                {"ID": "messageText", "text": type("_T", (), {"text": text})()},
+            )()
 
 
 class _FakeUpdate:
@@ -22,6 +36,7 @@ class _FakeUpdate:
 class _FakeApi:
     def __init__(self):
         self.sent_messages = []
+        self.deleted_messages = []
 
     async def create_forum_topic(self, **kwargs):
         return type("_Topic", (), {"message_thread_id": 777})()
@@ -33,13 +48,26 @@ class _FakeApi:
     async def pin_chat_message(self, **kwargs):
         return None
 
+    async def delete_messages(self, *, chat_id: int, message_ids: list[int], revoke: bool):
+        self.deleted_messages.append(
+            {"chat_id": int(chat_id), "message_ids": list(message_ids), "revoke": bool(revoke)}
+        )
+
 
 class _FakeClient:
     def __init__(self):
         self.api = _FakeApi()
+        self.sent_texts = []
+        self.edits = []
+        self._next_message_id = 100
 
-    async def send_text(self, *args, **kwargs):
-        raise AssertionError("send_text should not be called in this test")
+    async def send_text(self, chat_id: int, text: str, **kwargs):
+        self._next_message_id += 1
+        self.sent_texts.append({"chat_id": chat_id, "text": text, "kwargs": kwargs})
+        return type("_Msg", (), {"id": self._next_message_id})()
+
+    async def edit_text(self, **kwargs):
+        self.edits.append(kwargs)
 
 
 class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
@@ -96,6 +124,11 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         )
 
     def tearDown(self):
+        from app.bot.conversation import Conversation
+
+        # Conversation instances are process-global; clear to avoid leaking state
+        # into unrelated callback/message tests that reuse chat/user ids.
+        Conversation._instances.clear()
         try:
             self._tmp.cleanup()
         finally:
@@ -141,3 +174,44 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Alt", text)
 
+    async def test_compose_starts_interactive_conversation_and_updates_draft(self):
+        from unittest import mock
+
+        from app.bot.conversation import Conversation, ConversationState
+        from app.bot.handlers.compose import compose_command_handler
+        from app.database import DBManager
+
+        client = _FakeClient()
+        update = _FakeUpdate(_FakeMessage(chat_id=123, user_id=1))
+
+        with mock.patch("app.bot.handlers.compose.validate_admin", lambda _u: True):
+            await compose_command_handler(client, update)
+
+        conversation = Conversation.get_instance(123, 1)
+        self.assertIsNotNone(conversation)
+        self.assertEqual(conversation.state, ConversationState.ACTIVE)
+        self.assertTrue(client.sent_texts)
+
+        for idx, value in enumerate(
+            ["to@example.com", "/skip", "/skip", "Hello Subject", "Hello Body"],
+            start=1,
+        ):
+            handled = await conversation.handle_update(
+                _FakeUpdate(
+                    _FakeMessage(
+                        chat_id=123,
+                        user_id=1,
+                        text=value,
+                        message_id=200 + idx,
+                    )
+                )
+            )
+            self.assertTrue(handled)
+
+        self.assertIsNone(Conversation.get_instance(123, 1))
+        db = DBManager()
+        draft = db.get_active_draft(chat_id=123, thread_id=777)
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft["to_addrs"], "to@example.com")
+        self.assertEqual(draft["subject"], "Hello Subject")
+        self.assertEqual(draft["body_markdown"], "Hello Body")

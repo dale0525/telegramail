@@ -3,10 +3,12 @@ import time
 from aiotdlib import Client
 from aiotdlib.api import UpdateNewMessage
 from app.bot.conversation import Conversation
-from app.bot.handlers.draft_contacts import (
-    format_contact_button_label,
-    list_draft_contacts,
-    make_contact_token,
+from app.bot.handlers.draft_contacts import list_draft_contacts
+from app.bot.handlers.draft_recipient_picker import (
+    build_recipient_picker_rows,
+    build_recipient_picker_session,
+    build_recipient_picker_text,
+    set_recipient_picker_session,
 )
 from app.bot.handlers.access import validate_admin
 from app.bot.handlers.command_filters import parse_bot_command
@@ -131,60 +133,40 @@ async def message_handler(client: Client, update: UpdateNewMessage):
                     logger.error(f"Failed to send empty-contact message: {e}")
                 return
 
-            if field == "cc":
-                title_text = _("draft_choose_contact_cc")
-            elif field == "bcc":
-                title_text = _("draft_choose_contact_bcc")
-            else:
-                title_text = _("draft_choose_contact_to")
             filter_text = (query or "").strip()
-            if filter_text:
-                title_text = f"{title_text}\n🔎 {filter_text}"
 
-            rows = []
-            for contact in contacts:
-                email_addr = (contact.get("email") or "").strip().lower()
-                if not email_addr:
-                    continue
-                label = format_contact_button_label(
-                    display_name=contact.get("display_name") or "",
-                    email_addr=email_addr,
-                )
-                if len(label) > 64:
-                    label = f"{label[:61]}..."
-                token = make_contact_token(field=field, email_addr=email_addr)
-                rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text=label,
-                            type=InlineKeyboardButtonTypeCallback(
-                                data=f"draft:set_rcpt:{draft['id']}:{field}:{token}".encode(
-                                    "utf-8"
-                                )
-                            ),
-                        )
-                    ]
-                )
-
+            session = build_recipient_picker_session(
+                draft=draft,
+                field=field,
+                contacts=contacts,
+                query=filter_text,
+            )
+            rows = build_recipient_picker_rows(
+                draft_id=int(draft["id"]),
+                field=field,
+                session=session,
+            )
             if not rows:
-                try:
-                    await client.api.send_message(
-                        chat_id=chat_id,
-                        message_thread_id=thread_id,
-                        input_message_content=InputMessageText(
-                            text=FormattedText(text=_("draft_contacts_empty"), entities=[])
-                        ),
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send empty-contact message: {e}")
+                await _send_draft_help()
                 return
+
+            set_recipient_picker_session(
+                chat_id=int(chat_id),
+                user_id=int(user_id),
+                draft_id=int(draft["id"]),
+                field=field,
+                session=session,
+            )
 
             try:
                 await client.api.send_message(
                     chat_id=chat_id,
                     message_thread_id=thread_id,
                     input_message_content=InputMessageText(
-                        text=FormattedText(text=title_text, entities=[])
+                        text=FormattedText(
+                            text=build_recipient_picker_text(field=field, session=session),
+                            entities=[],
+                        )
                     ),
                     reply_markup=ReplyMarkupInlineKeyboard(rows=rows),
                 )

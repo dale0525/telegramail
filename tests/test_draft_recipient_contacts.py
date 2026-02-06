@@ -270,7 +270,7 @@ class TestDraftRecipientContacts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(draft["to_addrs"], "direct@example.com")
         self.assertFalse(client.sent_messages)
 
-    async def test_callback_select_contact_appends_to_to_addrs(self):
+    async def test_callback_select_contact_requires_save_to_apply(self):
         from app.database import DBManager
         from unittest import mock
 
@@ -314,7 +314,7 @@ class TestDraftRecipientContacts(unittest.IsolatedAsyncioTestCase):
         callback_data = (
             getattr(getattr(first_button, "type_", None), "data", b"") or b""
         ).decode("utf-8")
-        self.assertTrue(callback_data.startswith("draft:set_rcpt:"))
+        self.assertTrue(callback_data.startswith("draft:rcpt_pick:toggle:"))
         selected_from_label = (getattr(first_button, "text", "") or "").lower()
         email_match = re.search(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", selected_from_label)
         self.assertIsNotNone(email_match)
@@ -334,8 +334,117 @@ class TestDraftRecipientContacts(unittest.IsolatedAsyncioTestCase):
 
             await callback_handler(client, callback_update)
 
+        # Toggle only updates picker UI; draft field is updated on explicit save.
+        refreshed = db.get_active_draft(chat_id=123, thread_id=456)
+        self.assertEqual((refreshed.get("to_addrs") or "").lower(), "old@example.com")
+
+        save_update = _FakeCallbackUpdate(
+            chat_id=123,
+            user_id=1,
+            message_id=888,
+            data=f"draft:rcpt_pick:save:{draft_id}:to",
+        )
+        with mock.patch(
+            "app.bot.handlers.callback.Conversation.get_instance",
+            lambda *_args, **_kwargs: None,
+        ):
+            from app.bot.handlers.callback import callback_handler
+
+            await callback_handler(client, save_update)
+
         refreshed = db.get_active_draft(chat_id=123, thread_id=456)
         to_addrs = (refreshed.get("to_addrs") or "").lower()
         self.assertIn("old@example.com", to_addrs)
         self.assertIn(selected_email, to_addrs)
         self.assertTrue(any(int(edit.get("message_id") or 0) == 99 for edit in client.edits))
+
+    async def test_callback_multi_select_can_add_multiple_contacts(self):
+        from app.database import DBManager
+        from unittest import mock
+
+        db = DBManager()
+        self._seed_contact_history()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={"card_message_id": 99, "to_addrs": "old@example.com"},
+        )
+
+        client = _FakeClient()
+        update = _FakeUpdate(_FakeMessage(chat_id=123, thread_id=456, user_id=1, text="/to"))
+
+        with mock.patch("app.bot.handlers.message.validate_admin", lambda _u: True), mock.patch(
+            "app.bot.handlers.message.Conversation.get_instance", lambda *_args, **_kwargs: None
+        ):
+            from app.bot.handlers.message import message_handler
+
+            await message_handler(client, update)
+
+        self.assertTrue(client.sent_messages)
+        selector_markup = client.sent_messages[-1].get("reply_markup")
+        self.assertIsNotNone(selector_markup)
+        contact_buttons = [
+            button
+            for row in getattr(selector_markup, "rows", [])
+            for button in row
+            if hasattr(button, "type_")
+            and "draft:rcpt_pick:toggle:" in (
+                (getattr(getattr(button, "type_", None), "data", b"") or b"").decode(
+                    "utf-8"
+                )
+            )
+        ]
+        self.assertGreaterEqual(len(contact_buttons), 2)
+
+        picked_emails = []
+        for button in contact_buttons[:2]:
+            label = (getattr(button, "text", "") or "").lower()
+            match = re.search(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", label)
+            self.assertIsNotNone(match)
+            picked_emails.append(match.group(0))
+
+            callback_update = _FakeCallbackUpdate(
+                chat_id=123,
+                user_id=1,
+                message_id=888,
+                data=(
+                    getattr(getattr(button, "type_", None), "data", b"") or b""
+                ).decode("utf-8"),
+            )
+            with mock.patch(
+                "app.bot.handlers.callback.Conversation.get_instance",
+                lambda *_args, **_kwargs: None,
+            ):
+                from app.bot.handlers.callback import callback_handler
+
+                await callback_handler(client, callback_update)
+
+        # Before save, only existing addresses remain.
+        refreshed = db.get_active_draft(chat_id=123, thread_id=456)
+        self.assertEqual((refreshed.get("to_addrs") or "").lower(), "old@example.com")
+
+        save_update = _FakeCallbackUpdate(
+            chat_id=123,
+            user_id=1,
+            message_id=888,
+            data=f"draft:rcpt_pick:save:{draft_id}:to",
+        )
+        with mock.patch(
+            "app.bot.handlers.callback.Conversation.get_instance",
+            lambda *_args, **_kwargs: None,
+        ):
+            from app.bot.handlers.callback import callback_handler
+
+            await callback_handler(client, save_update)
+
+        refreshed = db.get_active_draft(chat_id=123, thread_id=456)
+        to_addrs = (refreshed.get("to_addrs") or "").lower()
+        self.assertIn("old@example.com", to_addrs)
+        for email_addr in picked_emails:
+            self.assertIn(email_addr, to_addrs)

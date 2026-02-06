@@ -74,6 +74,8 @@ def handle_provider_selection(context: dict, selection: str):
     if selection.lower() == _("add_addcount_provider_custom").lower():
         logger.info("User selected custom email provider configuration.")
         context["use_common_provider"] = False
+        # Mark provider as explicitly selected so email-domain auto-detect won't override it.
+        context["selected_provider"] = True
         return context
 
     # Find the matching provider in COMMON_PROVIDERS
@@ -203,8 +205,9 @@ ADD_ACCOUNT_STEPS = [
         "skip": lambda context: context.get("use_common_provider", False),
     },
     {
-        "text": _("add_account_input_alias"),
+        "text": f"{_('add_account_input_alias')}\n{_('send_new_or_skip')}",
         "key": "alias",
+        "optional": True,
     },
     {
         "text": f"{_('add_account_input_signature')}\n{_('send_new_or_skip')}",

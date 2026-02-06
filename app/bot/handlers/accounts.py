@@ -95,6 +95,8 @@ async def add_account_handler(
         # No need to check context["use_common_provider"] explicitly here
         # The context should already contain the correct server/port/ssl values
 
+        alias = (context.get("alias") or context.get("email") or "").strip()
+
         # add account using the full context
         account_manager = AccountManager()
         account = {
@@ -106,7 +108,7 @@ async def add_account_handler(
             "imap_server": context["imap_server"],
             "imap_port": context["imap_port"],
             "imap_ssl": context["imap_ssl"],
-            "alias": context["alias"],
+            "alias": alias,
             "tg_group_id": context["tg_group_id"],
             "signature": context.get("signature"),
         }
@@ -114,9 +116,6 @@ async def add_account_handler(
         success = account_manager.add_account(account)
 
         if success:
-            alias = context.get(
-                "alias", context.get("email")
-            )  # Fallback to email if alias not set
             conversation.finish_message = (
                 f"✅ <b>{alias}</b> {_('add_account_success')}"
             )

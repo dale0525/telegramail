@@ -22,6 +22,14 @@ from app.bot.handlers.draft_contacts import (
     list_draft_contacts,
     resolve_contact_email_by_token,
 )
+from app.bot.handlers.draft_recipient_picker import (
+    build_recipient_picker_rows,
+    build_recipient_picker_text,
+    clear_recipient_picker_session,
+    get_recipient_picker_session,
+    get_recipient_target_field,
+    merge_recipient_picker_selection,
+)
 from app.bot.utils import answer_callback
 from app.database import DBManager
 from app.email_utils.account_manager import AccountManager
@@ -117,6 +125,53 @@ async def _delete_compose_draft_topic_after_delay(
         )
     except Exception as e:
         logger.error(f"Failed to delete compose draft topic {thread_id}: {e}")
+
+
+async def _render_recipient_picker(
+    *,
+    client: Client,
+    chat_id: int,
+    message_id: int,
+    user_id: int,
+    draft_id: int,
+    field: str,
+) -> None:
+    session = get_recipient_picker_session(
+        chat_id=int(chat_id),
+        user_id=int(user_id),
+        draft_id=int(draft_id),
+        field=field,
+    )
+    if not session:
+        try:
+            await client.edit_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=f"❌ {_('conversation_expired_or_not_found')}",
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                clear_draft=False,
+            )
+        except Exception:
+            pass
+        return
+
+    try:
+        await client.edit_text(
+            chat_id=int(chat_id),
+            message_id=int(message_id),
+            text=build_recipient_picker_text(field=field, session=session),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            clear_draft=False,
+            reply_markup=ReplyMarkupInlineKeyboard(
+                rows=build_recipient_picker_rows(
+                    draft_id=int(draft_id),
+                    field=field,
+                    session=session,
+                )
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Failed to render recipient picker: {e}")
 
 
 async def handle_draft_callback(
@@ -356,6 +411,274 @@ async def handle_draft_callback(
             )
         except Exception:
             pass
+        return True
+
+    if data.startswith("draft:rcpt_pick:"):
+        try:
+            await answer_callback(client=client, update=update)
+        except Exception as e:
+            logger.warning(f"Failed to answer 'draft:rcpt_pick' callback query: {e}")
+
+        parts = data.split(":")
+        if len(parts) < 5:
+            logger.warning(f"Invalid draft:rcpt_pick callback data: {data}")
+            return True
+
+        action = (parts[2] or "").strip().lower()
+        try:
+            draft_id = int(parts[3])
+        except Exception:
+            logger.warning(f"Invalid draft id in draft:rcpt_pick callback data: {data}")
+            return True
+        field = (parts[4] or "").strip().lower()
+        if field not in {"to", "cc", "bcc"}:
+            logger.warning(f"Invalid recipient field in draft:rcpt_pick callback data: {data}")
+            return True
+
+        chat_id = int(update.chat_id)
+        user_id = int(update.sender_user_id)
+        message_id = int(update.message_id)
+
+        if action == "toggle":
+            if len(parts) < 6:
+                logger.warning(f"Missing index in draft:rcpt_pick:toggle callback data: {data}")
+                return True
+            try:
+                idx = int(parts[5])
+            except Exception:
+                logger.warning(f"Invalid index in draft:rcpt_pick:toggle callback data: {data}")
+                return True
+
+            session = get_recipient_picker_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+            if not session:
+                await _render_recipient_picker(
+                    client=client,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            emails = list(session.get("emails") or [])
+            if 0 <= idx < len(emails):
+                selected = set(session.get("selected") or set())
+                if idx in selected:
+                    selected.remove(idx)
+                else:
+                    selected.add(idx)
+                session["selected"] = selected
+
+            await _render_recipient_picker(
+                client=client,
+                chat_id=chat_id,
+                message_id=message_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+            return True
+
+        if action == "page":
+            if len(parts) < 6:
+                logger.warning(f"Missing page index in draft:rcpt_pick:page callback data: {data}")
+                return True
+            try:
+                page = int(parts[5])
+            except Exception:
+                logger.warning(f"Invalid page index in draft:rcpt_pick:page callback data: {data}")
+                return True
+
+            session = get_recipient_picker_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+            if not session:
+                await _render_recipient_picker(
+                    client=client,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            session["page"] = page
+            await _render_recipient_picker(
+                client=client,
+                chat_id=chat_id,
+                message_id=message_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+            return True
+
+        if action == "cancel":
+            clear_recipient_picker_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+            try:
+                await client.edit_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=_("operation_cancelled"),
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    clear_draft=False,
+                )
+            except Exception:
+                pass
+            return True
+
+        if action == "save":
+            session = get_recipient_picker_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+            if not session:
+                await _render_recipient_picker(
+                    client=client,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            target_field = get_recipient_target_field(field)
+            if not target_field:
+                clear_recipient_picker_session(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            db = DBManager()
+            conn = db._get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT account_id, chat_id, thread_id, card_message_id, status FROM drafts WHERE id = ?",
+                (draft_id,),
+            )
+            draft_row = cur.fetchone()
+            conn.close()
+            if not draft_row:
+                clear_recipient_picker_session(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            account_id, draft_chat_id, draft_thread_id, card_message_id, status = draft_row
+            if str(status) != "open":
+                clear_recipient_picker_session(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            refreshed = db.get_active_draft(
+                chat_id=int(draft_chat_id),
+                thread_id=int(draft_thread_id),
+            )
+            if not refreshed:
+                clear_recipient_picker_session(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            merged_addrs = merge_recipient_picker_selection(
+                existing_addrs=refreshed.get(target_field),
+                candidate_emails=list(session.get("emails") or []),
+                selected_indices=set(session.get("selected") or set()),
+            )
+            db.update_draft(
+                draft_id=draft_id,
+                updates={target_field: merged_addrs},
+            )
+
+            refreshed = db.get_active_draft(
+                chat_id=int(draft_chat_id), thread_id=int(draft_thread_id)
+            )
+            if refreshed and card_message_id:
+                account = db.get_account(id=int(account_id))
+                sig_label = format_signature_choice_label(
+                    (account or {}).get("signature"),
+                    get_draft_signature_choice(draft_id=int(refreshed["id"])),
+                )
+                attachments = db.list_draft_attachments(draft_id=refreshed["id"])
+                card_text = _build_draft_card_text(
+                    draft=refreshed,
+                    attachments_count=len(attachments),
+                    signature_label=sig_label,
+                )
+                try:
+                    await client.edit_text(
+                        chat_id=int(draft_chat_id),
+                        message_id=int(card_message_id),
+                        text=card_text,
+                        link_preview_options=LinkPreviewOptions(is_disabled=True),
+                        clear_draft=False,
+                        reply_markup=ReplyMarkupInlineKeyboard(
+                            rows=_build_draft_card_keyboard(draft_id=int(refreshed["id"]))
+                        ),
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update draft card after rcpt_pick save: {e}")
+
+            clear_recipient_picker_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+
+            field_label = {
+                "to": _("email_to"),
+                "cc": _("email_cc"),
+                "bcc": _("email_bcc"),
+            }.get(field, field.upper())
+            selected_summary = merged_addrs or _("draft_recipient_picker_none_selected")
+            if len(selected_summary) > 1200:
+                selected_summary = f"{selected_summary[:1197]}..."
+
+            try:
+                await client.edit_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=f"✅ {field_label}: {selected_summary}",
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    clear_draft=False,
+                )
+            except Exception:
+                pass
+            return True
+
+        logger.warning(f"Unknown draft:rcpt_pick action '{action}' in callback data: {data}")
         return True
 
     if data.startswith("draft:set_rcpt:"):

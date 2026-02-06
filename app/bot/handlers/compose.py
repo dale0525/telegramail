@@ -1,3 +1,4 @@
+import re
 import time
 
 from aiotdlib import Client
@@ -9,14 +10,17 @@ from aiotdlib.api import (
     ReplyMarkupInlineKeyboard,
     InputMessageText,
     FormattedText,
+    LinkPreviewOptions,
 )
 
+from app.bot.conversation import Conversation
 from app.bot.handlers.access import validate_admin
 from app.database import DBManager
 from app.email_utils.account_manager import AccountManager
 from app.email_utils.signatures import (
     format_signature_choice_label,
     get_account_last_signature_choice,
+    get_draft_signature_choice,
     normalize_signature_choice,
     set_draft_signature_choice,
 )
@@ -24,6 +28,151 @@ from app.i18n import _
 from app.utils import Logger
 
 logger = Logger().get_logger(__name__)
+
+_EMAIL_RE = re.compile(r"^[\w\.-]+@[\w\.-]+\.\w+$")
+
+
+def _split_recipients(value: str) -> list[str]:
+    seen: set[str] = set()
+    recipients: list[str] = []
+    for part in (value or "").split(","):
+        email = (part or "").strip()
+        if not email:
+            continue
+        lowered = email.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        recipients.append(email)
+    return recipients
+
+
+def _normalize_recipients(value: str) -> str:
+    return ",".join(_split_recipients(value))
+
+
+def _validate_recipients_required(value: str) -> tuple[bool, str]:
+    recipients = _split_recipients(value)
+    if not recipients:
+        return False, _("compose_invalid_recipients_required")
+    if not all(_EMAIL_RE.match(email) for email in recipients):
+        return False, _("compose_invalid_recipients")
+    return True, ""
+
+
+def _validate_recipients_optional(value: str) -> tuple[bool, str]:
+    recipients = _split_recipients(value)
+    if not recipients:
+        return True, ""
+    if not all(_EMAIL_RE.match(email) for email in recipients):
+        return False, _("compose_invalid_recipients")
+    return True, ""
+
+
+def _build_compose_steps() -> list[dict]:
+    return [
+        {
+            "text": _("compose_input_to"),
+            "key": "to_addrs",
+            "validate": _validate_recipients_required,
+            "process": _normalize_recipients,
+        },
+        {
+            "text": f"{_('compose_input_cc')}\n{_('send_new_or_skip')}",
+            "key": "cc_addrs",
+            "optional": True,
+            "validate": _validate_recipients_optional,
+            "process": _normalize_recipients,
+        },
+        {
+            "text": f"{_('compose_input_bcc')}\n{_('send_new_or_skip')}",
+            "key": "bcc_addrs",
+            "optional": True,
+            "validate": _validate_recipients_optional,
+            "process": _normalize_recipients,
+        },
+        {
+            "text": f"{_('compose_input_subject')}\n{_('send_new_or_skip')}",
+            "key": "subject",
+            "optional": True,
+        },
+        {
+            "text": f"{_('compose_input_body')}\n{_('send_new_or_skip')}",
+            "key": "body_markdown",
+            "optional": True,
+        },
+    ]
+
+
+def _build_draft_card_keyboard(*, draft_id: int) -> list[list[InlineKeyboardButton]]:
+    return [
+        [
+            InlineKeyboardButton(
+                text=f"📤 {_('send')}",
+                type=InlineKeyboardButtonTypeCallback(
+                    data=f"draft:send:{draft_id}".encode("utf-8")
+                ),
+            ),
+            InlineKeyboardButton(
+                text=f"❌ {_('cancel')}",
+                type=InlineKeyboardButtonTypeCallback(
+                    data=f"draft:cancel:{draft_id}".encode("utf-8")
+                ),
+            ),
+        ]
+    ]
+
+
+def _build_draft_card_text(*, draft: dict, signature_label: str, attachments_count: int) -> str:
+    body = draft.get("body_markdown") or ""
+    return (
+        f"📝 {_('draft')}\n\n"
+        f"From: {draft.get('from_identity_email') or ''}\n"
+        f"To: {draft.get('to_addrs') or ''}\n"
+        f"Cc: {draft.get('cc_addrs') or ''}\n"
+        f"Bcc: {draft.get('bcc_addrs') or ''}\n"
+        f"Subject: {draft.get('subject') or ''}\n"
+        f"{_('draft_signature')}: {signature_label}\n"
+        f"{_('draft_attachments')}: {attachments_count}\n"
+        f"Body: {len(body)} chars\n\n"
+        f"{_('draft_help_commands')}"
+    )
+
+
+async def _refresh_draft_card(*, client: Client, db: DBManager, chat_id: int, thread_id: int) -> None:
+    draft = db.get_active_draft(chat_id=chat_id, thread_id=thread_id)
+    if not draft:
+        return
+
+    card_message_id = draft.get("card_message_id")
+    if not card_message_id:
+        return
+
+    account = db.get_account(id=draft["account_id"]) or {}
+    signature_label = format_signature_choice_label(
+        account.get("signature"),
+        get_draft_signature_choice(draft_id=int(draft["id"])),
+    )
+    attachments = db.list_draft_attachments(draft_id=draft["id"])
+    card_text = _build_draft_card_text(
+        draft=draft,
+        signature_label=signature_label,
+        attachments_count=len(attachments),
+    )
+
+    try:
+        await client.edit_text(
+            chat_id=int(chat_id),
+            message_id=int(card_message_id),
+            text=card_text,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            clear_draft=False,
+            reply_markup=ReplyMarkupInlineKeyboard(
+                rows=_build_draft_card_keyboard(draft_id=int(draft["id"]))
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Failed to update compose draft card: {e}")
 
 
 async def compose_command_handler(client: Client, update: UpdateNewMessage) -> None:
@@ -84,32 +233,18 @@ async def compose_command_handler(client: Client, update: UpdateNewMessage) -> N
         signature_choice,
     )
 
-    card_text = (
-        f"📝 {_('draft')}\n\n"
-        f"From: {from_email}\n"
-        f"To: \n"
-        f"Cc: \n"
-        f"Bcc: \n"
-        f"Subject: \n\n"
-        f"{_('draft_signature')}: {signature_label}\n\n"
-        f"{_('draft_help_commands')}"
+    card_text = _build_draft_card_text(
+        draft={
+            "from_identity_email": from_email,
+            "to_addrs": "",
+            "cc_addrs": "",
+            "bcc_addrs": "",
+            "subject": "",
+            "body_markdown": "",
+        },
+        signature_label=signature_label,
+        attachments_count=0,
     )
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                text=f"📤 {_('send')}",
-                type=InlineKeyboardButtonTypeCallback(
-                    data=f"draft:send:{draft_id}".encode("utf-8")
-                ),
-            ),
-            InlineKeyboardButton(
-                text=f"❌ {_('cancel')}",
-                type=InlineKeyboardButtonTypeCallback(
-                    data=f"draft:cancel:{draft_id}".encode("utf-8")
-                ),
-            ),
-        ]
-    ]
 
     card_message = await client.api.send_message(
         chat_id=chat_id,
@@ -117,7 +252,9 @@ async def compose_command_handler(client: Client, update: UpdateNewMessage) -> N
         input_message_content=InputMessageText(
             text=FormattedText(text=card_text, entities=[])
         ),
-        reply_markup=ReplyMarkupInlineKeyboard(rows=keyboard),
+        reply_markup=ReplyMarkupInlineKeyboard(
+            rows=_build_draft_card_keyboard(draft_id=int(draft_id))
+        ),
     )
 
     db.update_draft(draft_id=draft_id, updates={"card_message_id": card_message.id})
@@ -129,3 +266,28 @@ async def compose_command_handler(client: Client, update: UpdateNewMessage) -> N
         )
     except Exception as e:
         logger.debug(f"Failed to pin draft card message: {e}")
+
+    conversation = await Conversation.create_conversation(
+        client=client,
+        chat_id=chat_id,
+        user_id=update.message.sender_id.user_id,
+        steps=_build_compose_steps(),
+        context={"draft_id": int(draft_id)},
+    )
+
+    async def on_complete(context: dict) -> None:
+        updates = {}
+        for key in ("to_addrs", "cc_addrs", "bcc_addrs", "subject", "body_markdown"):
+            if key in context:
+                updates[key] = context.get(key)
+        if updates:
+            db.update_draft(draft_id=int(context["draft_id"]), updates=updates)
+            await _refresh_draft_card(
+                client=client,
+                db=db,
+                chat_id=int(chat_id),
+                thread_id=int(thread_id),
+            )
+
+    conversation.on_finish(on_complete)
+    await conversation.start()
