@@ -27,7 +27,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 - [x] 接收 INBOX 之外的邮件
 - [ ] 获取所有邮件
 - [ ] 为每个邮箱设置签名
-- [ ] 邮件信息中显示邮箱所在文件夹
+- [x] 邮件信息中显示邮箱所在文件夹
 - [x] 使用 LLM 总结邮件
 - [ ] 使用 LLM 判断邮件标签
 - [ ] 使用 LLM 写邮件

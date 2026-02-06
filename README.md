@@ -29,7 +29,7 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 - [x] Receive emails from folders other than INBOX
 - [ ] Fetch all emails
 - [ ] Set signature for each email account
-- [ ] Display email folder information
+- [x] Display email folder information
 - [x] Summarize emails using LLM
 - [ ] Label emails using LLM
 - [ ] Write emails using LLM

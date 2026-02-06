@@ -102,6 +102,7 @@
     "email_deadline": "⏰ Deadline",
     "email_fetch_success": "Successfully fetched emails",
     "email_from": "From",
+    "email_mailbox": "Folder",
     "email_key_contacts": "👥 Key Contacts",
     "email_priority_high": "🔴 High",
     "email_priority_low": "🟢 Low",

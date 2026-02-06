@@ -70,6 +70,7 @@ def build_incoming_email_card(
     recipient: str = "",
     cc: str = "",
     bcc: str = "",
+    mailbox: str = "",
     email_date: str = "",
     attachments_count: int = 0,
     summary_html: Optional[str] = None,
@@ -79,6 +80,7 @@ def build_incoming_email_card(
     subject_clean = _normalize_single_line(subject) or _("no_subject")
     sender_clean = (sender or "").strip()
     recipient_clean = (recipient or "").strip()
+    mailbox_clean = _normalize_single_line(str(mailbox or ""))
 
     lines: list[str] = [
         f"<code>IN</code> 📥 <b>{_escape_and_ellipsize(subject_clean, 200)}</b>",
@@ -96,6 +98,10 @@ def build_incoming_email_card(
     if bcc and str(bcc).strip():
         lines.append(
             f"🔒 {_escape(_('email_bcc'))}: {_escape_and_ellipsize(str(bcc).strip(), 700)}"
+        )
+    if mailbox_clean:
+        lines.append(
+            f"📁 {_escape(_('email_mailbox'))}: {_escape_and_ellipsize(mailbox_clean, 200)}"
         )
     if email_date and str(email_date).strip():
         lines.append(f"🕒 {_escape_and_ellipsize(str(email_date).strip(), 200)}")
@@ -167,4 +173,3 @@ def build_outgoing_email_card(
     available = max(0, max_chars - len(prefix))
     body = _escape_and_truncate_to_fit(body_clean, available)
     return prefix + body
-

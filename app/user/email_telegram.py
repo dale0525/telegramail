@@ -579,6 +579,7 @@ class EmailTelegramSender:
         recipient = self.decode_mime_header_value(email_data.get("recipient", ""))
         cc = self.decode_mime_header_value(email_data.get("cc", ""))
         bcc = self.decode_mime_header_value(email_data.get("bcc", ""))
+        mailbox = (str(email_data.get("mailbox") or "").strip().strip('"') or "INBOX")
         email_date = (email_data.get("email_date") or "").strip()
         attachments_count = len(email_data.get("attachments") or [])
 
@@ -611,6 +612,7 @@ class EmailTelegramSender:
             recipient=recipient,
             cc=cc,
             bcc=bcc,
+            mailbox=mailbox,
             email_date=email_date,
             attachments_count=attachments_count,
             summary_html=summary_html,
