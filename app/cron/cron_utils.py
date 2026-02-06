@@ -34,4 +34,4 @@ def start_periodic_task(task_func, interval_minutes=3, task_name="periodic task"
     """
     logger.info(f"Starting {task_name} scheduler")
     loop = asyncio.get_event_loop()
-    loop.create_task(run_periodic_task(task_func, interval_minutes, task_name))
+    return loop.create_task(run_periodic_task(task_func, interval_minutes, task_name))

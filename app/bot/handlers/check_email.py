@@ -6,7 +6,10 @@ from app.bot.handlers.access import validate_admin
 from app.bot.utils import send_and_delete_message
 from app.i18n import _
 from app.utils import Logger
-from app.email_utils.imap_client import IMAPClient
+from app.cron.email_ingestion import (
+    fetch_account_emails,
+    fetch_account_emails_safe,
+)
 from app.email_utils.account_manager import AccountManager
 from app.bot.conversation import Conversation
 
@@ -160,9 +163,7 @@ async def fetch_emails_action(
         (success, message) tuple
     """
     try:
-        imap_client = IMAPClient(account)
-
-        email_count = await imap_client.fetch_unread_emails()
+        email_count = await fetch_account_emails(account)
 
         context["email_count"] = email_count
 
@@ -183,14 +184,7 @@ async def _fetch_email_for_account(account: dict[str, Any]) -> tuple[str, int, s
         Tuple of (email address, email count, error message)
         Error message is empty if successful
     """
-    try:
-        imap_client = IMAPClient(account)
-        email_count = await imap_client.fetch_unread_emails()
-        email = account["email"]
-        return email, email_count, ""
-    except Exception as e:
-        logger.error(f"Error fetching emails for {email}: {e}")
-        return email, 0, str(e)
+    return await fetch_account_emails_safe(account)
 
 
 async def fetch_all_emails_action(context: dict) -> tuple[bool, str]:

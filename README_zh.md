@@ -201,7 +201,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 
 ### 接收邮件
 
-TelegramMail 会定期检查 INBOX（默认）中的未读邮件，并将新邮件发送到 Telegram 以邮箱账户 Alias 命名的群组中。每封邮件以一个 Forum Topic 呈现，包含：
+TelegramMail 会将新邮件发送到 Telegram 以邮箱账户 Alias 命名的群组中。每封邮件以一个 Forum Topic 呈现，包含：
 - 邮件主题、发件人和收件人信息
 - 邮件总结(如果进行了 LLM 相关配置)
 - 邮件正文
@@ -210,7 +210,17 @@ TelegramMail 会定期检查 INBOX（默认）中的未读邮件，并将新邮�
 - 附件
 ![20250428155652](https://imagehost.daletan.win/20250428155652.png)
 
-你可以通过修改`.env`中的`POLLING_INTERVAL`来更改定期检查的频率。默认为 300 秒。
+默认模式为 `MAIL_RECEIVE_MODE=hybrid`（推荐）：优先使用 IMAP IDLE 做近实时监听，同时保留 `POLLING_INTERVAL` 作为兜底轮询。
+
+- `hybrid`：近实时（通常数秒到几十秒）+ 兜底轮询
+- `idle`：仅使用 IMAP IDLE（低延迟，但无轮询兜底）
+- `polling`：仅定时轮询（延迟约为 `0 ~ POLLING_INTERVAL`）
+
+常用参数：
+- `POLLING_INTERVAL`：轮询间隔（秒），默认 `300`
+- `IMAP_IDLE_TIMEOUT_SECONDS`：单次 IDLE 等待超时（秒），默认 `1740`
+- `IMAP_IDLE_FALLBACK_POLL_SECONDS`：服务器不支持 IDLE 时的短轮询间隔（秒），默认 `30`
+- `IMAP_IDLE_RECONNECT_BACKOFF_SECONDS`：IDLE 连接失败后的重连初始退避（秒，指数退避），默认 `5`
 
 如果要监听额外的 IMAP 文件夹，可以设置 `TELEGRAMAIL_IMAP_MONITORED_MAILBOXES`（逗号分隔），例如：`INBOX,Archive,Spam`。
 你也可以通过 `/accounts` → 选择账户 → **IMAP 文件夹** 来为单个账户配置覆盖（支持“探测文件夹”+ 点击选择）。

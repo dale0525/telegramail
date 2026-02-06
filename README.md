@@ -204,7 +204,7 @@ Use Docker Compose for production deployment with pre-built images from Docker H
 
 ### Receiving Emails
 
-TelegramMail regularly checks for unread emails in the INBOX (default) and sends new emails to the Telegram group named after your email account Alias. Each email is presented as a Forum Topic, including:
+TelegramMail delivers new emails to the Telegram group named after your email account Alias. Each email is presented as a Forum Topic, including:
 - Email subject, sender, and recipient information
 - Email summary (if LLM is configured)
 - Email body
@@ -213,7 +213,17 @@ TelegramMail regularly checks for unread emails in the INBOX (default) and sends
 - Attachments
 ![20250428160226](https://imagehost.daletan.win/20250428160226.png)
 
-You can change the frequency of regular checks by modifying `POLLING_INTERVAL` in the `.env` file. The default is 300 seconds.
+Default mode is `MAIL_RECEIVE_MODE=hybrid` (recommended): it uses IMAP IDLE for near real-time delivery and keeps `POLLING_INTERVAL` as safety polling.
+
+- `hybrid`: near real-time (typically seconds to tens of seconds) + safety polling
+- `idle`: IMAP IDLE only (low latency, no polling safety net)
+- `polling`: periodic polling only (latency around `0 ~ POLLING_INTERVAL`)
+
+Common settings:
+- `POLLING_INTERVAL`: polling interval in seconds, default `300`
+- `IMAP_IDLE_TIMEOUT_SECONDS`: single IDLE wait timeout in seconds, default `1740`
+- `IMAP_IDLE_FALLBACK_POLL_SECONDS`: short polling interval when IDLE is unsupported, default `30`
+- `IMAP_IDLE_RECONNECT_BACKOFF_SECONDS`: initial reconnect backoff in seconds for IDLE failures (exponential), default `5`
 
 To monitor additional IMAP folders, set `TELEGRAMAIL_IMAP_MONITORED_MAILBOXES` (comma-separated), e.g. `INBOX,Archive,Spam`.
 You can also set per-account overrides via `/accounts` → select an account → **IMAP Folders** (includes “Detect folders” + an interactive picker).

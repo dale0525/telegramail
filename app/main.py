@@ -30,7 +30,11 @@ from app.bot.handlers.labels import label_command_handler
 from app.bot.handlers.command_filters import make_command_filter
 from app.bot.handlers.message import message_handler
 from app.bot.handlers.test import test_command_handler
-from app.cron.email_check_scheduler import start_email_check_scheduler
+from app.cron.email_receive_config import (
+    get_mail_receive_mode,
+    get_polling_interval_seconds,
+)
+from app.cron.email_receive_runtime import start_email_receive_runtime
 from app.i18n import _
 
 load_dotenv()
@@ -38,6 +42,7 @@ logger = Logger().get_logger(__name__)
 
 # Global variable to store the user client instance
 user_client_instance = None
+email_receive_runtime_instance = None
 
 
 # Handle graceful shutdown
@@ -53,6 +58,12 @@ async def shutdown(signal, loop):
         logger.info("Stopping user client...")
         await user_client_instance.stop()
 
+    global email_receive_runtime_instance
+    if email_receive_runtime_instance:
+        logger.info("Stopping email receive runtime...")
+        await email_receive_runtime_instance.stop()
+        email_receive_runtime_instance = None
+
     # Cancel all running tasks
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     logger.info(f"Cancelling {len(tasks)} outstanding tasks")
@@ -64,6 +75,7 @@ async def shutdown(signal, loop):
 
 
 async def main():
+    global email_receive_runtime_instance
 
     # ---------- RUN BOT ----------#
     api_id = os.environ.get("TELEGRAM_API_ID")
@@ -167,8 +179,10 @@ async def main():
             ]
         )
 
-        # Start periodic email checking task (every 5 minutes)
-        start_email_check_scheduler()
+        email_receive_runtime_instance = start_email_receive_runtime(
+            mode=get_mail_receive_mode(),
+            polling_interval_seconds=get_polling_interval_seconds(),
+        )
 
         await bot.idle()
 

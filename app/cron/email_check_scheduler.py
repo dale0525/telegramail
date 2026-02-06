@@ -27,16 +27,18 @@ async def auto_check_emails():
         logger.error(f"Error in automatic email check: {e}")
 
 
-def start_email_check_scheduler(interval_minutes=5):
+def start_email_check_scheduler(interval_seconds=300):
     """
     Start the periodic email check scheduler
     
     Args:
-        interval_minutes: Interval between email checks in minutes (default: 5)
+        interval_seconds: Interval between email checks in seconds (default: 300)
     """
-    start_periodic_task(
+    interval_minutes = max(interval_seconds, 1) / 60
+    task = start_periodic_task(
         auto_check_emails, 
         interval_minutes=interval_minutes, 
         task_name="automatic email check"
     )
-    logger.info(f"Email check scheduler started with {interval_minutes} minute interval") 
+    logger.info(f"Email check scheduler started with {interval_seconds} second interval")
+    return task
