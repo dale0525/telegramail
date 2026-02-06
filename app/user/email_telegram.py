@@ -600,6 +600,16 @@ class EmailTelegramSender:
             if summary is not None:
                 summary_html = format_enhanced_email_summary(summary)
                 urls = summary.get("urls", [])
+                try:
+                    email_id = int(email_data.get("id"))
+                    self.db_manager.update_email_llm_labels(
+                        email_id=email_id,
+                        category=str(summary.get("category", "other")),
+                        priority=str(summary.get("priority", "medium")),
+                        confidence=summary.get("category_confidence", None),
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to persist LLM email labels: {e}")
             else:
                 urls = unsubscribe_urls
                 body_text = processed_content

@@ -5,6 +5,7 @@ from app.bot.conversation import Conversation, ConversationState
 from app.bot.handlers.callbacks.accounts import handle_accounts_callback
 from app.bot.handlers.callbacks.drafts import handle_draft_callback
 from app.bot.handlers.callbacks.emails import handle_email_action_callback
+from app.bot.handlers.callbacks.labels import handle_label_callback
 from app.bot.handlers.callbacks.identity_suggestions import (
     handle_identity_suggestion_callback,
 )
@@ -41,6 +42,7 @@ async def callback_handler(client: Client, update: UpdateNewCallbackQuery):
         handle_accounts_callback,
         handle_identity_suggestion_callback,
         handle_draft_callback,
+        handle_label_callback,
         handle_email_action_callback,
     )
 

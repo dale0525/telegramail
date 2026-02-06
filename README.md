@@ -31,7 +31,7 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 - [ ] Set signature for each email account
 - [x] Display email folder information
 - [x] Summarize emails using LLM
-- [ ] Label emails using LLM
+- [x] Label emails using LLM
 - [ ] Write emails using LLM
 - [ ] Search emails
 - [x] Extract important links from emails (via LLM)
@@ -45,7 +45,7 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
 > Why do we need Telegram App ID instead of just using Telegram Bot?
 > 1. Telegram Bot cannot delete messages older than 48 hours
 > 2. Telegram Bot cannot listen to message deletion events
-- (Optional) OpenAI-compatible LLM API for AI features such as email summarization
+- (Optional) OpenAI-compatible LLM API for AI features such as email summarization and label classification
 
 ### Local Development
 **Windows is not yet supported for local development. If you need Windows support, please compile TDLib library files yourself (or use WSL/Docker).**
@@ -73,8 +73,8 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
    TELEGRAM_CHAT_EVENT_LOG_TIMEOUT=30  # increase if you see TimeoutError when scanning deleted topics
 
    # Optional LLM settings
-   ENABLE_LLM_SUMMARY=0    # set to 1 to enable LLM features
-   LLM_SUMMARY_THRESHOLD=200  # if the email content is longer than this threshold, use LLM to summarize
+   ENABLE_LLM_SUMMARY=0    # set to 1 to enable LLM analysis (summary + labels + links)
+   LLM_SUMMARY_THRESHOLD=200  # if email content is longer than this threshold, use LLM analysis
    OPENAI_BASE_URL=your_openai_base_url_here
    OPENAI_API_KEY=your_openai_key_here
    OPENAI_EMAIL_SUMMARIZE_MODELS=first_model_to_summarize_email_content,second_model_to_summarize_email_content,...   # if the first model fails, try the second one
@@ -256,14 +256,18 @@ Draft body is authored in Markdown. When sending, TelegramMail includes:
 ### AI
 
 If you've configured LLM-related parameters in `.env`, you can use AI-related features. Current features include:
-- Using LLM to summarize email content. Prompt is located at [app/email_utils/llm.py](./app/email_utils/llm.py).
+- Using LLM to summarize email content (summary, priority, action items, deadline, and key contacts).
+- Using LLM to classify email labels (`category`) with built-in classes: `task`, `meeting`, `financial`, `travel`, `newsletter`, `system`, `social`, `other`.
+- Using LLM to extract important links from emails (for example, unsubscribe links).
+- Use `/label` inside Telegram to filter recent emails by label, then locate/reply/forward directly.
+- Prompt is located at [app/email_utils/llm.py](./app/email_utils/llm.py).
 
 ### Localization
 
 Translation texts are located in the [app/i18n](./app/i18n/) folder. You can add translations for your target language and set `DEFAULT_LANGUAGE` to your language in the `.env` file.
 
 ## Known Issues
-- Due to instability of LLM output, it may generate invalid JSON response, or HTML tags that cannot be parsed by Telegram. In such case email summary will not be sent. If you want to use this feature, try to use more intelligent models.
+- Due to instability of LLM output, AI analysis (summary/labels/links) may contain invalid JSON or HTML tags that cannot be parsed by Telegram, which can cause message sending failure. If you want to use this feature, try more reliable models.
 
 ## License
 This project is licensed under the GPL License - see the [LICENSE](LICENSE) file for details

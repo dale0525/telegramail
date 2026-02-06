@@ -3,6 +3,7 @@ import re
 from app.llm import OpenAIClient
 from app.utils import Logger
 from app.i18n import _
+from app.email_utils.labels import LLM_EMAIL_CATEGORIES_SET, normalize_llm_category
 from json_repair import repair_json
 from app.email_utils.text import remove_spaces_and_urls
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -198,7 +199,8 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
 - action_items: string[] (max 5, each <= 100 chars, plain text only, no HTML)
 - deadline: string | null (plain text, no HTML)
 - key_contacts: string[] (max 3, names only, plain text)
-- category: "meeting" | "task" | "information" | "urgent" | "financial" | "travel" | "social" | "newsletter" | "system" | "other"
+- category: "task" | "meeting" | "financial" | "travel" | "newsletter" | "system" | "social" | "other"
+- category_confidence: number | null (0.0 - 1.0)
 - urls: array of {{"caption": string, "link": string}} (max 5; link must be http/https; include unsubscribe link when present; avoid obviously irrelevant tracking-only links)
 """,
         },
@@ -276,22 +278,23 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                     priority = "medium"
                 real_result["priority"] = priority
 
-                allowed_categories = {
-                    "meeting",
-                    "task",
-                    "information",
-                    "urgent",
-                    "financial",
-                    "travel",
-                    "social",
-                    "newsletter",
-                    "system",
-                    "other",
-                }
-                category = str(real_result.get("category", "other")).lower().strip()
-                if category not in allowed_categories:
+                category = normalize_llm_category(real_result.get("category", "other"))
+                if category not in LLM_EMAIL_CATEGORIES_SET:
                     category = "other"
                 real_result["category"] = category
+
+                confidence_raw = real_result.get("category_confidence", None)
+                confidence: float | None = None
+                if confidence_raw is not None:
+                    try:
+                        confidence = float(confidence_raw)
+                        if confidence < 0:
+                            confidence = 0.0
+                        elif confidence > 1:
+                            confidence = 1.0
+                    except Exception:
+                        confidence = None
+                real_result["category_confidence"] = confidence
 
                 summary = real_result.get("summary", "")
                 if not isinstance(summary, str):
@@ -384,6 +387,7 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                         "deadline": None,
                         "key_contacts": [],
                         "category": "other",
+                        "category_confidence": None,
                         "urls": real_result.get("urls", []),
                     }
                 else:

@@ -26,6 +26,7 @@ from app.bot.handlers.accounts import (
 )
 from app.bot.handlers.check_email import check_command_handler
 from app.bot.handlers.compose import compose_command_handler
+from app.bot.handlers.labels import label_command_handler
 from app.bot.handlers.command_filters import make_command_filter
 from app.bot.handlers.message import message_handler
 from app.bot.handlers.test import test_command_handler
@@ -120,6 +121,12 @@ async def main():
         await _try_delete_command_message(client, update)
         await compose_command_handler(client, update)
 
+    # register /label command
+    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("label"))
+    async def on_label_command(client: Client, update: UpdateNewMessage):
+        await _try_delete_command_message(client, update)
+        await label_command_handler(client, update)
+
     # register /test command
     @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("test"))
     async def on_test_command(client: Client, update: UpdateNewMessage):
@@ -156,6 +163,7 @@ async def main():
                 BotCommand(command="accounts", description=_("command_desc_accounts")),
                 BotCommand(command="check", description=_("command_desc_check")),
                 BotCommand(command="compose", description=_("command_desc_compose")),
+                BotCommand(command="label", description=_("command_desc_label")),
             ]
         )
 

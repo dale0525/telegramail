@@ -29,6 +29,31 @@ def _has_unique_index(
     return False
 
 
+def _ensure_emails_llm_label_columns(cursor: sqlite3.Cursor) -> None:
+    columns = _get_table_columns(cursor, "emails")
+    if "llm_category" not in columns:
+        cursor.execute("ALTER TABLE emails ADD COLUMN llm_category TEXT")
+    if "llm_priority" not in columns:
+        cursor.execute("ALTER TABLE emails ADD COLUMN llm_priority TEXT")
+    if "llm_confidence" not in columns:
+        cursor.execute("ALTER TABLE emails ADD COLUMN llm_confidence REAL")
+    if "llm_labeled_at" not in columns:
+        cursor.execute("ALTER TABLE emails ADD COLUMN llm_labeled_at INTEGER")
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_emails_llm_category_labeled_at
+        ON emails (llm_category, llm_labeled_at)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_emails_llm_labeled_at
+        ON emails (llm_labeled_at)
+        """
+    )
+
+
 def ensure_emails_mailbox_schema(conn: sqlite3.Connection) -> None:
     """
     Ensure the `emails` table supports multiple mailboxes.
@@ -48,6 +73,7 @@ def ensure_emails_mailbox_schema(conn: sqlite3.Connection) -> None:
     )
 
     if has_mailbox and has_new_unique and not has_old_unique:
+        _ensure_emails_llm_label_columns(cursor)
         return
 
     if not has_mailbox or has_old_unique or not has_new_unique:
@@ -111,3 +137,4 @@ def ensure_emails_mailbox_schema(conn: sqlite3.Connection) -> None:
             conn.rollback()
             raise
 
+    _ensure_emails_llm_label_columns(cursor)

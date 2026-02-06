@@ -7,6 +7,7 @@ from app.utils import Logger
 from app.utils.decorators import Singleton
 from app.database.mixins.topic_tracking import TopicTrackingMixin
 from app.database.mixins.drafts import DraftsMixin
+from app.database.mixins.email_labels import EmailLabelsMixin
 from app.database.emails_schema import ensure_emails_mailbox_schema
 
 logger = Logger().get_logger(__name__)
@@ -24,7 +25,7 @@ def get_db_path() -> str:
 
 
 @Singleton
-class DBManager(TopicTrackingMixin, DraftsMixin):
+class DBManager(TopicTrackingMixin, DraftsMixin, EmailLabelsMixin):
     """Database manager for handling email operations"""
 
     def __init__(self):

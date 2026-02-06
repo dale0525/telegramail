@@ -29,7 +29,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 - [ ] 为每个邮箱设置签名
 - [x] 邮件信息中显示邮箱所在文件夹
 - [x] 使用 LLM 总结邮件
-- [ ] 使用 LLM 判断邮件标签
+- [x] 使用 LLM 判断邮件标签
 - [ ] 使用 LLM 写邮件
 - [ ] 搜索邮件
 - [x] 从邮件中提取重要链接(通过 LLM)
@@ -43,7 +43,7 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
 > 为什么需要 Telegram App ID，而不是单纯使用 Telegram Bot?
 > 1. Telegram Bot 无法删除超过 48 小时的消息
 > 2. Telegram Bot 无法监听删除信息事件
-- (可选) 兼容 OpenAI 的 LLM API，用于 AI 功能，如总结邮件内容
+- (可选) 兼容 OpenAI 的 LLM API，用于 AI 功能，如总结邮件和判断邮件标签
 
 ### 本地开发
 *暂不支持 Windows，如果需要 Windows 支持，请自行编译 TDLib 库文件（或使用 WSL/Docker）*
@@ -70,8 +70,8 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
    TELEGRAM_CHAT_EVENT_LOG_TIMEOUT=30  # 如果遇到超时（TimeoutError），可以适当调大
 
    # 可选的 LLM 设置
-   ENABLE_LLM_SUMMARY=0    # 改成 1 来开启 LLM 功能
-   LLM_SUMMARY_THRESHOLD=200  # 如果邮件内容超过这个阈值，会使用 LLM 来总结邮件内容
+   ENABLE_LLM_SUMMARY=0    # 改成 1 来开启 LLM 分析（总结 + 标签 + 链接）
+   LLM_SUMMARY_THRESHOLD=200  # 如果邮件内容超过这个阈值，会使用 LLM 进行邮件分析
    OPENAI_BASE_URL=your_openai_base_url_here
    OPENAI_API_KEY=your_openai_key_here
    OPENAI_EMAIL_SUMMARIZE_MODELS=第一个模型,第二个模型,...   # 如果第一个模型请求失败，会尝试使用第二个模型
@@ -259,14 +259,18 @@ Draft 正文以 Markdown 撰写。发送时会同时生成：
 ### AI
 
 如果在`.env`中配置了 LLM 相关的参数，可以使用 AI 相关功能。目前功能有：
-- 使用 AI 总结邮件内容。 Prompt 位于[app/email_utils/llm.py](./app/email_utils/llm.py)中。
+- 使用 AI 总结邮件内容（摘要、优先级、待办、截止时间、关键联系人）。
+- 使用 AI 判断邮件标签（`category`），当前分类：`task`、`meeting`、`financial`、`travel`、`newsletter`、`system`、`social`、`other`。
+- 使用 AI 从邮件中提取重要链接（例如退订链接）。
+- 可使用 `/label` 在 Telegram 内按标签筛选最近邮件，并进行定位/回复/转发。
+- 以上 Prompt 位于 [app/email_utils/llm.py](./app/email_utils/llm.py)。
 
 ### 本地化
 
 翻译文本位于[app/i18n](./app/i18n/)文件夹中。你可以自己添加目标语种的翻译，并且在`.env`中将`DEFAULT_LANGUAGE`设置为自己的语言
 
 ## 已知问题
-- 由于 LLM 输出的不稳定性，邮件总结可能包含错误的 JSON 格式，或者不能被 telegram 解析的 html tag，会导致发送总结失败。如果要使用该功能，请尽量配置靠谱的模型。
+- 由于 LLM 输出的不稳定性，邮件 AI 分析（总结/标签/链接）可能包含错误的 JSON 格式，或者不能被 Telegram 解析的 HTML tag，导致发送失败。如果要使用该功能，请尽量配置靠谱的模型。
 
 ## 许可证
 此项目使用 GPL 许可证 - 详见 [LICENSE](LICENSE) 文件
