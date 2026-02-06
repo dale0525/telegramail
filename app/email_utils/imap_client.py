@@ -102,6 +102,17 @@ class IMAPClient:
 
         return mailboxes or ["INBOX"]
 
+    @staticmethod
+    def _quote_imap_mailbox(mailbox: str) -> str:
+        """
+        Quote mailbox name for IMAP commands.
+
+        Python's imaplib does not auto-quote SELECT args, so names with spaces
+        (e.g. "[Gmail]/Sent Mail") must be quoted explicitly.
+        """
+        escaped = (mailbox or "").replace("\\", "\\\\").replace('"', r"\"")
+        return f'"{escaped}"'
+
     def list_mailboxes(self, *, selectable_only: bool = False) -> list[dict[str, Any]]:
         """
         List IMAP mailboxes for this account.
@@ -677,7 +688,7 @@ class IMAPClient:
           3) Common mailbox name heuristics
           4) Fallback to 'Sent'
         """
-        configured = (os.getenv("TELEGRAMAIL_IMAP_SENT_MAILBOX") or "").strip()
+        configured = (os.getenv("TELEGRAMAIL_IMAP_SENT_MAILBOX") or "").strip().strip('"')
         if configured:
             return configured
 
@@ -771,7 +782,12 @@ class IMAPClient:
 
         try:
             sent_box = self._resolve_sent_mailbox()
-            status, _ = self.conn.select(sent_box)
+            sent_box = (sent_box or "").strip().strip('"') or "Sent"
+            try:
+                status, _ = self.conn.select(sent_box)
+            except imaplib.IMAP4.error:
+                quoted_sent_box = self._quote_imap_mailbox(sent_box)
+                status, _ = self.conn.select(quoted_sent_box)
             if status != "OK":
                 logger.error(f"Failed to select sent mailbox '{sent_box}' for {self.email_addr}")
                 return False

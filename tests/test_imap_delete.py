@@ -1,5 +1,6 @@
 import unittest
 from unittest import mock
+import imaplib
 
 
 class _FakeConn:
@@ -33,6 +34,20 @@ class _FakeConn:
 
     def logout(self):
         self.calls.append(("logout",))
+
+
+class _StrictSentMailboxConn(_FakeConn):
+    def list(self):
+        self.calls.append(("list",))
+        return "OK", [b'(\\HasNoChildren \\Sent) "/" "[Gmail]/Sent Mail"']
+
+    def select(self, mailbox):
+        self.calls.append(("select", mailbox))
+        if mailbox == "[Gmail]/Sent Mail":
+            raise imaplib.IMAP4.error("SELECT command error: BAD [b'Could not parse command']")
+        if mailbox == '"[Gmail]/Sent Mail"':
+            return "OK", [b""]
+        return "NO", [b"mailbox not found"]
 
 
 class TestImapDelete(unittest.TestCase):
@@ -110,3 +125,19 @@ class TestImapDelete(unittest.TestCase):
         fake_db.delete_email_by_uid.assert_called_once_with(
             {"id": 1, "email": "test@example.com"}, "outgoing:<m1@example.com>"
         )
+
+    def test_delete_outgoing_email_by_message_id_quotes_sent_mailbox_with_spaces(self):
+        from app.email_utils.imap_client import IMAPClient
+
+        fake_db = mock.Mock()
+        fake_db.delete_email_by_uid.return_value = True
+
+        with mock.patch("app.email_utils.imap_client.DBManager", return_value=fake_db):
+            client = IMAPClient(account={"id": 1, "email": "test@example.com"})
+
+        fake_conn = _StrictSentMailboxConn()
+        client.conn = fake_conn
+
+        ok = client.delete_outgoing_email_by_message_id("<m2@example.com>")
+        self.assertTrue(ok)
+        self.assertIn(("select", '"[Gmail]/Sent Mail"'), fake_conn.calls)
