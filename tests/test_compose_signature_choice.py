@@ -220,6 +220,7 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         from app.bot.handlers.callback import callback_handler
         from app.bot.handlers.compose import compose_command_handler
         from app.database import DBManager
+        from app.i18n import _
 
         db = DBManager()
         conn = db._get_connection()
@@ -284,6 +285,9 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             any(data.startswith("draft:rcpt_pick:save:") for data in callback_datas)
+        )
+        self.assertFalse(
+            any(data.startswith("draft:rcpt_pick:cancel:") for data in callback_datas)
         )
         toggle_data = next(
             data for data in callback_datas if data.startswith("draft:rcpt_pick:toggle:")
@@ -350,9 +354,70 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             int(client.sent_texts[1]["kwargs"].get("message_thread_id") or 0), 777
         )
+        second_markup = client.sent_texts[1]["kwargs"].get("reply_markup")
+        self.assertIsNotNone(second_markup)
+        second_callback_datas = [
+            (
+                getattr(getattr(button, "type_", None), "data", b"") or b""
+            ).decode("utf-8")
+            for row in getattr(second_markup, "rows", [])
+            for button in row
+            if hasattr(button, "type_")
+        ]
+        self.assertFalse(
+            any(data.startswith("draft:rcpt_pick:cancel:") for data in second_callback_datas)
+        )
+        self.assertTrue(
+            any(data.startswith("draft:rcpt_pick:skip:") for data in second_callback_datas)
+        )
+        cc_skip_data = next(
+            data for data in second_callback_datas if data.startswith("draft:rcpt_pick:skip:")
+        )
+        await callback_handler(
+            client,
+            _FakeCallbackUpdate(
+                chat_id=123,
+                user_id=1,
+                message_id=102,
+                data=cc_skip_data,
+            ),
+        )
+
+        conversation = Conversation.get_instance(123, 1)
+        self.assertIsNotNone(conversation)
+        self.assertEqual(conversation.current_step, 2)
+        self.assertGreaterEqual(len(client.sent_texts), 3)
+        third_markup = client.sent_texts[2]["kwargs"].get("reply_markup")
+        self.assertIsNotNone(third_markup)
+        third_callback_datas = [
+            (
+                getattr(getattr(button, "type_", None), "data", b"") or b""
+            ).decode("utf-8")
+            for row in getattr(third_markup, "rows", [])
+            for button in row
+            if hasattr(button, "type_")
+        ]
+        self.assertTrue(
+            any(data.startswith("draft:rcpt_pick:skip:") for data in third_callback_datas)
+        )
+        bcc_skip_data = next(
+            data for data in third_callback_datas if data.startswith("draft:rcpt_pick:skip:")
+        )
+        await callback_handler(
+            client,
+            _FakeCallbackUpdate(
+                chat_id=123,
+                user_id=1,
+                message_id=103,
+                data=bcc_skip_data,
+            ),
+        )
+        conversation = Conversation.get_instance(123, 1)
+        self.assertIsNotNone(conversation)
+        self.assertEqual(conversation.current_step, 3)
 
         for idx, value in enumerate(
-            ["/skip", "/skip", "Hello Subject", "Hello Body"],
+            ["Hello Subject", "Hello Body"],
             start=1,
         ):
             handled = await conversation.handle_update(
@@ -361,7 +426,7 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
                         chat_id=123,
                         user_id=1,
                         text=value,
-                        message_id=200 + idx,
+                        message_id=210 + idx,
                         thread_id=777,
                     )
                 )
@@ -374,6 +439,14 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((draft["to_addrs"] or "").lower(), selected_email)
         self.assertEqual(draft["subject"], "Hello Subject")
         self.assertEqual(draft["body_markdown"], "Hello Body")
+
+        subject_prompts = [
+            msg
+            for msg in client.sent_texts
+            if str(msg.get("text") or "").startswith(_("compose_input_subject"))
+        ]
+        self.assertTrue(subject_prompts)
+        self.assertNotIn("reply_markup", subject_prompts[0]["kwargs"])
 
     async def test_compose_falls_back_when_send_text_no_thread_support(self):
         from unittest import mock

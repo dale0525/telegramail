@@ -120,6 +120,8 @@ def build_recipient_picker_session(
     contacts: list[dict[str, str]],
     query: str = "",
     per_page: int = _DEFAULT_PER_PAGE,
+    include_cancel: bool = True,
+    include_skip: bool = False,
 ) -> dict[str, Any]:
     target_field = get_recipient_target_field(field)
     existing = parse_recipient_addresses(draft.get(target_field))
@@ -153,6 +155,8 @@ def build_recipient_picker_session(
         "query": str(query or "").strip(),
         "page": 0,
         "per_page": max(1, int(per_page or _DEFAULT_PER_PAGE)),
+        "include_cancel": bool(include_cancel),
+        "include_skip": bool(include_skip),
     }
 
 
@@ -199,11 +203,17 @@ def build_recipient_picker_rows(
     draft_id: int,
     field: str,
     session: dict[str, Any],
+    include_cancel: bool | None = None,
+    include_skip: bool | None = None,
 ) -> list[list[InlineKeyboardButton]]:
     emails: list[str] = list(session.get("emails") or [])
     labels: list[str] = list(session.get("labels") or [])
     selected: set[int] = set(session.get("selected") or set())
     per_page = max(1, int(session.get("per_page") or _DEFAULT_PER_PAGE))
+    if include_cancel is None:
+        include_cancel = bool(session.get("include_cancel", True))
+    if include_skip is None:
+        include_skip = bool(session.get("include_skip", False))
 
     total_pages = max(1, (len(emails) + per_page - 1) // per_page)
     page = max(0, min(int(session.get("page") or 0), total_pages - 1))
@@ -255,14 +265,27 @@ def build_recipient_picker_rows(
     if nav_row:
         rows.append(nav_row)
 
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text=f"💾 {_('imap_picker_save')}",
-                type=InlineKeyboardButtonTypeCallback(
-                    data=f"draft:rcpt_pick:save:{int(draft_id)}:{field}".encode("utf-8")
-                ),
+    action_row: list[InlineKeyboardButton] = [
+        InlineKeyboardButton(
+            text=f"💾 {_('imap_picker_save')}",
+            type=InlineKeyboardButtonTypeCallback(
+                data=f"draft:rcpt_pick:save:{int(draft_id)}:{field}".encode("utf-8")
             ),
+        )
+    ]
+    if include_skip:
+        action_row.append(
+            InlineKeyboardButton(
+                text="/skip",
+                type=InlineKeyboardButtonTypeCallback(
+                    data=f"draft:rcpt_pick:skip:{int(draft_id)}:{field}".encode(
+                        "utf-8"
+                    )
+                ),
+            )
+        )
+    if include_cancel:
+        action_row.append(
             InlineKeyboardButton(
                 text=f"✖️ {_('imap_picker_cancel')}",
                 type=InlineKeyboardButtonTypeCallback(
@@ -270,9 +293,9 @@ def build_recipient_picker_rows(
                         "utf-8"
                     )
                 ),
-            ),
-        ]
-    )
+            )
+        )
+    rows.append(action_row)
     return rows
 
 

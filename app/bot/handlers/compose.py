@@ -76,7 +76,7 @@ def _validate_recipients_optional(value: str) -> tuple[bool, str]:
 
 
 def _build_recipient_reply_markup(
-    *, context: dict, field: str
+    *, context: dict, field: str, optional: bool
 ) -> ReplyMarkupInlineKeyboard | None:
     account_id = int(context.get("account_id") or 0)
     draft_id = int(context.get("draft_id") or 0)
@@ -123,6 +123,8 @@ def _build_recipient_reply_markup(
         field=field,
         contacts=contacts,
         query="",
+        include_cancel=False,
+        include_skip=bool(optional),
     )
     rows = build_recipient_picker_rows(
         draft_id=draft_id,
@@ -153,6 +155,7 @@ def _build_compose_steps() -> list[dict]:
             "reply_markup": lambda ctx: _build_recipient_reply_markup(
                 context=ctx,
                 field="to",
+                optional=False,
             ),
         },
         {
@@ -164,6 +167,7 @@ def _build_compose_steps() -> list[dict]:
             "reply_markup": lambda ctx: _build_recipient_reply_markup(
                 context=ctx,
                 field="cc",
+                optional=True,
             ),
         },
         {
@@ -175,6 +179,7 @@ def _build_compose_steps() -> list[dict]:
             "reply_markup": lambda ctx: _build_recipient_reply_markup(
                 context=ctx,
                 field="bcc",
+                optional=True,
             ),
         },
         {
@@ -363,6 +368,7 @@ async def compose_command_handler(client: Client, update: UpdateNewMessage) -> N
             "account_id": int(account["id"]),
             "message_thread_id": int(thread_id),
             "callback_passthrough_prefixes": ["draft:", "email:"],
+            "disable_default_cancel_button": True,
         },
     )
 

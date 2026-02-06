@@ -342,8 +342,13 @@ class Conversation:
                 )
                 reply_markup = None
 
+        suppress_default_cancel = bool(
+            step.get("suppress_default_cancel", False)
+            or self.context.get("disable_default_cancel_button", False)
+        )
+
         # Default cancel keyboard if no markup provided
-        if reply_markup is None:
+        if reply_markup is None and not suppress_default_cancel:
             reply_markup = ReplyMarkupShowKeyboard(
                 rows=[
                     [KeyboardButton(text=_("cancel"), type=KeyboardButtonTypeText())]
@@ -353,10 +358,12 @@ class Conversation:
             )
 
         # Send the resolved text
-        message = await self._send_text(
-            text=step_text_value,  # Use the resolved string value
-            reply_markup=reply_markup,
-        )
+        send_kwargs = {
+            "text": step_text_value,
+        }
+        if reply_markup is not None:
+            send_kwargs["reply_markup"] = reply_markup
+        message = await self._send_text(**send_kwargs)
         self.messages.append(message.id)
 
     async def handle_update(self, update: UpdateNewMessage) -> bool:

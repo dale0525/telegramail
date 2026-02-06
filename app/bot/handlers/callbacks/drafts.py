@@ -589,6 +589,103 @@ async def handle_draft_callback(
                 pass
             return True
 
+        if action == "skip":
+            session = get_recipient_picker_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+            if not session:
+                await _render_recipient_picker(
+                    client=client,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            if field not in {"cc", "bcc"}:
+                await _render_recipient_picker(
+                    client=client,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            db = DBManager()
+            conn = db._get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT chat_id, thread_id, status FROM drafts WHERE id = ?",
+                (draft_id,),
+            )
+            draft_row = cur.fetchone()
+            conn.close()
+            if not draft_row:
+                await _render_recipient_picker(
+                    client=client,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+            _draft_chat_id, draft_thread_id, status = draft_row
+            if str(status) != "open":
+                clear_recipient_picker_session(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            conversation_matched, conversation_advanced, _conversation_value = (
+                await _submit_picker_selection_to_active_conversation(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    draft_thread_id=int(draft_thread_id or 0),
+                    field=field,
+                    value="/skip",
+                )
+            )
+            if not (conversation_matched and conversation_advanced):
+                await _render_recipient_picker(
+                    client=client,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            clear_recipient_picker_session(
+                chat_id=chat_id,
+                user_id=user_id,
+                draft_id=draft_id,
+                field=field,
+            )
+            try:
+                await client.edit_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=f"⏭️ {field.upper()}: /skip",
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    clear_draft=False,
+                )
+            except Exception:
+                pass
+            return True
+
         if action == "save":
             session = get_recipient_picker_session(
                 chat_id=chat_id,
@@ -687,15 +784,18 @@ async def handle_draft_callback(
             if conversation_matched:
                 merged_addrs = conversation_value
 
-            db.update_draft(
-                draft_id=draft_id,
-                updates={target_field: merged_addrs},
-            )
+            previous_value = str(refreshed.get(target_field) or "")
+            draft_changed = previous_value != str(merged_addrs or "")
+            if draft_changed:
+                db.update_draft(
+                    draft_id=draft_id,
+                    updates={target_field: merged_addrs},
+                )
 
             refreshed = db.get_active_draft(
                 chat_id=int(draft_chat_id), thread_id=int(draft_thread_id)
             )
-            if refreshed and card_message_id:
+            if refreshed and card_message_id and draft_changed:
                 account = db.get_account(id=int(account_id))
                 sig_label = format_signature_choice_label(
                     (account or {}).get("signature"),
@@ -719,7 +819,10 @@ async def handle_draft_callback(
                         ),
                     )
                 except Exception as e:
-                    logger.error(f"Failed to update draft card after rcpt_pick save: {e}")
+                    if "MESSAGE_NOT_MODIFIED" in str(e):
+                        logger.debug("Draft card unchanged after rcpt_pick save; skipping edit")
+                    else:
+                        logger.error(f"Failed to update draft card after rcpt_pick save: {e}")
 
             clear_recipient_picker_session(
                 chat_id=chat_id,

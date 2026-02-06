@@ -448,3 +448,49 @@ class TestDraftRecipientContacts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("old@example.com", to_addrs)
         for email_addr in picked_emails:
             self.assertIn(email_addr, to_addrs)
+
+    async def test_callback_save_without_change_does_not_edit_draft_card(self):
+        from app.database import DBManager
+        from unittest import mock
+
+        db = DBManager()
+        self._seed_contact_history()
+        draft_id = db.create_draft(
+            account_id=self.account["id"],
+            chat_id=123,
+            thread_id=456,
+            draft_type="compose",
+            from_identity_email="a@example.com",
+        )
+        db.update_draft(
+            draft_id=draft_id,
+            updates={"card_message_id": 99, "to_addrs": "old@example.com"},
+        )
+
+        client = _FakeClient()
+        update = _FakeUpdate(_FakeMessage(chat_id=123, thread_id=456, user_id=1, text="/to"))
+
+        with mock.patch("app.bot.handlers.message.validate_admin", lambda _u: True), mock.patch(
+            "app.bot.handlers.message.Conversation.get_instance", lambda *_args, **_kwargs: None
+        ):
+            from app.bot.handlers.message import message_handler
+
+            await message_handler(client, update)
+
+        save_update = _FakeCallbackUpdate(
+            chat_id=123,
+            user_id=1,
+            message_id=888,
+            data=f"draft:rcpt_pick:save:{draft_id}:to",
+        )
+        with mock.patch(
+            "app.bot.handlers.callback.Conversation.get_instance",
+            lambda *_args, **_kwargs: None,
+        ):
+            from app.bot.handlers.callback import callback_handler
+
+            await callback_handler(client, save_update)
+
+        refreshed = db.get_active_draft(chat_id=123, thread_id=456)
+        self.assertEqual((refreshed.get("to_addrs") or "").lower(), "old@example.com")
+        self.assertFalse(any(int(edit.get("message_id") or 0) == 99 for edit in client.edits))
