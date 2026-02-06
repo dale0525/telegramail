@@ -246,12 +246,13 @@ TelegramMail uses Draft topics for composing, replying, and forwarding:
 
 1. **Compose new email**
    - Send `/compose` inside an account group (in any topic, e.g. “General”). In group chats Telegram may auto-complete it as `/compose@YourBot` — both work. It creates a new Draft topic and pins a Draft card message (Send/Cancel).
+   - The interactive prompts are sent inside the newly created Draft topic (not the source topic where you typed `/compose`). In the `To`/`Cc`/`Bcc` steps, you can use contact picker buttons (multi-select + Save) or type addresses manually (comma-separated). `Cc`/`Bcc` still support `/skip`.
 2. **Reply / Forward**
    - Each email thread has an “Actions” message with Reply / Forward buttons. Click to create a Draft in the same thread.
 3. **Edit inside Draft topic**
    - `/from`: open a From-identity selector (for alias scenarios)
    - `/from b@example.com`: set From identity directly
-   - `/to ...`, `/cc ...`, `/bcc ...`: set recipients. You can still enter addresses directly (multiple addresses are comma-separated, e.g. `/to a@example.com, b@example.com`; same for `/cc` and `/bcc`), or provide a keyword (or no args) to filter and pick from contacts learned from this account's email history
+   - `/to ...`, `/cc ...`, `/bcc ...`: set recipients. You can enter addresses directly (multiple addresses are comma-separated, e.g. `/to a@example.com, b@example.com`; same for `/cc` and `/bcc`). You can also run `/to`, `/cc`, `/bcc` (or add a keyword) to open contact picker and select multiple contacts before tapping Save.
    - `/subject ...`: set subject
    - `/signature`: open signature selector (choose specific/default/none)
    - `/signature none`: disable signature for this send; `/signature default`: use account default signature

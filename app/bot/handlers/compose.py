@@ -15,6 +15,12 @@ from aiotdlib.api import (
 
 from app.bot.conversation import Conversation
 from app.bot.handlers.access import validate_admin
+from app.bot.handlers.draft_contacts import list_draft_contacts
+from app.bot.handlers.draft_recipient_picker import (
+    build_recipient_picker_rows,
+    build_recipient_picker_session,
+    set_recipient_picker_session,
+)
 from app.database import DBManager
 from app.email_utils.account_manager import AccountManager
 from app.email_utils.signatures import (
@@ -69,6 +75,74 @@ def _validate_recipients_optional(value: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _build_recipient_reply_markup(
+    *, context: dict, field: str
+) -> ReplyMarkupInlineKeyboard | None:
+    account_id = int(context.get("account_id") or 0)
+    draft_id = int(context.get("draft_id") or 0)
+    chat_id = int(context.get("chat_id") or 0)
+    user_id = int(context.get("user_id") or 0)
+    thread_id = int(context.get("message_thread_id") or 0)
+    if account_id <= 0 or draft_id <= 0 or chat_id == 0 or user_id <= 0:
+        return None
+
+    db = DBManager()
+    contacts = list_draft_contacts(
+        db=db,
+        account_id=account_id,
+        query="",
+        limit=20,
+    )
+    if not contacts:
+        return None
+
+    draft = None
+    if thread_id > 0:
+        draft = db.get_active_draft(chat_id=chat_id, thread_id=thread_id)
+
+    if not draft or int(draft.get("id") or 0) != draft_id:
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, to_addrs, cc_addrs, bcc_addrs FROM drafts WHERE id = ? AND status = 'open'",
+            (draft_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        draft = {
+            "id": int(row[0]),
+            "to_addrs": row[1] or "",
+            "cc_addrs": row[2] or "",
+            "bcc_addrs": row[3] or "",
+        }
+
+    session = build_recipient_picker_session(
+        draft=draft,
+        field=field,
+        contacts=contacts,
+        query="",
+    )
+    rows = build_recipient_picker_rows(
+        draft_id=draft_id,
+        field=field,
+        session=session,
+    )
+    if not rows:
+        return None
+
+    set_recipient_picker_session(
+        chat_id=chat_id,
+        user_id=user_id,
+        draft_id=draft_id,
+        field=field,
+        session=session,
+    )
+
+    return ReplyMarkupInlineKeyboard(rows=rows)
+
+
 def _build_compose_steps() -> list[dict]:
     return [
         {
@@ -76,6 +150,10 @@ def _build_compose_steps() -> list[dict]:
             "key": "to_addrs",
             "validate": _validate_recipients_required,
             "process": _normalize_recipients,
+            "reply_markup": lambda ctx: _build_recipient_reply_markup(
+                context=ctx,
+                field="to",
+            ),
         },
         {
             "text": f"{_('compose_input_cc')}\n{_('send_new_or_skip')}",
@@ -83,6 +161,10 @@ def _build_compose_steps() -> list[dict]:
             "optional": True,
             "validate": _validate_recipients_optional,
             "process": _normalize_recipients,
+            "reply_markup": lambda ctx: _build_recipient_reply_markup(
+                context=ctx,
+                field="cc",
+            ),
         },
         {
             "text": f"{_('compose_input_bcc')}\n{_('send_new_or_skip')}",
@@ -90,6 +172,10 @@ def _build_compose_steps() -> list[dict]:
             "optional": True,
             "validate": _validate_recipients_optional,
             "process": _normalize_recipients,
+            "reply_markup": lambda ctx: _build_recipient_reply_markup(
+                context=ctx,
+                field="bcc",
+            ),
         },
         {
             "text": f"{_('compose_input_subject')}\n{_('send_new_or_skip')}",
@@ -272,7 +358,12 @@ async def compose_command_handler(client: Client, update: UpdateNewMessage) -> N
         chat_id=chat_id,
         user_id=update.message.sender_id.user_id,
         steps=_build_compose_steps(),
-        context={"draft_id": int(draft_id)},
+        context={
+            "draft_id": int(draft_id),
+            "account_id": int(account["id"]),
+            "message_thread_id": int(thread_id),
+            "callback_passthrough_prefixes": ["draft:", "email:"],
+        },
     )
 
     async def on_complete(context: dict) -> None:

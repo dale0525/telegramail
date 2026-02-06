@@ -117,6 +117,29 @@ class Conversation:
         self.finish_message_type = finish_message_type
         self.finish_message_delete_after = finish_message_delete_after
 
+    def _get_message_thread_id(self) -> int | None:
+        """
+        Optional thread scope for this conversation.
+        When set, prompts/validation errors are sent inside the same forum topic.
+        """
+        try:
+            thread_id = int(self.context.get("message_thread_id") or 0)
+        except Exception:
+            thread_id = 0
+        return thread_id if thread_id > 0 else None
+
+    async def _send_text(self, *, text: str, **kwargs):
+        send_kwargs = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "disable_notification": True,
+        }
+        send_kwargs.update(kwargs or {})
+        message_thread_id = self._get_message_thread_id()
+        if message_thread_id and "message_thread_id" not in send_kwargs:
+            send_kwargs["message_thread_id"] = int(message_thread_id)
+        return await self.client.send_text(**send_kwargs)
+
     async def start(self) -> None:
         """start the conversation"""
         if self.state != ConversationState.IDLE:
@@ -157,10 +180,8 @@ class Conversation:
             pre_action_message_id = None
             if pre_action_message_key:
                 try:
-                    pre_action_message = await self.client.send_text(
-                        chat_id=self.chat_id,
-                        text=_(pre_action_message_key),
-                        disable_notification=True,
+                    pre_action_message = await self._send_text(
+                        text=_(pre_action_message_key)
                     )
                     pre_action_message_id = pre_action_message.id
                     self.messages.append(pre_action_message_id)
@@ -287,6 +308,17 @@ class Conversation:
                     step_text_value = _("error_generating_step_text")
 
         reply_markup = step.get("reply_markup")
+        if callable(reply_markup):
+            try:
+                resolved_markup = reply_markup(self.context)
+                if asyncio.iscoroutine(resolved_markup):
+                    resolved_markup = await resolved_markup
+                reply_markup = resolved_markup
+            except Exception as e:
+                logger.error(
+                    f"Error evaluating reply_markup for step {self.current_step}: {e}"
+                )
+                reply_markup = None
 
         # Default cancel keyboard if no markup provided
         if reply_markup is None:
@@ -299,11 +331,9 @@ class Conversation:
             )
 
         # Send the resolved text
-        message = await self.client.send_text(
-            chat_id=self.chat_id,
+        message = await self._send_text(
             text=step_text_value,  # Use the resolved string value
             reply_markup=reply_markup,
-            disable_notification=True,
         )
         self.messages.append(message.id)
 
@@ -322,6 +352,12 @@ class Conversation:
         # Ignore messages from other users or non-text messages for standard flow
         if message.sender_id.user_id != self.user_id:
             return False
+
+        expected_thread_id = self._get_message_thread_id()
+        if expected_thread_id:
+            incoming_thread_id = int(getattr(message, "message_thread_id", 0) or 0)
+            if incoming_thread_id != int(expected_thread_id):
+                return False
 
         # Check if the received text matches the localized "cancel" text
         if (
@@ -364,10 +400,27 @@ class Conversation:
                 )
             return False
 
+        raw_data = b""
+        try:
+            raw_data = update.payload.data or b""
+        except Exception:
+            raw_data = b""
+        try:
+            callback_data = raw_data.decode("utf-8")
+        except Exception:
+            callback_data = ""
+
+        prefixes = self.context.get("callback_passthrough_prefixes") or []
+        if callback_data and any(
+            str(prefix or "") and callback_data.startswith(str(prefix))
+            for prefix in prefixes
+        ):
+            return False
+
         # Process the callback data as input
         # Correctly access callback data via update.payload.data
         await self._process_input(
-            update.payload.data.decode(), is_callback=True, callback_id=update.id
+            callback_data, is_callback=True, callback_id=update.id
         )
         return True
 
@@ -420,11 +473,7 @@ class Conversation:
                 try:
                     is_valid, error_msg = step["validate"](answer_data)
                     if not is_valid:
-                        error_message = await self.client.send_text(
-                            chat_id=self.chat_id,
-                            text=error_msg,
-                            disable_notification=True,
-                        )
+                        error_message = await self._send_text(text=error_msg)
                         self.messages.append(error_message.id)
                         # Don't advance step, wait for valid input
                         return
@@ -433,9 +482,7 @@ class Conversation:
                         f"Error during validation for step {self.current_step}: {e}"
                     )
                     error_text = _("validation_error_occurred")  # Need i18n key
-                    error_message = await self.client.send_text(
-                        self.chat_id, error_text
-                    )
+                    error_message = await self._send_text(text=error_text)
                     self.messages.append(error_message.id)
                     return  # Stop processing this step on validation error
 
@@ -464,9 +511,7 @@ class Conversation:
                             f"Failed to answer callback query during processing error: {e_ans}"
                         )
                 else:
-                    error_message = await self.client.send_text(
-                        self.chat_id, error_text
-                    )
+                    error_message = await self._send_text(text=error_text)
                     self.messages.append(error_message.id)
                 return  # Stop processing this step on processing error
 
@@ -591,6 +636,20 @@ class Conversation:
         """register a handler to call when the conversation is cancelled"""
         if callable(handler):
             self._on_cancel_handlers.append(handler)
+
+    async def submit_external_input(self, input_data: str) -> bool:
+        """
+        Submit externally generated text input (e.g. from callback workflows)
+        to the current step and advance when validation succeeds.
+        """
+        if self.state != ConversationState.ACTIVE:
+            return False
+
+        previous_step = self.current_step
+        await self._process_input(str(input_data or ""), is_callback=False)
+        if self.state != ConversationState.ACTIVE:
+            return True
+        return self.current_step != previous_step
 
     def get_context(self) -> Dict[str, Any]:
         """get context of current conversation"""

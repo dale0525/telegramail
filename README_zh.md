@@ -243,13 +243,13 @@ TelegramMail 使用 Draft 话题来完成撰写、回复和转发：
 
 1. **撰写新邮件**
    - 在该邮箱账号群组的任意 Topic（例如 General）里发送 `/compose`。在群组里 Telegram 可能会自动补全成 `/compose@你的机器人` —— 两种写法都支持。它会创建一个新的 Draft Topic，并固定一条 Draft 卡片消息（带 Send/Cancel 按钮）。
-   - 然后会进入交互式引导（和新增邮箱账号类似），依次填写：`To`（必填）、`Cc`（可 `/skip`）、`Bcc`（可 `/skip`）、`Subject`（可 `/skip`）、`Body`（可 `/skip`）。引导完成后会自动回填 Draft 卡片。
+   - 然后会进入交互式引导（和新增邮箱账号类似），依次填写：`To`（必填）、`Cc`（可 `/skip`）、`Bcc`（可 `/skip`）、`Subject`（可 `/skip`）、`Body`（可 `/skip`）。这些提示会发送到新建的 Draft Topic（不会停留在你发送 `/compose` 的原 Topic）。`To`/`Cc`/`Bcc` 步骤同时支持联系人菜单（多选 + 保存）和手动输入（多个地址用英文逗号分隔）。
 2. **回复 / 转发**
    - 在邮件 Topic 内，会有一条“Actions”消息，包含 Reply / Forward 按钮；点击后会在同一 thread 内创建 Draft。
 3. **在 Draft Topic 中编辑邮件**
    - `/from`：弹出发件人身份列表（用于 alias 场景），点击即可切换
    - `/from b@example.com`：直接切换到指定发件人身份
-   - `/to ...`、`/cc ...`、`/bcc ...`：设置收件人。可直接输入邮箱（多个地址用英文逗号`,`分隔，例如：`/to a@example.com, b@example.com`；`/cc`、`/bcc` 同理）；也可输入关键词（或不带参数）从该邮箱账号往来邮件联系人中筛选，并以“多选 + 保存”方式批量选择
+   - `/to ...`、`/cc ...`、`/bcc ...`：设置收件人。可直接输入邮箱（多个地址用英文逗号`,`分隔，例如：`/to a@example.com, b@example.com`；`/cc`、`/bcc` 同理）；也可使用 `/to`、`/cc`、`/bcc`（可带关键词）打开联系人选择器，以“多选 + 保存”方式批量选择
    - `/subject ...`：设置主题
    - `/signature`：弹出签名选择（可选某个签名、默认签名或不使用签名）
    - `/signature none`：本次发送不使用签名；`/signature default`：使用默认签名

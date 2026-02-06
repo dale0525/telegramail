@@ -174,6 +174,53 @@ async def _render_recipient_picker(
         logger.error(f"Failed to render recipient picker: {e}")
 
 
+async def _submit_picker_selection_to_active_conversation(
+    *,
+    chat_id: int,
+    user_id: int,
+    draft_id: int,
+    draft_thread_id: int,
+    field: str,
+    value: str,
+) -> tuple[bool, bool, str]:
+    """
+    Try to feed rcpt picker result into active compose conversation step.
+
+    Returns:
+        matched: whether this callback maps to the active conversation step
+        advanced: whether conversation accepted input and moved forward
+        stored_value: normalized value stored in conversation context
+    """
+    try:
+        from app.bot.conversation import Conversation, ConversationState
+    except Exception:
+        return False, False, value
+
+    conversation = Conversation.get_instance(int(chat_id), int(user_id))
+    if not conversation or conversation.state != ConversationState.ACTIVE:
+        return False, False, value
+
+    expected_key = get_recipient_target_field(field)
+    if not expected_key:
+        return False, False, value
+
+    context = conversation.get_context()
+    if int(context.get("draft_id") or 0) != int(draft_id):
+        return False, False, value
+    if int(context.get("message_thread_id") or 0) != int(draft_thread_id or 0):
+        return False, False, value
+
+    if conversation.current_step >= len(conversation.steps):
+        return False, False, value
+    current_step = conversation.steps[conversation.current_step] or {}
+    if str(current_step.get("key") or "") != expected_key:
+        return False, False, value
+
+    advanced = await conversation.submit_external_input(value)
+    stored = str(conversation.get_context().get(expected_key) or value)
+    return True, bool(advanced), stored
+
+
 async def handle_draft_callback(
     *, client: Client, update: UpdateNewCallbackQuery, data: str
 ) -> bool:
@@ -616,6 +663,30 @@ async def handle_draft_callback(
                 candidate_emails=list(session.get("emails") or []),
                 selected_indices=set(session.get("selected") or set()),
             )
+            conversation_matched, conversation_advanced, conversation_value = (
+                await _submit_picker_selection_to_active_conversation(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    draft_thread_id=int(draft_thread_id or 0),
+                    field=field,
+                    value=merged_addrs,
+                )
+            )
+            if conversation_matched and not conversation_advanced:
+                await _render_recipient_picker(
+                    client=client,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    user_id=user_id,
+                    draft_id=draft_id,
+                    field=field,
+                )
+                return True
+
+            if conversation_matched:
+                merged_addrs = conversation_value
+
             db.update_draft(
                 draft_id=draft_id,
                 updates={target_field: merged_addrs},

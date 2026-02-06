@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import unittest
 
@@ -16,10 +17,12 @@ class _FakeMessage:
         user_id: int,
         text: str | None = None,
         message_id: int = 1,
+        thread_id: int = 0,
     ):
         self.chat_id = chat_id
         self.sender_id = _FakeSenderId(user_id)
         self.id = message_id
+        self.message_thread_id = thread_id
         if text is not None:
             self.content = type(
                 "_TextContent",
@@ -31,6 +34,20 @@ class _FakeMessage:
 class _FakeUpdate:
     def __init__(self, message: _FakeMessage):
         self.message = message
+
+
+class _FakeCallbackPayload:
+    def __init__(self, data: str):
+        self.data = data.encode("utf-8")
+
+
+class _FakeCallbackUpdate:
+    def __init__(self, *, chat_id: int, user_id: int, message_id: int, data: str):
+        self.chat_id = chat_id
+        self.sender_user_id = user_id
+        self.message_id = message_id
+        self.payload = _FakeCallbackPayload(data)
+        self.id = 1
 
 
 class _FakeApi:
@@ -46,6 +63,11 @@ class _FakeApi:
         return type("_Msg", (), {"id": 9001})()
 
     async def pin_chat_message(self, **kwargs):
+        return None
+
+    async def answer_callback_query(
+        self, callback_query_id: int, text: str, url: str, cache_time: int
+    ):
         return None
 
     async def delete_messages(self, *, chat_id: int, message_ids: list[int], revoke: bool):
@@ -178,8 +200,37 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         from unittest import mock
 
         from app.bot.conversation import Conversation, ConversationState
+        from app.bot.handlers.callback import callback_handler
         from app.bot.handlers.compose import compose_command_handler
         from app.database import DBManager
+
+        db = DBManager()
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO emails
+              (email_account, message_id, sender, recipient, cc, bcc, subject, email_date,
+               body_text, body_html, uid, mailbox)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(self.account["id"]),
+                "<seed-msg@example.com>",
+                "Bob <bob@example.com>",
+                "a@example.com",
+                "",
+                "",
+                "Hello",
+                "2025-01-01",
+                "body",
+                "",
+                "1",
+                "INBOX",
+            ),
+        )
+        conn.commit()
+        conn.close()
 
         client = _FakeClient()
         update = _FakeUpdate(_FakeMessage(chat_id=123, user_id=1))
@@ -191,9 +242,100 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(conversation)
         self.assertEqual(conversation.state, ConversationState.ACTIVE)
         self.assertTrue(client.sent_texts)
+        self.assertEqual(
+            int(client.sent_texts[0]["kwargs"].get("message_thread_id") or 0), 777
+        )
+        first_markup = client.sent_texts[0]["kwargs"].get("reply_markup")
+        self.assertIsNotNone(first_markup)
+        labels = [
+            (getattr(button, "text", "") or "").lower()
+            for row in getattr(first_markup, "rows", [])
+            for button in row
+            if hasattr(button, "text")
+        ]
+        self.assertIn("bob@example.com", "\n".join(labels))
+        callback_datas = [
+            (
+                getattr(getattr(button, "type_", None), "data", b"") or b""
+            ).decode("utf-8")
+            for row in getattr(first_markup, "rows", [])
+            for button in row
+            if hasattr(button, "type_")
+        ]
+        self.assertTrue(
+            any(data.startswith("draft:rcpt_pick:toggle:") for data in callback_datas)
+        )
+        self.assertTrue(
+            any(data.startswith("draft:rcpt_pick:save:") for data in callback_datas)
+        )
+        toggle_data = next(
+            data for data in callback_datas if data.startswith("draft:rcpt_pick:toggle:")
+        )
+        save_data = next(
+            data for data in callback_datas if data.startswith("draft:rcpt_pick:save:")
+        )
+        toggle_button = next(
+            button
+            for row in getattr(first_markup, "rows", [])
+            for button in row
+            if (
+                (
+                    getattr(getattr(button, "type_", None), "data", b"") or b""
+                ).decode("utf-8")
+                == toggle_data
+            )
+        )
+        selected_label = (getattr(toggle_button, "text", "") or "").lower()
+        email_match = re.search(
+            r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}",
+            selected_label,
+        )
+        self.assertIsNotNone(email_match)
+        selected_email = email_match.group(0)
+
+        ignored = await conversation.handle_update(
+            _FakeUpdate(
+                _FakeMessage(
+                    chat_id=123,
+                    user_id=1,
+                    text="ignore@example.com",
+                    message_id=199,
+                    thread_id=0,
+                )
+            )
+        )
+        self.assertFalse(ignored)
+
+        await callback_handler(
+            client,
+            _FakeCallbackUpdate(
+                chat_id=123,
+                user_id=1,
+                message_id=101,
+                data=toggle_data,
+            ),
+        )
+        await callback_handler(
+            client,
+            _FakeCallbackUpdate(
+                chat_id=123,
+                user_id=1,
+                message_id=101,
+                data=save_data,
+            ),
+        )
+
+        conversation = Conversation.get_instance(123, 1)
+        self.assertIsNotNone(conversation)
+        self.assertEqual(conversation.state, ConversationState.ACTIVE)
+        self.assertEqual(conversation.current_step, 1)
+        self.assertGreaterEqual(len(client.sent_texts), 2)
+        self.assertEqual(
+            int(client.sent_texts[1]["kwargs"].get("message_thread_id") or 0), 777
+        )
 
         for idx, value in enumerate(
-            ["to@example.com", "/skip", "/skip", "Hello Subject", "Hello Body"],
+            ["/skip", "/skip", "Hello Subject", "Hello Body"],
             start=1,
         ):
             handled = await conversation.handle_update(
@@ -203,15 +345,15 @@ class TestComposeSignatureChoice(unittest.IsolatedAsyncioTestCase):
                         user_id=1,
                         text=value,
                         message_id=200 + idx,
+                        thread_id=777,
                     )
                 )
             )
             self.assertTrue(handled)
 
         self.assertIsNone(Conversation.get_instance(123, 1))
-        db = DBManager()
         draft = db.get_active_draft(chat_id=123, thread_id=777)
         self.assertIsNotNone(draft)
-        self.assertEqual(draft["to_addrs"], "to@example.com")
+        self.assertEqual((draft["to_addrs"] or "").lower(), selected_email)
         self.assertEqual(draft["subject"], "Hello Subject")
         self.assertEqual(draft["body_markdown"], "Hello Body")
