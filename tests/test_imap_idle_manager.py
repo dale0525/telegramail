@@ -1,3 +1,5 @@
+import asyncio
+import time
 import unittest
 
 
@@ -86,6 +88,56 @@ class TestImapIdleManager(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(sleep_calls[:3], [5, 10, 30])
         self.assertEqual(fetch_calls, ["a@example.com"])
+
+    async def test_idle_wait_does_not_block_event_loop(self):
+        from app.cron.imap_idle_manager import IMAPIdleManager
+
+        _FakeIMAPClient.connect_results = [True]
+        tick_elapsed = {"value": None}
+
+        async def _fake_fetch(_account):
+            return 0
+
+        async def _fake_sleep(_seconds):
+            # This path is not expected in this scenario.
+            return None
+
+        manager = IMAPIdleManager(
+            imap_client_cls=_FakeIMAPClient,
+            supports_idle_fn=lambda _conn: True,
+            idle_wait_once_fn=lambda *_args, **_kwargs: _blocking_idle_wait(manager),
+            fetch_account_emails_fn=_fake_fetch,
+            fallback_poll_seconds=30,
+            reconnect_backoff_seconds=5,
+            sleep_fn=_fake_sleep,
+        )
+        manager._running = True
+
+        started_at = time.monotonic()
+
+        async def _tick():
+            await asyncio.sleep(0.05)
+            tick_elapsed["value"] = time.monotonic() - started_at
+
+        tick_task = asyncio.create_task(_tick())
+        watcher_task = asyncio.create_task(
+            manager._run_watcher({"id": 1, "email": "a@example.com"}, "INBOX")
+        )
+
+        await asyncio.gather(tick_task, watcher_task)
+
+        self.assertIsNotNone(tick_elapsed["value"])
+        self.assertLess(
+            tick_elapsed["value"],
+            0.15,
+            f"event loop was blocked by idle wait: {tick_elapsed['value']:.3f}s",
+        )
+
+
+def _blocking_idle_wait(manager):
+    time.sleep(0.2)
+    manager._running = False
+    return False
 
 
 if __name__ == "__main__":

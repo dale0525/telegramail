@@ -97,7 +97,8 @@ class IMAPIdleManager:
         while self._running:
             imap_client = self._imap_client_cls(account)
             try:
-                if not imap_client.connect():
+                connected = await asyncio.to_thread(imap_client.connect)
+                if not connected:
                     logger.warning(
                         f"IDLE connect failed for {email_addr}/{mailbox_name}, retrying in {backoff_seconds}s"
                     )
@@ -107,7 +108,9 @@ class IMAPIdleManager:
                     )
                     continue
 
-                status, _ = imap_client.conn.select(mailbox_name)
+                status, _ = await asyncio.to_thread(
+                    imap_client.conn.select, mailbox_name
+                )
                 if status != "OK":
                     logger.warning(
                         f"Failed to select mailbox '{mailbox_name}' for IDLE ({email_addr}), fallback polling in {self._fallback_poll_seconds}s"
@@ -116,7 +119,10 @@ class IMAPIdleManager:
                     await self._sleep_fn(self._fallback_poll_seconds)
                     continue
 
-                if not self._supports_idle_fn(imap_client.conn):
+                idle_supported = await asyncio.to_thread(
+                    self._supports_idle_fn, imap_client.conn
+                )
+                if not idle_supported:
                     logger.info(
                         f"IMAP IDLE not supported for {email_addr}/{mailbox_name}; using fallback polling every {self._fallback_poll_seconds}s"
                     )
@@ -125,8 +131,10 @@ class IMAPIdleManager:
                     continue
 
                 backoff_seconds = self._reconnect_backoff_seconds
-                changed = self._idle_wait_once_fn(
-                    imap_client.conn, timeout_seconds=self._idle_timeout_seconds
+                changed = await asyncio.to_thread(
+                    self._idle_wait_once_fn,
+                    imap_client.conn,
+                    timeout_seconds=self._idle_timeout_seconds,
                 )
                 if changed:
                     await self._fetch_account_emails_fn(account)
@@ -143,6 +151,6 @@ class IMAPIdleManager:
                 )
             finally:
                 try:
-                    imap_client.disconnect()
+                    await asyncio.to_thread(imap_client.disconnect)
                 except Exception:
                     pass
