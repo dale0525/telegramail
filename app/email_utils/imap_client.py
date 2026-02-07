@@ -113,6 +113,10 @@ class IMAPClient:
         escaped = (mailbox or "").replace("\\", "\\\\").replace('"', r"\"")
         return f'"{escaped}"'
 
+    @staticmethod
+    def _normalize_message_id(message_id: Any) -> str:
+        return str(message_id or "").strip().lower()
+
     def list_mailboxes(self, *, selectable_only: bool = False) -> list[dict[str, Any]]:
         """
         List IMAP mailboxes for this account.
@@ -531,6 +535,25 @@ class IMAPClient:
             conn = self.db_manager._get_connection()
             cursor = conn.cursor()
             mailbox = (mailbox or "").strip().strip('"') or "INBOX"
+            normalized_mid = self._normalize_message_id(email_data.get("message_id"))
+
+            # Some providers (notably Gmail labels) expose the same RFC Message-ID
+            # in multiple mailboxes with different mailbox-scoped UIDs. Deduplicate
+            # by Message-ID first so the same email is not delivered twice.
+            if normalized_mid:
+                cursor.execute(
+                    """
+                    SELECT id FROM emails
+                    WHERE email_account = ?
+                      AND LOWER(TRIM(COALESCE(message_id, ''))) = ?
+                    LIMIT 1
+                    """,
+                    (self.account_info["id"], normalized_mid),
+                )
+                existing_by_message_id = cursor.fetchone()
+                if existing_by_message_id:
+                    conn.close()
+                    return existing_by_message_id[0], False
 
             # Check if email exists
             cursor.execute(

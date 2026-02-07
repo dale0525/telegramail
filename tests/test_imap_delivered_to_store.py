@@ -78,3 +78,59 @@ class TestImapDeliveredToStore(unittest.TestCase):
         conn.close()
 
         self.assertEqual(json.loads(row[0]), delivered_to)
+
+    def test_execute_db_transaction_skips_cross_mailbox_duplicate_by_message_id(self):
+        from app.email_utils.account_manager import AccountManager
+        from app.email_utils.imap_client import IMAPClient
+
+        account_mgr = AccountManager()
+        self.assertTrue(
+            account_mgr.add_account(
+                {
+                    "email": "a@example.com",
+                    "password": "pw",
+                    "imap_server": "imap.example.com",
+                    "imap_port": 993,
+                    "imap_ssl": True,
+                    "smtp_server": "smtp.example.com",
+                    "smtp_port": 465,
+                    "smtp_ssl": True,
+                    "alias": "Work",
+                    "tg_group_id": 123,
+                }
+            )
+        )
+        account = account_mgr.get_account(
+            email="a@example.com", smtp_server="smtp.example.com"
+        )
+        imap = IMAPClient(account)
+
+        first = {
+            "email_account": account["id"],
+            "message_id": "<same-message@example.com>",
+            "sender": "Alice <alice@example.com>",
+            "recipient": "a@example.com",
+            "cc": "",
+            "bcc": "",
+            "subject": "Hello",
+            "email_date": "Mon, 1 Jan 2026 00:00:00 +0000",
+            "body_text": "Hi",
+            "body_html": "<p>Hi</p>",
+            "uid": "100",
+            "mailbox": "INBOX",
+            "delivered_to": json.dumps(["a@example.com"]),
+        }
+        first_id, first_is_new = imap._execute_db_transaction(
+            first, first["uid"], mailbox=first["mailbox"]
+        )
+        self.assertTrue(first_is_new)
+
+        second = dict(first)
+        second["uid"] = "200"
+        second["mailbox"] = "[Gmail]/Important"
+        second_id, second_is_new = imap._execute_db_transaction(
+            second, second["uid"], mailbox=second["mailbox"]
+        )
+
+        self.assertEqual(second_id, first_id)
+        self.assertFalse(second_is_new)
