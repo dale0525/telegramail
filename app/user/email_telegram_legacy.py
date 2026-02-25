@@ -36,7 +36,9 @@ async def send_email_to_telegram_legacy(sender: Any, email_data: Dict[str, Any])
         decoded_sender = sender.decode_mime_header_value(original_sender)
 
         # Check for existing thread ID
-        thread_id = await sender.get_thread_id_by_subject(clean_subject, account_id)
+        thread_id = await sender.get_thread_id_by_subject(
+            clean_subject, account_id, chat_id=group_id
+        )
 
         # If no thread exists, create a new forum topic
         if not thread_id:

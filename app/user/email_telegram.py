@@ -47,6 +47,24 @@ from aiotdlib.api import (
 
 logger = Logger().get_logger(__name__)
 
+_SUBJECT_PREFIX_PATTERN = re.compile(
+    r"^(?:re|fw|fwd|回复|转发)[:：]\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def normalize_topic_subject(subject: Any) -> str:
+    """Normalize an email subject for Telegram topic grouping."""
+    normalized = str(subject or "").strip()
+
+    while normalized:
+        updated = _SUBJECT_PREFIX_PATTERN.sub("", normalized, count=1).strip()
+        if updated == normalized:
+            break
+        normalized = updated
+
+    return normalized or _("no_subject")
+
 
 class EmailTelegramSender:
     """Class for sending emails to Telegram chats"""
@@ -57,40 +75,78 @@ class EmailTelegramSender:
         self.db_manager = DBManager()
 
     async def get_thread_id_by_subject(
-        self, clean_subject: str, account_id: int
+        self, clean_subject: str, account_id: int, chat_id: Optional[int] = None
     ) -> Optional[int]:
         """
-        Find a telegram thread ID by email subject (without Re: prefix)
+        Find a Telegram topic thread ID by normalized email subject.
 
         Args:
-            subject: Email subject to search for
-            group_id: Telegram group ID to check
+            clean_subject: Subject already cleaned from the incoming email.
+            account_id: Account ID that owns the email.
+            chat_id: Optional Telegram group ID; when provided, deleted topics
+                for this group are excluded from reuse.
 
         Returns:
             Optional[int]: Thread ID if found, None otherwise
         """
 
-        # Query database for an existing thread with this subject
+        normalized_subject = normalize_topic_subject(clean_subject)
+
+        # Query latest threads and match by normalized subject in Python.
+        # This avoids broad SQL LIKE collisions and ensures deterministic ordering.
         conn = None
         try:
             conn = self.db_manager._get_connection()
             cursor = conn.cursor()
-            cursor.execute(
+
+            query = """
+                SELECT id, subject, telegram_thread_id
+                FROM emails
+                WHERE email_account = ?
+                  AND COALESCE(TRIM(telegram_thread_id), '') <> ''
+            """
+            query_params: list[Any] = [int(account_id)]
+
+            if chat_id is not None:
+                query += """
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM deleted_topics AS dt
+                      WHERE dt.chat_id = ? AND dt.thread_id = emails.telegram_thread_id
+                  )
                 """
-                SELECT telegram_thread_id FROM emails
-                WHERE subject LIKE ? AND telegram_thread_id IS NOT NULL AND email_account = ?
-                LIMIT 1
-                """,
-                (f"%{clean_subject}%", account_id),
-            )
-            result = cursor.fetchone()
-            if result and result[0]:
-                # Convert string to int if it's a numeric string
+                query_params.append(int(chat_id))
+
+            query += """
+                ORDER BY id DESC
+                LIMIT 300
+            """
+
+            cursor.execute(query, query_params)
+            rows = cursor.fetchall()
+            for row in rows:
+                candidate_subject = normalize_topic_subject(row[1])
+                if candidate_subject != normalized_subject:
+                    continue
+
                 try:
-                    return int(result[0])
+                    thread_id = int(str(row[2]).strip())
                 except (ValueError, TypeError):
-                    logger.error(f"Failed to convert thread_id to integer: {result[0]}")
-                    return None
+                    logger.error(f"Failed to convert thread_id to integer: {row[2]}")
+                    continue
+
+                if thread_id <= 0:
+                    continue
+
+                logger.info(
+                    "Resolved existing thread_id=%s for subject '%s' (email_id=%s)",
+                    thread_id,
+                    normalized_subject,
+                    row[0],
+                )
+                return thread_id
+
+            logger.info("No existing thread matched subject: %s", normalized_subject)
             return None
         except Exception as e:
             logger.error(f"Error getting thread ID by subject: {e}")
@@ -654,10 +710,7 @@ class EmailTelegramSender:
         if email_data.get("body_html"):
             # Clean subject for use as filename
             subject = email_data["subject"]
-            clean_subject = re.sub(
-                r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
-            )
-            clean_subject = clean_subject.strip() or _("no_subject")
+            clean_subject = normalize_topic_subject(subject)
             sanitized_subject = re.sub(r'[\\/*?:"<>|]', "_", clean_subject)[:50]
             html_filename = f"{sanitized_subject}.html"
 
@@ -754,9 +807,7 @@ class EmailTelegramSender:
 
             # 2. Clean email subject (remove Re: prefix)
             subject = email_data["subject"]
-            clean_subject = re.sub(
-                r"^(?i)(re|fw|fwd|回复|转发)[:：]\s*", "", subject.strip()
-            )
+            clean_subject = normalize_topic_subject(subject)
 
             # 2.1 Prefer threading by headers (In-Reply-To / References) if present.
             thread_id_hint = self.db_manager.find_thread_id_for_reply_headers(

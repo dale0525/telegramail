@@ -156,7 +156,7 @@ class AtomicEmailSender:
             thread_id = int(thread_id_hint) if thread_id_hint else None
             if not thread_id:
                 thread_id = await self.email_sender.get_thread_id_by_subject(
-                    topic_title, account_id
+                    topic_title, account_id, chat_id=chat_id
                 )
 
             # 2. If no thread exists, create a new one AFTER content is prepared
@@ -198,6 +198,76 @@ class AtomicEmailSender:
                     )
                     await self._rollback()
                     return False
+
+                # Safety guard: some Telegram failures can silently send to General
+                # when message_thread_id is stale/invalid. Detect this on the first
+                # message and self-heal by creating a fresh topic, then retrying once.
+                if i == 0:
+                    actual_thread_id = self._extract_message_thread_id(sent_message)
+                    if (
+                        actual_thread_id is not None
+                        and int(actual_thread_id) != int(thread_id)
+                    ):
+                        logger.warning(
+                            "Thread mismatch detected on first message "
+                            "(expected=%s, actual=%s). Recreating topic and retrying.",
+                            thread_id,
+                            actual_thread_id,
+                        )
+                        new_thread_id = await self._create_forum_topic_with_retry(
+                            chat_id, topic_title
+                        )
+                        if not new_thread_id:
+                            logger.error(
+                                "Failed to recreate topic after thread mismatch "
+                                "(expected=%s, actual=%s)",
+                                thread_id,
+                                actual_thread_id,
+                            )
+                            await self._rollback()
+                            return False
+
+                        self.created_topic_id = int(new_thread_id)
+                        self.thread_id = int(new_thread_id)
+                        thread_id = int(new_thread_id)
+
+                        if not self.email_sender.db_manager.update_thread_id_in_db(
+                            email_id, thread_id
+                        ):
+                            logger.error(
+                                "Failed to update thread ID in database after topic recreation"
+                            )
+                            await self._rollback()
+                            return False
+
+                        sent_message = await self._send_formatted_text_message_with_retry(
+                            chat_id=chat_id,
+                            thread_id=thread_id,
+                            formatted_text=message.formatted_text,
+                            send_notification=message.send_notification,
+                            urls=message.urls,
+                        )
+                        if not sent_message:
+                            logger.error(
+                                "Failed to resend first message after topic recreation"
+                            )
+                            await self._rollback()
+                            return False
+
+                        resent_thread_id = self._extract_message_thread_id(sent_message)
+                        if (
+                            resent_thread_id is not None
+                            and int(resent_thread_id) != int(thread_id)
+                        ):
+                            logger.error(
+                                "Resent message still in unexpected thread "
+                                "(expected=%s, actual=%s)",
+                                thread_id,
+                                resent_thread_id,
+                            )
+                            await self._rollback()
+                            return False
+
                 self.sent_messages.append(sent_message)
 
             # 5. Send all files with retry mechanism
@@ -373,3 +443,24 @@ class AtomicEmailSender:
             plain = re.sub(r"<[^>]+>", "", plain)
             return html.unescape(plain).strip()
         return text
+
+    def _extract_message_thread_id(self, sent_message: Any) -> Optional[int]:
+        if sent_message is None:
+            return None
+
+        candidates = [
+            getattr(sent_message, "message_thread_id", None),
+            getattr(getattr(sent_message, "message", None), "message_thread_id", None),
+        ]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                thread_id = int(candidate)
+            except (TypeError, ValueError):
+                continue
+
+            if thread_id >= 0:
+                return thread_id
+
+        return None

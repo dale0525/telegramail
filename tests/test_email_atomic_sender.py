@@ -1,6 +1,11 @@
 import unittest
 
 
+class _FakeMessage:
+    def __init__(self, message_thread_id: int):
+        self.message_thread_id = int(message_thread_id)
+
+
 class _FakeDBManager:
     def __init__(self, events: list[str], update_ok: bool = True):
         self._events = events
@@ -16,13 +21,23 @@ class _FakeEmailSender:
         self._events = events
         self.db_manager = _FakeDBManager(events)
         self._sent_formatted_texts = []
+        self._existing_thread_id = None
+        self._created_topic_ids: list[int] = [111]
+        self._reported_thread_ids: list[int] = []
 
-    async def get_thread_id_by_subject(self, clean_subject: str, account_id: int):
+    async def get_thread_id_by_subject(
+        self,
+        clean_subject: str,
+        account_id: int,
+        chat_id: int | None = None,
+    ):
         self._events.append("get_thread")
-        return None
+        return self._existing_thread_id
 
     async def create_forum_topic(self, chat_id: int, title: str):
         self._events.append(f"create_topic:{chat_id}:{title}")
+        if self._created_topic_ids:
+            return self._created_topic_ids.pop(0)
         return 111
 
     async def str_to_formatted(self, original: str, parse_mode):
@@ -40,9 +55,11 @@ class _FakeEmailSender:
     async def send_formatted_text_message(
         self, *, chat_id: int, formatted_text, send_notification: bool, thread_id: int, urls
     ):
-        self._events.append("send_formatted_text_message")
+        self._events.append(f"send_formatted_text_message:{thread_id}")
         self._sent_formatted_texts.append(formatted_text)
-        return object()
+        if self._reported_thread_ids:
+            return _FakeMessage(self._reported_thread_ids.pop(0))
+        return _FakeMessage(thread_id)
 
     async def send_html_as_file(self, **kwargs):
         self._events.append("send_html_as_file")
@@ -124,7 +141,43 @@ class TestAtomicEmailSenderOrdering(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(ok)
-        self.assertIn("send_formatted_text_message", events)
+        self.assertTrue(
+            any(e.startswith("send_formatted_text_message") for e in events)
+        )
         self.assertEqual(len(fake_sender._sent_formatted_texts), 1)
         self.assertEqual(fake_sender._sent_formatted_texts[0].text, "bad")
 
+    async def test_first_message_wrong_thread_recreates_topic_and_retries(self):
+        from app.user.email_telegram import AtomicEmailSender, MessageContent
+
+        events: list[str] = []
+        fake_sender = _FakeEmailSender(events)
+        fake_sender._existing_thread_id = 555
+        fake_sender._created_topic_ids = [777]
+        fake_sender._reported_thread_ids = [0, 777]
+
+        atomic_sender = AtomicEmailSender(fake_sender)
+        messages = [
+            MessageContent(
+                text="thread consistency check",
+                parse_mode=None,
+                send_notification=True,
+            )
+        ]
+
+        ok = await atomic_sender.send_email_atomically(
+            chat_id=123,
+            topic_title="Test topic",
+            messages=messages,
+            files=[],
+            attachments=[],
+            email_id=1,
+            account_id=1,
+        )
+
+        self.assertTrue(ok)
+        self.assertIn("send_formatted_text_message:555", events)
+        self.assertIn("create_topic:123:Test topic", events)
+        self.assertIn("send_formatted_text_message:777", events)
+        self.assertIn("db_update:1:555", events)
+        self.assertIn("db_update:1:777", events)
