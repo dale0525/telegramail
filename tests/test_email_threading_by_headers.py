@@ -65,6 +65,37 @@ class TestEmailThreadingByHeaders(unittest.TestCase):
         )
         self.assertEqual(thread_id, 789)
 
+    def test_find_thread_id_for_headers_skips_deleted_topic(self):
+        from app.database import DBManager
+
+        db = DBManager()
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO emails (email_account, message_id, subject, uid, telegram_thread_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (1, "<m1@example.com>", "Hello", "outgoing:<m1@example.com>", "456"),
+        )
+        cur.execute(
+            """
+            INSERT INTO deleted_topics (chat_id, thread_id, event_id, deleted_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (777, "456", 1, 1),
+        )
+        conn.commit()
+        conn.close()
+
+        thread_id = db.find_thread_id_for_reply_headers(
+            account_id=1,
+            in_reply_to="<m1@example.com>",
+            references_header=None,
+            chat_id=777,
+        )
+        self.assertIsNone(thread_id)
+
     def test_get_email_uid_by_thread_filters_non_numeric_uids(self):
         from app.database import DBManager
 
