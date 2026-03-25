@@ -38,7 +38,10 @@ class TestEmailThreadingByHeaders(unittest.TestCase):
         conn.close()
 
         thread_id = db.find_thread_id_for_reply_headers(
-            account_id=1, in_reply_to="<m1@example.com>", references_header=None
+            account_id=1,
+            in_reply_to="<m1@example.com>",
+            references_header=None,
+            chat_id=777,
         )
         self.assertEqual(thread_id, 456)
 
@@ -62,8 +65,21 @@ class TestEmailThreadingByHeaders(unittest.TestCase):
             account_id=1,
             in_reply_to=None,
             references_header="<x@example.com> <m2@example.com>",
+            chat_id=777,
         )
         self.assertEqual(thread_id, 789)
+
+    def test_find_thread_id_for_headers_requires_chat_id(self):
+        from app.database import DBManager
+
+        db = DBManager()
+
+        with self.assertRaises(TypeError):
+            db.find_thread_id_for_reply_headers(
+                account_id=1,
+                in_reply_to="<m1@example.com>",
+                references_header=None,
+            )
 
     def test_find_thread_id_for_headers_skips_deleted_topic(self):
         from app.database import DBManager
