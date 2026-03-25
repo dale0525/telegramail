@@ -757,13 +757,15 @@ CREATE TABLE IF NOT EXISTS draft_messages (
         account_id: int,
         in_reply_to: Optional[str],
         references_header: Optional[str],
+        chat_id: int,
     ) -> Optional[int]:
         """
         Resolve a Telegram thread_id for an email reply by looking up In-Reply-To / References
-        message ids in the local DB.
+        message ids in the local DB for a specific Telegram chat.
 
         This allows incoming replies to be grouped into the correct Telegram topic even when
-        subjects change or collide.
+        subjects change or collide, while avoiding topics that were already deleted in the
+        target chat.
         """
         candidates: list[str] = []
         if in_reply_to and str(in_reply_to).strip():
@@ -795,15 +797,31 @@ CREATE TABLE IF NOT EXISTS draft_messages (
             conn = self._get_connection()
             cursor = conn.cursor()
             for message_id in uniq:
-                cursor.execute(
-                    """
-                    SELECT telegram_thread_id
+                query = """
+                    SELECT emails.telegram_thread_id
                     FROM emails
-                    WHERE email_account = ? AND message_id = ? AND telegram_thread_id IS NOT NULL
+                    WHERE emails.email_account = ?
+                      AND emails.message_id = ?
+                      AND emails.telegram_thread_id IS NOT NULL
+                """
+                params: list[Any] = [int(account_id), message_id]
+
+                query += """
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM deleted_topics AS dt
+                      WHERE dt.chat_id = ?
+                        AND dt.thread_id = emails.telegram_thread_id
+                  )
+                """
+                params.append(int(chat_id))
+
+                query += """
+                    ORDER BY emails.id DESC
                     LIMIT 1
-                    """,
-                    (int(account_id), message_id),
-                )
+                """
+
+                cursor.execute(query, params)
                 row = cursor.fetchone()
                 if not row or not row[0]:
                     continue
