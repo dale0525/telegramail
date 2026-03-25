@@ -814,6 +814,7 @@ class EmailTelegramSender:
                 account_id=account_id,
                 in_reply_to=email_data.get("in_reply_to"),
                 references_header=email_data.get("references_header"),
+                chat_id=group_id,
             )
 
             # 3. Prepare all content to be sent
