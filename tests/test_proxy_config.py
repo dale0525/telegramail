@@ -88,6 +88,21 @@ class TestProxyConfig(unittest.TestCase):
         self.assertEqual(proxy.port, 7890)
         self.assertEqual(str(proxy.type), "ClientProxyType.HTTP")
 
+    def test_zero_proxy_port_is_ignored_in_favor_of_next_valid_env(self):
+        from app.utils.proxy import build_tdlib_proxy_settings
+
+        proxy = build_tdlib_proxy_settings(
+            {
+                "all_proxy": "socks5://proxy.example.com:0",
+                "http_proxy": "http://127.0.0.1:7890",
+            }
+        )
+
+        self.assertIsNotNone(proxy)
+        self.assertEqual(proxy.host, "127.0.0.1")
+        self.assertEqual(proxy.port, 7890)
+        self.assertEqual(str(proxy.type), "ClientProxyType.HTTP")
+
     def test_no_proxy_star_disables_tdlib_proxy(self):
         from app.utils.proxy import build_tdlib_proxy_settings
 
