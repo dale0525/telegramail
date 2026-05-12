@@ -72,6 +72,7 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
    # Optional proxy settings
    # TELEGRAMAIL_PROXY is used by Telegram/TDLib. If it is not set, TDLib falls back to all_proxy / https_proxy / http_proxy environment variable names.
    # Proxy URLs must still use a TDLib-supported scheme: http, socks5, socks5h, mtproto.
+   # When TELEGRAMAIL_PROXY is set, fallback proxy environment variables are ignored.
    # Use NO_PROXY=* to disable TDLib proxy environment settings; TELEGRAMAIL_PROXY overrides it.
    # If no proxy is selected here, aiotdlib can still read AIOTDLIB_PROXY_SETTINGS.
    # TELEGRAMAIL_PROXY=http://127.0.0.1:7890
