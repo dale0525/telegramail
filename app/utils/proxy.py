@@ -72,7 +72,12 @@ def _parse_proxy_url(proxy_url: str) -> Optional[ClientProxySettings]:
         logger.warning(f"Ignoring proxy URL with invalid port: {e}")
         return None
 
-    port = port or _default_port_for_scheme(scheme)
+    if port is None:
+        port = _default_port_for_scheme(scheme)
+    elif port <= 0:
+        logger.warning(f"Ignoring proxy URL with invalid port: {port}")
+        return None
+
     if port is None:
         logger.warning(f"Ignoring unsupported proxy scheme: {scheme}")
         return None

@@ -67,8 +67,8 @@ TelegramMail 是一个基于 Telegram 和 [aiotdlib](https://github.com/pylakey/
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
    # 可选代理设置
-   # TELEGRAMAIL_PROXY 用于 Telegram/TDLib；未设置时，TDLib 会回退读取 all_proxy / https_proxy / http_proxy。
-   # 支持的 URL scheme：http、socks5、socks5h、mtproto。
+   # TELEGRAMAIL_PROXY 用于 Telegram/TDLib；未设置时，TDLib 会回退读取 all_proxy / https_proxy / http_proxy 这些环境变量名。
+   # 代理 URL 本身仍必须使用 TDLib 支持的 scheme：http、socks5、socks5h、mtproto。
    # 可用 NO_PROXY=* 禁用 TDLib 代理环境配置；TELEGRAMAIL_PROXY 会优先于它。
    # 若这里没有选中代理，aiotdlib 仍可读取 AIOTDLIB_PROXY_SETTINGS。
    # TELEGRAMAIL_PROXY=http://127.0.0.1:7890
