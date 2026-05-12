@@ -1,6 +1,7 @@
 import os
 from aiotdlib import Client, ClientSettings
 from app.utils.tdlib_manager import get_library_path
+from app.utils.proxy import build_tdlib_proxy_settings_kwargs
 from app.utils import Logger
 
 logger = Logger().get_logger(__name__)
@@ -66,6 +67,7 @@ class UserClient:
         # Get dynamic library path for user client
         library_path = get_library_path("user")
         logger.info(f"Using TDLib library for user: {library_path}")
+        proxy_settings_kwargs = build_tdlib_proxy_settings_kwargs()
 
         self.client = CustomClient(
             settings=ClientSettings(
@@ -75,6 +77,7 @@ class UserClient:
                 database_encryption_key="Telegramail",
                 files_directory=os.path.join(os.getcwd(), "data", "user"),
                 library_path=library_path,
+                **proxy_settings_kwargs,
             )
         )
 
