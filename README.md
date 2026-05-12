@@ -69,6 +69,11 @@ TelegramMail is a Telegram-based email tool built on top of [aiotdlib](https://g
    TELEGRAM_API_HASH=your_telegram_api_hash_here
    TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
+   # Optional proxy settings
+   # TELEGRAMAIL_PROXY is used by Telegram/TDLib. If it is not set, TDLib falls back to all_proxy / https_proxy / http_proxy.
+   # Supported URL schemes: http, https, socks5, socks5h, mtproto. Use NO_PROXY=* to disable the environment proxy for TDLib.
+   # TELEGRAMAIL_PROXY=http://127.0.0.1:7890
+
    # Optional TDLib settings
    TELEGRAM_CHAT_EVENT_LOG_TIMEOUT=30  # increase if you see TimeoutError when scanning deleted topics
 
