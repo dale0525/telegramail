@@ -9,8 +9,7 @@ from app.utils.logger import Logger
 logger = Logger().get_logger(__name__)
 
 APP_PROXY_ENV = "TELEGRAMAIL_PROXY"
-PROXY_ENV_KEYS = (
-    APP_PROXY_ENV,
+FALLBACK_PROXY_ENV_KEYS = (
     "all_proxy",
     "ALL_PROXY",
     "https_proxy",
@@ -19,6 +18,7 @@ PROXY_ENV_KEYS = (
     "HTTP_PROXY",
 )
 NO_PROXY_ENV_KEYS = ("no_proxy", "NO_PROXY")
+SUPPORTED_PROXY_SCHEMES = {"http", "socks5", "socks5h", "mtproto"}
 
 
 def _get_env(env: Mapping[str, str], key: str) -> Optional[str]:
@@ -42,52 +42,25 @@ def _no_proxy_disables_all(env: Mapping[str, str]) -> bool:
     return False
 
 
-def _select_proxy_url(env: Mapping[str, str]) -> Optional[str]:
-    if _no_proxy_disables_all(env):
-        return None
-
-    for key in PROXY_ENV_KEYS:
-        value = _get_env(env, key)
-        if value:
-            return value
-
-    return None
-
-
 def _default_port_for_scheme(scheme: str) -> Optional[int]:
     return {
         "http": 80,
-        "https": 443,
         "socks5": 1080,
         "socks5h": 1080,
         "mtproto": 443,
     }.get(scheme)
 
 
-def build_tdlib_proxy_settings(
-    env: Optional[Mapping[str, str]] = None,
-) -> Optional[ClientProxySettings]:
-    """
-    Build TDLib proxy settings from environment variables.
-
-    Supported proxy URL schemes:
-    - http://host:port
-    - https://host:port (configured as TDLib HTTP proxy)
-    - socks5://host:port
-    - socks5h://host:port
-    - mtproto://host:port?secret=...
-    """
-    if env is None:
-        env = os.environ
-    proxy_url = _select_proxy_url(env)
-    if not proxy_url:
-        return None
-
+def _parse_proxy_url(proxy_url: str) -> Optional[ClientProxySettings]:
     if "://" not in proxy_url:
         proxy_url = f"http://{proxy_url}"
 
     parsed = urlparse(proxy_url)
     scheme = (parsed.scheme or "http").lower()
+    if scheme not in SUPPORTED_PROXY_SCHEMES:
+        logger.warning(f"Ignoring unsupported proxy scheme: {scheme}")
+        return None
+
     host = parsed.hostname
     if not host:
         logger.warning("Ignoring proxy URL without host")
@@ -107,7 +80,7 @@ def build_tdlib_proxy_settings(
     username = unquote(parsed.username) if parsed.username else None
     password = unquote(parsed.password) if parsed.password else None
 
-    if scheme in {"http", "https"}:
+    if scheme == "http":
         proxy_type = ClientProxyType.HTTP
         secret = None
     elif scheme in {"socks5", "socks5h"}:
@@ -133,3 +106,51 @@ def build_tdlib_proxy_settings(
         http_only=False,
         secret=secret,
     )
+
+
+def build_tdlib_proxy_settings(
+    env: Optional[Mapping[str, str]] = None,
+) -> Optional[ClientProxySettings]:
+    """
+    Build TDLib proxy settings from environment variables.
+
+    Supported proxy URL schemes:
+    - http://host:port
+    - socks5://host:port
+    - socks5h://host:port
+    - mtproto://host:port?secret=...
+    """
+    return build_tdlib_proxy_settings_kwargs(env).get("proxy_settings")
+
+
+def build_tdlib_proxy_settings_kwargs(
+    env: Optional[Mapping[str, str]] = None,
+) -> dict[str, Optional[ClientProxySettings]]:
+    """
+    Build the ClientSettings kwargs needed for proxy configuration.
+
+    Returning an empty dict preserves aiotdlib's native AIOTDLIB_* environment
+    parsing. Returning {"proxy_settings": None} explicitly disables proxies.
+    """
+    if env is None:
+        env = os.environ
+
+    app_proxy_url = _get_env(env, APP_PROXY_ENV)
+    if app_proxy_url:
+        proxy_settings = _parse_proxy_url(app_proxy_url)
+        if proxy_settings is not None:
+            return {"proxy_settings": proxy_settings}
+
+    if _no_proxy_disables_all(env):
+        return {"proxy_settings": None}
+
+    for key in FALLBACK_PROXY_ENV_KEYS:
+        proxy_url = _get_env(env, key)
+        if not proxy_url:
+            continue
+
+        proxy_settings = _parse_proxy_url(proxy_url)
+        if proxy_settings is not None:
+            return {"proxy_settings": proxy_settings}
+
+    return {}
