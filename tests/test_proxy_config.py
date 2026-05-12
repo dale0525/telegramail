@@ -28,6 +28,41 @@ class TestProxyConfig(unittest.TestCase):
         self.assertEqual(proxy.password, "p@ss")
         self.assertFalse(proxy.http_only)
 
+    def test_unauthenticated_http_proxy_uses_tdlib_compatible_empty_credentials(self):
+        from aiotdlib.api import ProxyTypeHttp
+
+        from app.utils.proxy import build_tdlib_proxy_settings
+
+        proxy = build_tdlib_proxy_settings({"http_proxy": "http://127.0.0.1:7890"})
+
+        self.assertIsNotNone(proxy)
+        self.assertEqual(proxy.username, "")
+        self.assertEqual(proxy.password, "")
+        tdlib_proxy_type = ProxyTypeHttp(
+            username=proxy.username,
+            password=proxy.password,
+            http_only=proxy.http_only,
+        )
+        self.assertEqual(tdlib_proxy_type.username, "")
+        self.assertEqual(tdlib_proxy_type.password, "")
+
+    def test_unauthenticated_socks5_proxy_uses_tdlib_compatible_empty_credentials(self):
+        from aiotdlib.api import ProxyTypeSocks5
+
+        from app.utils.proxy import build_tdlib_proxy_settings
+
+        proxy = build_tdlib_proxy_settings({"all_proxy": "socks5://127.0.0.1:1080"})
+
+        self.assertIsNotNone(proxy)
+        self.assertEqual(proxy.username, "")
+        self.assertEqual(proxy.password, "")
+        tdlib_proxy_type = ProxyTypeSocks5(
+            username=proxy.username,
+            password=proxy.password,
+        )
+        self.assertEqual(tdlib_proxy_type.username, "")
+        self.assertEqual(tdlib_proxy_type.password, "")
+
     def test_builds_tdlib_socks5_proxy_from_explicit_app_env(self):
         from app.utils.proxy import build_tdlib_proxy_settings
 
@@ -112,6 +147,21 @@ class TestProxyConfig(unittest.TestCase):
 
         self.assertIsNone(proxy)
 
+    def test_no_proxy_star_disables_aiotdlib_proxy_settings_kwargs(self):
+        from app.utils.proxy import build_tdlib_proxy_settings_kwargs
+
+        kwargs = build_tdlib_proxy_settings_kwargs(
+            {
+                "NO_PROXY": "*",
+                "AIOTDLIB_PROXY_SETTINGS": (
+                    '{"host":"proxy.example.com","port":1080,"type":"socks5"}'
+                ),
+            }
+        )
+
+        self.assertIn("proxy_settings", kwargs)
+        self.assertIsNone(kwargs["proxy_settings"])
+
     def test_empty_env_does_not_fall_back_to_process_env(self):
         from app.utils.proxy import build_tdlib_proxy_settings
 
@@ -121,6 +171,28 @@ class TestProxyConfig(unittest.TestCase):
             clear=True,
         ):
             proxy = build_tdlib_proxy_settings({})
+
+        self.assertIsNone(proxy)
+
+    def test_invalid_explicit_app_proxy_disables_fallback_proxy_env(self):
+        from app.utils.proxy import build_tdlib_proxy_settings_kwargs
+
+        kwargs = build_tdlib_proxy_settings_kwargs(
+            {
+                "TELEGRAMAIL_PROXY": "ftp://proxy.example.com:21",
+                "http_proxy": "http://127.0.0.1:7890",
+            }
+        )
+
+        self.assertIn("proxy_settings", kwargs)
+        self.assertIsNone(kwargs["proxy_settings"])
+
+    def test_mtproto_proxy_rejects_non_hex_secret(self):
+        from app.utils.proxy import build_tdlib_proxy_settings
+
+        proxy = build_tdlib_proxy_settings(
+            {"TELEGRAMAIL_PROXY": "mtproto://proxy.example.com:443?secret=not-hex"}
+        )
 
         self.assertIsNone(proxy)
 

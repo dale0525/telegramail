@@ -51,6 +51,15 @@ def _default_port_for_scheme(scheme: str) -> Optional[int]:
     }.get(scheme)
 
 
+def _is_hex_encoded_secret(secret: str) -> bool:
+    try:
+        bytes.fromhex(secret)
+    except ValueError:
+        return False
+
+    return len(secret) % 2 == 0
+
+
 def _parse_proxy_url(proxy_url: str) -> Optional[ClientProxySettings]:
     if "://" not in proxy_url:
         proxy_url = f"http://{proxy_url}"
@@ -82,8 +91,8 @@ def _parse_proxy_url(proxy_url: str) -> Optional[ClientProxySettings]:
         logger.warning(f"Ignoring unsupported proxy scheme: {scheme}")
         return None
 
-    username = unquote(parsed.username) if parsed.username else None
-    password = unquote(parsed.password) if parsed.password else None
+    username = unquote(parsed.username) if parsed.username is not None else ""
+    password = unquote(parsed.password) if parsed.password is not None else ""
 
     if scheme == "http":
         proxy_type = ClientProxyType.HTTP
@@ -100,6 +109,10 @@ def _parse_proxy_url(proxy_url: str) -> Optional[ClientProxySettings]:
 
     if proxy_type == ClientProxyType.MTPROTO and not secret:
         logger.warning("Ignoring MTProto proxy URL without secret")
+        return None
+
+    if proxy_type == ClientProxyType.MTPROTO and not _is_hex_encoded_secret(secret):
+        logger.warning("Ignoring MTProto proxy URL with non-hex secret")
         return None
 
     return ClientProxySettings(
@@ -145,6 +158,10 @@ def build_tdlib_proxy_settings_kwargs(
         proxy_settings = _parse_proxy_url(app_proxy_url)
         if proxy_settings is not None:
             return {"proxy_settings": proxy_settings}
+        logger.warning(
+            f"Ignoring fallback proxy environment variables because {APP_PROXY_ENV} is invalid"
+        )
+        return {"proxy_settings": None}
 
     if _no_proxy_disables_all(env):
         return {"proxy_settings": None}
