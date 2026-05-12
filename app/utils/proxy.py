@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Mapping, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -52,12 +53,7 @@ def _default_port_for_scheme(scheme: str) -> Optional[int]:
 
 
 def _is_hex_encoded_secret(secret: str) -> bool:
-    try:
-        bytes.fromhex(secret)
-    except ValueError:
-        return False
-
-    return len(secret) % 2 == 0
+    return bool(re.fullmatch(r"[0-9a-fA-F]+", secret)) and len(secret) % 2 == 0
 
 
 def _parse_proxy_url(proxy_url: str) -> Optional[ClientProxySettings]:

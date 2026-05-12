@@ -196,6 +196,15 @@ class TestProxyConfig(unittest.TestCase):
 
         self.assertIsNone(proxy)
 
+    def test_mtproto_proxy_rejects_secret_with_encoded_spaces(self):
+        from app.utils.proxy import build_tdlib_proxy_settings
+
+        proxy = build_tdlib_proxy_settings(
+            {"TELEGRAMAIL_PROXY": "mtproto://proxy.example.com:443?secret=aa%20%20bb"}
+        )
+
+        self.assertIsNone(proxy)
+
     def test_bot_client_passes_env_proxy_to_tdlib_settings(self):
         with mock.patch.dict(
             os.environ,
