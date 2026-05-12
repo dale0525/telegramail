@@ -4,6 +4,15 @@ from unittest import mock
 
 
 class TestProxyConfig(unittest.TestCase):
+    def setUp(self):
+        import app.utils.logger as logger_module
+
+        logger_module.Logger.reset_instance()
+        self.load_dotenv_patcher = mock.patch("app.utils.logger.load_dotenv")
+        self.load_dotenv_patcher.start()
+        self.addCleanup(self.load_dotenv_patcher.stop)
+        self.addCleanup(logger_module.Logger.reset_instance)
+
     def test_builds_tdlib_http_proxy_from_lowercase_env(self):
         from app.utils.proxy import build_tdlib_proxy_settings
 
@@ -33,6 +42,51 @@ class TestProxyConfig(unittest.TestCase):
         self.assertEqual(proxy.host, "proxy.example.com")
         self.assertEqual(proxy.port, 1080)
         self.assertEqual(str(proxy.type), "ClientProxyType.SOCKS5")
+
+    def test_explicit_app_proxy_overrides_no_proxy_star(self):
+        from app.utils.proxy import build_tdlib_proxy_settings
+
+        proxy = build_tdlib_proxy_settings(
+            {
+                "TELEGRAMAIL_PROXY": "socks5://proxy.example.com:1080",
+                "NO_PROXY": "*",
+            }
+        )
+
+        self.assertIsNotNone(proxy)
+        self.assertEqual(proxy.host, "proxy.example.com")
+        self.assertEqual(proxy.port, 1080)
+        self.assertEqual(str(proxy.type), "ClientProxyType.SOCKS5")
+
+    def test_invalid_higher_priority_proxy_falls_back_to_next_valid_env(self):
+        from app.utils.proxy import build_tdlib_proxy_settings
+
+        proxy = build_tdlib_proxy_settings(
+            {
+                "all_proxy": "ftp://proxy.example.com:21",
+                "http_proxy": "http://127.0.0.1:7890",
+            }
+        )
+
+        self.assertIsNotNone(proxy)
+        self.assertEqual(proxy.host, "127.0.0.1")
+        self.assertEqual(proxy.port, 7890)
+        self.assertEqual(str(proxy.type), "ClientProxyType.HTTP")
+
+    def test_https_proxy_url_is_ignored_in_favor_of_next_valid_env(self):
+        from app.utils.proxy import build_tdlib_proxy_settings
+
+        proxy = build_tdlib_proxy_settings(
+            {
+                "https_proxy": "https://proxy.example.com:443",
+                "http_proxy": "http://127.0.0.1:7890",
+            }
+        )
+
+        self.assertIsNotNone(proxy)
+        self.assertEqual(proxy.host, "127.0.0.1")
+        self.assertEqual(proxy.port, 7890)
+        self.assertEqual(str(proxy.type), "ClientProxyType.HTTP")
 
     def test_no_proxy_star_disables_tdlib_proxy(self):
         from app.utils.proxy import build_tdlib_proxy_settings
@@ -80,6 +134,32 @@ class TestProxyConfig(unittest.TestCase):
         self.assertEqual(settings.proxy_settings.host, "127.0.0.1")
         self.assertEqual(settings.proxy_settings.port, 7890)
 
+    def test_bot_client_omits_proxy_settings_when_only_aiotdlib_env_exists(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_API_ID": "1",
+                "TELEGRAM_API_HASH": "hash",
+                "TELEGRAM_BOT_TOKEN": "bot-token",
+                "AIOTDLIB_PROXY_SETTINGS": '{"host":"proxy.example.com","port":1080,"type":"socks5"}',
+            },
+            clear=True,
+        ):
+            from app.bot import bot_client
+
+            bot_client.BotClient.reset_instance()
+            with (
+                mock.patch("app.bot.bot_client.get_library_path", return_value="/tmp/libtdjson"),
+                mock.patch("app.bot.bot_client.Client"),
+                mock.patch(
+                    "app.bot.bot_client.ClientSettings",
+                    side_effect=lambda **kwargs: kwargs,
+                ) as settings_cls,
+            ):
+                bot_client.BotClient()
+
+        self.assertNotIn("proxy_settings", settings_cls.call_args.kwargs)
+
     def test_user_client_passes_env_proxy_to_tdlib_settings(self):
         with mock.patch.dict(
             os.environ,
@@ -103,3 +183,28 @@ class TestProxyConfig(unittest.TestCase):
         self.assertIsNotNone(settings.proxy_settings)
         self.assertEqual(settings.proxy_settings.host, "127.0.0.1")
         self.assertEqual(settings.proxy_settings.port, 7890)
+
+    def test_user_client_omits_proxy_settings_when_only_aiotdlib_env_exists(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_API_ID": "1",
+                "TELEGRAM_API_HASH": "hash",
+                "AIOTDLIB_PROXY_SETTINGS": '{"host":"proxy.example.com","port":1080,"type":"socks5"}',
+            },
+            clear=True,
+        ):
+            from app.user import user_client
+
+            user_client.UserClient.reset_instance()
+            with (
+                mock.patch("app.user.user_client.get_library_path", return_value="/tmp/libtdjson"),
+                mock.patch("app.user.user_client.CustomClient"),
+                mock.patch(
+                    "app.user.user_client.ClientSettings",
+                    side_effect=lambda **kwargs: kwargs,
+                ) as settings_cls,
+            ):
+                user_client.UserClient().start("+123456789")
+
+        self.assertNotIn("proxy_settings", settings_cls.call_args.kwargs)
