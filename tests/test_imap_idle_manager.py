@@ -28,6 +28,39 @@ class _FakeIMAPClient:
 
 
 class TestImapIdleManager(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_account_cancels_only_matching_watchers(self):
+        from app.cron.imap_idle_manager import IMAPIdleManager
+
+        manager = IMAPIdleManager(imap_client_cls=_FakeIMAPClient)
+        cancelled = []
+
+        async def _watcher(name):
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled.append(name)
+                raise
+
+        task_one_inbox = asyncio.create_task(_watcher("one-inbox"))
+        task_one_archive = asyncio.create_task(_watcher("one-archive"))
+        task_two_inbox = asyncio.create_task(_watcher("two-inbox"))
+        manager._tasks = {
+            "1:inbox": task_one_inbox,
+            "1:archive": task_one_archive,
+            "2:inbox": task_two_inbox,
+        }
+        await asyncio.sleep(0)
+
+        stopped = await manager.stop_account(1)
+
+        self.assertEqual(stopped, 2)
+        self.assertEqual(set(cancelled), {"one-inbox", "one-archive"})
+        self.assertEqual(set(manager._tasks), {"2:inbox"})
+        self.assertFalse(task_two_inbox.cancelled())
+
+        task_two_inbox.cancel()
+        await asyncio.gather(task_two_inbox, return_exceptions=True)
+
     async def test_falls_back_to_short_poll_when_idle_unsupported(self):
         from app.cron.imap_idle_manager import IMAPIdleManager
 
