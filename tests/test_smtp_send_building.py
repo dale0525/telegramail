@@ -58,7 +58,10 @@ class TestSmtpClient(unittest.TestCase):
         from app.email_utils.smtp_client import SMTPClient
 
         fake = _FakeSMTP()
-        with mock.patch("smtplib.SMTP_SSL", return_value=fake):
+        with (
+            mock.patch.dict("os.environ", {}, clear=True),
+            mock.patch("smtplib.SMTP_SSL", return_value=fake),
+        ):
             client = SMTPClient(
                 server="smtp.example.com",
                 port=465,
