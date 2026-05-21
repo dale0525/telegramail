@@ -9,6 +9,7 @@ from app.email_utils.imap_client import IMAPClient
 from app.utils import Logger, retry_on_fail
 from app.cron.cron_utils import start_periodic_task
 from app.email_utils import AccountManager
+from app.utils.telegram_errors import is_chat_not_found_error
 
 logger = Logger().get_logger(__name__)
 
@@ -70,6 +71,14 @@ async def check_deleted_topics_for_group(chat_id):
                         exc_info=False,
                     )
                     await asyncio.sleep(1.0 * attempt)
+                except Exception as e:
+                    if is_chat_not_found_error(e):
+                        logger.warning(
+                            f"Skipping deleted topic scan for chat {chat_id}: chat not found",
+                            exc_info=False,
+                        )
+                        return
+                    raise
 
             if events is None:
                 break

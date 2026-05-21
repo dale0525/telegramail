@@ -3,6 +3,8 @@ import os
 import unittest
 from unittest import mock
 
+from aiotdlib.api.errors import error as td_error
+
 
 class _FakeTopicInfo:
     def __init__(self, message_thread_id: int):
@@ -130,3 +132,25 @@ class TestEmailDeleteListener(unittest.IsolatedAsyncioTestCase):
         imap_instance.delete_outgoing_email_by_message_id.assert_called_once_with(
             "<m1@example.com>"
         )
+
+    async def test_chat_not_found_is_skipped_without_error_traceback(self):
+        from app.cron import email_delete_listener as listener
+
+        api = mock.AsyncMock()
+        api.get_chat_event_log.side_effect = td_error.BadRequest(
+            400, "Chat not found"
+        )
+        fake_user_client = _FakeUserClient(api=api)
+        fake_db = _FakeDbManager()
+        fake_logger = mock.Mock()
+
+        with (
+            mock.patch("app.user.user_client.UserClient", return_value=fake_user_client),
+            mock.patch.object(listener, "DBManager", return_value=fake_db),
+            mock.patch.object(listener, "logger", fake_logger),
+        ):
+            await listener.check_deleted_topics_for_group(chat_id=777)
+
+        api.get_chat_event_log.assert_awaited_once()
+        fake_logger.warning.assert_called_once()
+        fake_logger.error.assert_not_called()
