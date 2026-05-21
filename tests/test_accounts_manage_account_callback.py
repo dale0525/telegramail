@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 
 class _FakeCallbackPayload:
@@ -34,6 +35,14 @@ class _FakeClient:
 
     async def edit_text(self, **kwargs):
         self.edits.append(kwargs)
+
+
+class _FakeEmailReceiveRuntime:
+    def __init__(self):
+        self.removed_account_ids = []
+
+    async def remove_account(self, account_id):
+        self.removed_account_ids.append(account_id)
 
 
 class TestManageAccountCallback(unittest.IsolatedAsyncioTestCase):
@@ -152,6 +161,53 @@ class TestManageAccountCallback(unittest.IsolatedAsyncioTestCase):
 
         updated = account_mgr.get_account(id=account_id)
         self.assertIsNone(updated.get("signature"))
+
+    async def test_delete_account_callback_stops_runtime_listener(self):
+        from app.email_utils.account_manager import AccountManager
+        from app.bot.handlers.callback import callback_handler
+
+        account_mgr = AccountManager()
+        self.assertTrue(
+            account_mgr.add_account(
+                {
+                    "email": "a@example.com",
+                    "password": "pw",
+                    "imap_server": "imap.example.com",
+                    "imap_port": 993,
+                    "imap_ssl": True,
+                    "smtp_server": "smtp.example.com",
+                    "smtp_port": 465,
+                    "smtp_ssl": True,
+                    "alias": "Work",
+                    "tg_group_id": 123,
+                }
+            )
+        )
+        account = account_mgr.get_account(
+            email="a@example.com",
+            smtp_server="smtp.example.com",
+        )
+        account_id = str(account["id"])
+        runtime = _FakeEmailReceiveRuntime()
+
+        client = _FakeClient()
+        with mock.patch(
+            "app.bot.handlers.callbacks.accounts.get_current_email_receive_runtime",
+            return_value=runtime,
+            create=True,
+        ):
+            await callback_handler(
+                client,
+                _FakeCallbackUpdate(
+                    chat_id=123,
+                    user_id=1,
+                    message_id=10,
+                    data=f"delete_account_execute:{account_id}",
+                ),
+            )
+
+        self.assertEqual(runtime.removed_account_ids, [account_id])
+        self.assertIsNone(account_mgr.get_account(id=account_id))
 
     async def test_account_signature_default_ignores_message_not_modified(self):
         from app.email_utils.account_manager import AccountManager

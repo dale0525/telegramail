@@ -9,6 +9,8 @@ from app.cron.email_receive_config import (
 )
 from app.cron.imap_idle_manager import IMAPIdleManager
 
+_current_email_receive_runtime: Any | None = None
+
 
 class EmailReceiveRuntime:
     def __init__(
@@ -37,12 +39,30 @@ class EmailReceiveRuntime:
             self.idle_manager.start()
 
     async def stop(self) -> None:
+        global _current_email_receive_runtime
+
         if self.polling_task and not self.polling_task.done():
             self.polling_task.cancel()
             await asyncio.gather(self.polling_task, return_exceptions=True)
 
         if self.mode in {"idle", "hybrid"}:
             await self.idle_manager.stop()
+
+        if _current_email_receive_runtime is self:
+            _current_email_receive_runtime = None
+
+    async def remove_account(self, account_id: Any) -> int:
+        if self.mode not in {"idle", "hybrid"}:
+            return 0
+
+        stop_account = getattr(self.idle_manager, "stop_account", None)
+        if stop_account is None:
+            return 0
+        return await stop_account(account_id)
+
+
+def get_current_email_receive_runtime() -> EmailReceiveRuntime | None:
+    return _current_email_receive_runtime
 
 
 def start_email_receive_runtime(
@@ -52,6 +72,8 @@ def start_email_receive_runtime(
     idle_manager: Any | None = None,
     polling_starter: Callable[[int], Any] = start_email_check_scheduler,
 ) -> EmailReceiveRuntime:
+    global _current_email_receive_runtime
+
     runtime = EmailReceiveRuntime(
         mode=mode,
         polling_interval_seconds=polling_interval_seconds,
@@ -59,4 +81,5 @@ def start_email_receive_runtime(
         polling_starter=polling_starter,
     )
     runtime.start()
+    _current_email_receive_runtime = runtime
     return runtime

@@ -89,6 +89,27 @@ class IMAPIdleManager:
             await asyncio.gather(*tasks, return_exceptions=True)
         logger.info("Stopped IMAP IDLE manager")
 
+    async def stop_account(self, account_id: Any) -> int:
+        try:
+            normalized_id = str(int(account_id))
+        except Exception:
+            normalized_id = str(account_id)
+
+        prefix = f"{normalized_id}:"
+        matched = [
+            key for key in list(self._tasks.keys()) if key.startswith(prefix)
+        ]
+        tasks = [self._tasks.pop(key) for key in matched]
+
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info(
+                f"Stopped {len(tasks)} IMAP IDLE watcher(s) for account {normalized_id}"
+            )
+        return len(tasks)
+
     async def _run_watcher(self, account: dict[str, Any], mailbox: str) -> None:
         backoff_seconds = self._reconnect_backoff_seconds
         email_addr = account.get("email", "<unknown>")

@@ -19,6 +19,7 @@ from app.bot.handlers.callbacks.account_signature import (
     handle_account_signature_callback,
 )
 from app.bot.utils import answer_callback
+from app.cron.email_receive_runtime import get_current_email_receive_runtime
 from app.email_utils.account_manager import AccountManager
 from app.email_utils.imap_client import IMAPClient
 from app.i18n import _
@@ -776,6 +777,15 @@ async def handle_accounts_callback(
         success = account_manager.remove_account(id=account_id)
 
         if success:
+            runtime = get_current_email_receive_runtime()
+            if runtime:
+                try:
+                    await runtime.remove_account(account_id)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to stop email listener for deleted account {account_id}: {e}"
+                    )
+
             result_text = f"""✅ <b>{_('account_deleted_success')}</b>
 
 {_('account')} <b>{email}</b> {_('deleted')}."""
