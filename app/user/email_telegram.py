@@ -29,6 +29,7 @@ from app.email_utils import (
 )
 from app.email_utils.identity import suggest_identity
 from app.telegram_ui.email_cards import build_incoming_email_card
+from app.user.delivery_group import ensure_account_delivery_group
 from aiotdlib.api import (
     FormattedText,
     InputMessageText,
@@ -798,7 +799,9 @@ class EmailTelegramSender:
                 logger.error(f"Account not found for ID: {account_id}")
                 return False
 
-            group_id = account["tg_group_id"]
+            group_id = await ensure_account_delivery_group(
+                account, account_manager, self.bot_client
+            )
             if not group_id:
                 logger.error(
                     f"No Telegram group ID configured for account: {account_id}"
