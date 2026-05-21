@@ -1,5 +1,4 @@
 import asyncio
-import smtplib
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -8,6 +7,7 @@ from email.utils import formataddr, formatdate, make_msgid
 from typing import Iterable, Optional, Any
 
 from app.utils import Logger
+from app.email_utils.connection_factory import ConnectionFactory
 
 logger = Logger().get_logger(__name__)
 
@@ -203,16 +203,22 @@ class SMTPClient:
             logger.error(f"Failed to send email: {e}")
             return False
 
-    def _send_via_smtp(self, *, from_email: str, recipients: list[str], message: MIMEMultipart) -> None:
+    def _send_via_smtp(
+        self,
+        *,
+        from_email: str,
+        recipients: list[str],
+        message: MIMEMultipart,
+    ) -> None:
         if not recipients:
             return
 
-        if self.use_ssl:
-            smtp_cls = smtplib.SMTP_SSL
-        else:
-            smtp_cls = smtplib.SMTP
-
-        with smtp_cls(self.server, self.port, timeout=self.timeout_seconds) as smtp:
+        with ConnectionFactory.create_smtp_connection(
+            self.server,
+            self.port,
+            self.use_ssl,
+            timeout=self.timeout_seconds,
+        ) as smtp:
             smtp.ehlo()
             if not self.use_ssl:
                 try:

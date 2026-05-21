@@ -5,6 +5,11 @@ import ssl
 from typing import Tuple, Optional, Any, Union
 from app.utils import Logger, retry_on_fail
 from app.i18n import _
+from app.utils.mail_proxy import (
+    MailProxyConfig,
+    build_mail_proxy_config,
+    create_proxied_socket,
+)
 
 logger = Logger().get_logger(__name__)
 
@@ -14,6 +19,150 @@ SMTP_STARTTLS_PORT = 587
 SMTP_PLAIN_PORT = 25
 IMAP_SSL_PORT = 993
 IMAP_PLAIN_PORT = 143
+
+
+class ProxiedIMAP4(imaplib.IMAP4):
+    def __init__(
+        self,
+        host: str = "",
+        port: int = IMAP_PLAIN_PORT,
+        *,
+        proxy_config: MailProxyConfig,
+        timeout: Optional[int] = None,
+    ) -> None:
+        self._proxy_config = proxy_config
+        super().__init__(host=host, port=port, timeout=timeout)
+
+    def _create_socket(self, timeout: Optional[int]) -> socket.socket:
+        if timeout is not None and not timeout:
+            raise ValueError("Non-blocking socket (timeout=0) is not supported")
+        return create_proxied_socket(
+            self.host,
+            self.port,
+            self._proxy_config,
+            timeout=timeout,
+        )
+
+
+class ProxiedIMAP4_SSL(imaplib.IMAP4_SSL):
+    def __init__(
+        self,
+        host: str = "",
+        port: int = IMAP_SSL_PORT,
+        *,
+        proxy_config: MailProxyConfig,
+        ssl_context: Optional[ssl.SSLContext] = None,
+        timeout: Optional[int] = None,
+    ) -> None:
+        self._proxy_config = proxy_config
+        super().__init__(
+            host=host,
+            port=port,
+            ssl_context=ssl_context,
+            timeout=timeout,
+        )
+
+    def _create_socket(self, timeout: Optional[int]) -> socket.socket:
+        if timeout is not None and not timeout:
+            raise ValueError("Non-blocking socket (timeout=0) is not supported")
+        sock = create_proxied_socket(
+            self.host,
+            self.port,
+            self._proxy_config,
+            timeout=timeout,
+        )
+        try:
+            return self.ssl_context.wrap_socket(sock, server_hostname=self.host)
+        except Exception:
+            sock.close()
+            raise
+
+
+class ProxiedSMTP(smtplib.SMTP):
+    def __init__(
+        self,
+        host: str = "",
+        port: int = 0,
+        *,
+        proxy_config: MailProxyConfig,
+        local_hostname: Optional[str] = None,
+        timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address: Optional[tuple[str, int]] = None,
+    ) -> None:
+        self._proxy_config = proxy_config
+        super().__init__(
+            host=host,
+            port=port,
+            local_hostname=local_hostname,
+            timeout=timeout,
+            source_address=source_address,
+        )
+
+    def _get_socket(self, host: str, port: int, timeout: Any) -> socket.socket:
+        if timeout is not None and not timeout:
+            raise ValueError("Non-blocking socket (timeout=0) is not supported")
+        if self.debuglevel > 0:
+            self._print_debug("connect: to", (host, port), self.source_address)
+        return create_proxied_socket(
+            host,
+            port,
+            self._proxy_config,
+            timeout=timeout,
+            source_address=self.source_address,
+        )
+
+
+class ProxiedSMTP_SSL(smtplib.SMTP_SSL):
+    def __init__(
+        self,
+        host: str = "",
+        port: int = 0,
+        *,
+        proxy_config: MailProxyConfig,
+        local_hostname: Optional[str] = None,
+        timeout: Any = socket._GLOBAL_DEFAULT_TIMEOUT,
+        source_address: Optional[tuple[str, int]] = None,
+        context: Optional[ssl.SSLContext] = None,
+    ) -> None:
+        self._proxy_config = proxy_config
+        super().__init__(
+            host=host,
+            port=port,
+            local_hostname=local_hostname,
+            timeout=timeout,
+            source_address=source_address,
+            context=context,
+        )
+
+    def _get_socket(self, host: str, port: int, timeout: Any) -> socket.socket:
+        if timeout is not None and not timeout:
+            raise ValueError("Non-blocking socket (timeout=0) is not supported")
+        if self.debuglevel > 0:
+            self._print_debug("connect:", (host, port))
+        sock = create_proxied_socket(
+            host,
+            port,
+            self._proxy_config,
+            timeout=timeout,
+            source_address=self.source_address,
+        )
+        try:
+            return self.context.wrap_socket(sock, server_hostname=self._host)
+        except Exception:
+            sock.close()
+            raise
+
+
+def _log_mail_proxy_usage(
+    protocol: str,
+    server_addr: str,
+    port: int,
+    proxy: MailProxyConfig,
+) -> None:
+    logger.info(
+        f"Using {proxy.scheme} mail proxy {proxy.host}:{proxy.port} "
+        f"for {protocol} {server_addr}:{port}"
+    )
 
 
 class ConnectionFactory:
@@ -41,10 +190,21 @@ class ConnectionFactory:
         if timeout is not None:
             kwargs["timeout"] = timeout
 
+        proxy_config = build_mail_proxy_config(
+            target_host=server_addr,
+            target_port=int(port),
+        )
+        if proxy_config is not None:
+            _log_mail_proxy_usage("IMAP", server_addr, int(port), proxy_config)
+
         if use_ssl:
+            if proxy_config is not None:
+                return ProxiedIMAP4_SSL(**kwargs, proxy_config=proxy_config)
             return imaplib.IMAP4_SSL(**kwargs)
-        else:
-            return imaplib.IMAP4(**kwargs)
+
+        if proxy_config is not None:
+            return ProxiedIMAP4(**kwargs, proxy_config=proxy_config)
+        return imaplib.IMAP4(**kwargs)
 
     @staticmethod
     def create_smtp_connection(
@@ -66,12 +226,23 @@ class ConnectionFactory:
         if timeout is not None:
             kwargs["timeout"] = timeout
 
+        proxy_config = build_mail_proxy_config(
+            target_host=server_addr,
+            target_port=int(port),
+        )
+        if proxy_config is not None:
+            _log_mail_proxy_usage("SMTP", server_addr, int(port), proxy_config)
+
         if use_ssl:
             context = ssl.create_default_context()
             kwargs["context"] = context
+            if proxy_config is not None:
+                return ProxiedSMTP_SSL(**kwargs, proxy_config=proxy_config)
             return smtplib.SMTP_SSL(**kwargs)
-        else:
-            return smtplib.SMTP(**kwargs)
+
+        if proxy_config is not None:
+            return ProxiedSMTP(**kwargs, proxy_config=proxy_config)
+        return smtplib.SMTP(**kwargs)
 
     @staticmethod
     def try_imap_connection(
@@ -201,12 +372,20 @@ class ConnectionFactory:
         try:
             # Create connection
             if use_ssl:
-                server = smtplib.SMTP_SSL(
-                    host=server_addr, port=port, timeout=timeout, context=context
+                server = ConnectionFactory.create_smtp_connection(
+                    server_addr,
+                    port,
+                    use_ssl=True,
+                    timeout=timeout,
                 )
                 server.ehlo()
             else:
-                server = smtplib.SMTP(host=server_addr, port=port, timeout=timeout)
+                server = ConnectionFactory.create_smtp_connection(
+                    server_addr,
+                    port,
+                    use_ssl=False,
+                    timeout=timeout,
+                )
                 server.ehlo()
 
                 # Use STARTTLS if requested and supported
