@@ -67,6 +67,19 @@ class _BatchDeletion:
         return type("DeleteResult", (), {"id": str(self.queued), "state": "tombstoned"})()
 
 
+class _BatchSummary:
+    def __init__(self) -> None:
+        self.queued = 3
+        self.calls = 0
+
+    async def run_once(self):
+        self.calls += 1
+        if self.queued == 0:
+            return None
+        self.queued -= 1
+        return object()
+
+
 class RuntimeHealthTests(unittest.IsolatedAsyncioTestCase):
     async def test_wake_interrupts_the_polling_delay(self) -> None:
         runtime = MailWorkerRuntime(poll_seconds=30)
@@ -108,6 +121,18 @@ class RuntimeHealthTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(deletion.queued, 0)
         finally:
             await runtime.stop()
+
+    async def test_summary_backlog_yields_after_one_item_and_wakes_next_cycle(self) -> None:
+        runtime = MailWorkerRuntime(poll_seconds=30)
+        summary = _BatchSummary()
+        runtime.summary = summary
+
+        succeeded = await runtime._drain_summaries()
+
+        self.assertTrue(succeeded)
+        self.assertEqual(summary.calls, 1)
+        self.assertEqual(summary.queued, 2)
+        self.assertTrue(runtime._wake_requested.is_set())
 
     async def test_queue_failure_is_isolated_from_sibling_queue(self) -> None:
         runtime = MailWorkerRuntime(poll_seconds=0.01)
