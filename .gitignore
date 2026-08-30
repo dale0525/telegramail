@@ -6,17 +6,6 @@ __pycache__/
 # C extensions
 *.so
 
-# TDLib library files management
-# Include original library files
-!app/resources/tdlib/libtdjson_*.so
-!app/resources/tdlib/libtdjson_*.dylib
-!app/resources/tdlib/tdjson_*.dll
-
-# Exclude copied/generated library files (development environment)
-app/resources/tdlib/darwin/
-app/resources/tdlib/linux/
-app/resources/tdlib/windows/
-
 # Distribution / packaging
 .Python
 build/
@@ -189,3 +178,6 @@ cython_debug/
 .vscode/
 .cursor/
 /data/
+
+# Mini App dependencies are reproducible from web/package-lock.json.
+web/node_modules/

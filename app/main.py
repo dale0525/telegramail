@@ -1,212 +1,150 @@
+"""Production ASGI entry point for TelegramMail v2.
+
+The application runs one Uvicorn process. Its FastAPI lifespan owns the HTTP
+Bot API webhook adapter and mail workers; phone-number login and Telegram user
+sessions are not part of this startup path.
 """
-Main entry point for TelegramMail application.
-"""
+
+from __future__ import annotations
 
 import asyncio
 import os
-import sys
-import signal
-from dotenv import load_dotenv
-from app.bot.bot_client import BotClient
-from app.user.user_client import UserClient
-from app.utils import Logger
-from aiotdlib import Client
-from aiotdlib.api import (
-    UpdateNewMessage,
-    API,
-    BotCommand,
-    UpdateNewCallbackQuery,
-)
-from app.bot.handlers.start import start_command_handler
-from app.bot.handlers.help import help_command_handler
-from app.bot.handlers.callback import callback_handler
-from app.bot.handlers.access import get_phone
-from app.bot.handlers.accounts import (
-    accounts_management_command_handler,
-)
-from app.bot.handlers.check_email import check_command_handler
-from app.bot.handlers.compose import compose_command_handler
-from app.bot.handlers.labels import label_command_handler
-from app.bot.handlers.command_filters import make_command_filter
-from app.bot.handlers.message import message_handler
-from app.bot.handlers.test import test_command_handler
-from app.cron.email_receive_config import (
-    get_mail_receive_mode,
-    get_polling_interval_seconds,
-)
-from app.cron.email_receive_runtime import start_email_receive_runtime
-from app.i18n import _
+from contextlib import asynccontextmanager
+from pathlib import Path
 
-load_dotenv()
-logger = Logger().get_logger(__name__)
+import uvicorn
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
-# Global variable to store the user client instance
-user_client_instance = None
-email_receive_runtime_instance = None
+from app.api import create_app as create_api_app
+from app.core.config import Settings
+from app.db import V2Repository
+from app.integrations.telegram_http import TelegramBotApiClient
+from app.services.telegram_mail_ui import TelegramMailBotUi
+from app.workers.runtime import create_v2_worker_runtime
 
 
-# Handle graceful shutdown
-async def shutdown(signal, loop):
-    """
-    Handle application shutdown gracefully
-    """
-    logger.info(f"Received exit signal {signal.name}...")
+def create_app():
+    """Build the single-process v2 HTTP/Bot/worker application."""
+    settings = Settings.from_env()
+    if not settings.telegram_bot_token:
+        raise ValueError("TELEGRAM_BOT_TOKEN is required")
+    if not settings.webhook_secret:
+        raise ValueError("TELEGRAM_WEBHOOK_SECRET is required")
+    if not settings.web_base_url or not settings.web_base_url.startswith("https://"):
+        raise ValueError("WEB_BASE_URL is required and must use HTTPS")
 
-    # Stop the user client if it's running
-    global user_client_instance
-    if user_client_instance:
-        logger.info("Stopping user client...")
-        await user_client_instance.stop()
+    data_dir = Path(os.getenv("TELEGRAMAIL_DATA_DIR", "data"))
+    database = V2Repository(data_dir / "telegramail-v2.db")
+    telegram_ui = TelegramMailBotUi(database, mini_app_url=settings.web_base_url)
+    telegram = TelegramBotApiClient(
+        settings.telegram_bot_token,
+        mini_app_url=settings.web_base_url,
+        proxy=settings.telegram_bot_api_proxy,
+        message_handler=telegram_ui.handle_message,
+        callback_handler=telegram_ui.handle_callback,
+    )
+    telegram_ui.bind_client(telegram)
+    app = create_api_app(settings, db=database, telegram=telegram)
+    _install_worker_readiness_route(app)
+    upstream_lifespan = app.router.lifespan_context
 
-    global email_receive_runtime_instance
-    if email_receive_runtime_instance:
-        logger.info("Stopping email receive runtime...")
-        await email_receive_runtime_instance.stop()
-        email_receive_runtime_instance = None
+    webhook_url = _webhook_url(settings)
+    if not webhook_url.startswith("https://"):
+        raise ValueError("WEB_BASE_URL must use HTTPS")
 
-    # Cancel all running tasks
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    logger.info(f"Cancelling {len(tasks)} outstanding tasks")
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-    loop.stop()
-
-
-async def main():
-    global email_receive_runtime_instance
-
-    # ---------- RUN BOT ----------#
-    api_id = os.environ.get("TELEGRAM_API_ID")
-    api_hash = os.environ.get("TELEGRAM_API_HASH")
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-
-    if not api_id or not api_hash or not bot_token:
-        logger.debug("No TELEGRAM_API_ID or TELEGRAM_API_HASH or TELEGRAM_BOT_TOKEN")
-        sys.exit(1)
-
-    # Set up signal handlers for graceful shutdown
-    loop = asyncio.get_running_loop()
-    for s in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(s, lambda s=s: asyncio.create_task(shutdown(s, loop)))
-
-    bot = BotClient().client
-
-    async def _try_delete_command_message(client: Client, update: UpdateNewMessage) -> None:
-        try:
-            await client.api.delete_messages(
-                chat_id=update.message.chat_id,
-                message_ids=[update.message.id],
-                revoke=True,
+    @asynccontextmanager
+    async def lifecycle(asgi_app):
+        async with upstream_lifespan(asgi_app):
+            # This is a deployment gate: private Topics must be enabled before
+            # a worker can project mail into the Bot API.
+            await telegram.ensure_topics_enabled()
+            await telegram.set_webhook(
+                webhook_url,
+                secret_token=settings.webhook_secret,
+                allowed_updates=["message", "callback_query", "my_chat_member"],
             )
-        except Exception as e:
-            logger.debug(f"Failed to delete command message: {e}")
+            # Topics are the inbox now. Remove the previously persisted aggregate
+            # panel once so new mail no longer duplicates itself in All Messages.
+            await telegram_ui.retire_inbox_panel()
+            # This worker owns the durable mail queues in the same process as the
+            # webhook server, so SQLite never has competing application writers.
+            worker_runtime = create_v2_worker_runtime(
+                database,
+                telegram,
+            )
+            asgi_app.state.worker_runtime = worker_runtime
+            telegram_ui.bind_worker_wake(worker_runtime.wake)
+            await worker_runtime.start()
+            topic_control_backfill = asyncio.create_task(
+                _run_topic_control_backfill(telegram_ui),
+                name="telegramail-topic-delete-control-backfill",
+            )
+            try:
+                yield
+            finally:
+                topic_control_backfill.cancel()
+                try:
+                    await topic_control_backfill
+                except asyncio.CancelledError:
+                    pass
+                await worker_runtime.stop()
+                await telegram.aclose()
 
-    # register /start command
-    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("start"))
-    async def on_start_command(client: Client, update: UpdateNewMessage):
-        await _try_delete_command_message(client, update)
-        await start_command_handler(client, update)
+    app.router.lifespan_context = lifecycle
+    return app
 
-    # register /help command
-    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("help"))
-    async def on_help_command(client: Client, update: UpdateNewMessage):
-        await _try_delete_command_message(client, update)
-        await help_command_handler(client, update)
 
-    # register /accounts command
-    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("accounts"))
-    async def on_accounts_command(client: Client, update: UpdateNewMessage):
-        await _try_delete_command_message(client, update)
-        await accounts_management_command_handler(client, update)
+async def _run_topic_control_backfill(telegram_ui: TelegramMailBotUi) -> None:
+    """Gradually upgrade historical Topic messages while the app is online."""
 
-    # register /check command
-    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("check"))
-    async def on_check_command(client: Client, update: UpdateNewMessage):
-        await _try_delete_command_message(client, update)
-        await check_command_handler(client, update)
+    while True:
+        try:
+            attempted = await telegram_ui.backfill_topic_delete_controls()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            attempted = 0
+        await asyncio.sleep(10 if attempted else 60)
 
-    # register /compose command
-    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("compose"))
-    async def on_compose_command(client: Client, update: UpdateNewMessage):
-        await _try_delete_command_message(client, update)
-        await compose_command_handler(client, update)
 
-    # register /label command
-    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("label"))
-    async def on_label_command(client: Client, update: UpdateNewMessage):
-        await _try_delete_command_message(client, update)
-        await label_command_handler(client, update)
+def _install_worker_readiness_route(app) -> None:
+    """Replace factory readiness with the process-owned worker health contract."""
+    async def ready() -> JSONResponse:
+        runtime = getattr(app.state, "worker_runtime", None)
+        if runtime is None:
+            return JSONResponse({"status": "not_ready", "reason": "worker_not_started"}, status_code=503)
+        is_ready, payload = runtime.readiness()
+        return JSONResponse(payload, status_code=200 if is_ready else 503)
 
-    # register /test command
-    @bot.on_event(API.Types.UPDATE_NEW_MESSAGE, filters=make_command_filter("test"))
-    async def on_test_command(client: Client, update: UpdateNewMessage):
-        await _try_delete_command_message(client, update)
-        await test_command_handler(client, update)
+    route = APIRoute("/health/ready", ready, methods=["GET"], include_in_schema=False)
+    for index, existing in enumerate(app.router.routes):
+        if getattr(existing, "path", None) == "/health/ready":
+            app.router.routes[index] = route
+            return
+    # Keep readiness before the SPA catch-all if an alternate API factory omitted it.
+    app.router.routes.insert(0, route)
 
-    # register message handler for all non-command messages
-    async def on_update_new_message(client: Client, update: UpdateNewMessage):
-        # Run the message handler in a background task to avoid blocking
-        asyncio.create_task(message_handler(client, update))
 
-    bot.add_event_handler(
-        on_update_new_message,
-        update_type=API.Types.UPDATE_NEW_MESSAGE,
+def _webhook_url(settings: Settings) -> str:
+    """Derive the canonical webhook route from the public Mini App origin."""
+    if not settings.web_base_url:
+        raise ValueError("WEB_BASE_URL is required")
+    return f"{settings.web_base_url.rstrip('/')}/api/v1/telegram/webhook"
+
+
+def main() -> None:
+    """Run the single-process HTTP server used by local development and containers."""
+    port = int(os.getenv("PORT", "8080"))
+    uvicorn.run(
+        "app.main:create_app",
+        factory=True,
+        host="0.0.0.0",
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
     )
-
-    # register button callback
-    async def callback_query_handler(client: Client, update: UpdateNewCallbackQuery):
-        await callback_handler(client, update)
-
-    bot.add_event_handler(
-        callback_query_handler, update_type=API.Types.UPDATE_NEW_CALLBACK_QUERY
-    )
-
-    phone_number = get_phone()
-    if phone_number:
-        asyncio.create_task(run_user(phone_number=phone_number))
-
-    async with bot:
-        await bot.api.set_commands(
-            [
-                BotCommand(command="start", description=_("command_desc_start")),
-                BotCommand(command="help", description=_("command_desc_help")),
-                BotCommand(command="accounts", description=_("command_desc_accounts")),
-                BotCommand(command="check", description=_("command_desc_check")),
-                BotCommand(command="compose", description=_("command_desc_compose")),
-                BotCommand(command="label", description=_("command_desc_label")),
-            ]
-        )
-
-        email_receive_runtime_instance = start_email_receive_runtime(
-            mode=get_mail_receive_mode(),
-            polling_interval_seconds=get_polling_interval_seconds(),
-        )
-
-        await bot.idle()
-
-
-async def run_user(phone_number: str):
-    global user_client_instance
-    user_client = UserClient()
-    user_client_instance = user_client
-    user_client.start(phone_number)
-    user = user_client.client
-
-    # register message handler for ChatEventForumTopicDeleted messages
-    # async def on_forum_deleted(client: Client, update: BaseObject):
-    #     # Run the message handler in a background task to avoid blocking
-    #     asyncio.create_task(email_deleted_handler(client, update))
-
-    # user.add_event_handler(
-    #     on_forum_deleted,
-    #     update_type=API.Types.ANY,
-    # )
-    async with user:
-        logger.info(f"Started user client with phone number: {phone_number}")
-        await user.idle()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

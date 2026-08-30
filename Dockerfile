@@ -1,54 +1,38 @@
-# Multi-stage build for TelegramMail (Pixi-managed dependencies)
-FROM debian:bookworm-slim AS pixi-builder
+# Build the Mini App separately so the runtime image contains no Node toolchain.
+FROM node:22.16.0-bookworm-slim AS web-builder
 
-ARG PIXI_VERSION=v0.62.2
-ENV PIXI_VERSION=${PIXI_VERSION}
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY web/ ./
+RUN npm run build
 
-WORKDIR /app
+FROM python:3.12.11-slim-bookworm AS runtime
 
-# Install Pixi
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    libunwind-14 \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://pixi.sh/install.sh | sh
-ENV PATH=/root/.pixi/bin:$PATH
-ENV LD_LIBRARY_PATH=/app/.pixi/envs/default/lib
-
-# Copy Pixi manifest & lockfile first for better caching
-COPY pixi.toml pixi.lock ./
-# Skip dev-only tooling packages inside the image
-RUN pixi install --locked --skip docker-cli --skip docker-compose
-
-# Copy application code and scripts
-COPY app/ ./app/
-COPY scripts/ ./scripts/
-COPY requirements.txt .
-
-# Setup & validate TDLib libraries for the target architecture
-RUN pixi run tdlib-validate --verbose
-
-# Runtime stage
-FROM debian:bookworm-slim
-
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONPATH=/app
-ENV LD_LIBRARY_PATH=/app/.pixi/envs/default/lib
-ENV SSL_CERT_FILE=/app/.pixi/envs/default/ssl/cacert.pem
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    TELEGRAMAIL_DATA_DIR=/app/data \
+    TELEGRAMAIL_WEB_DIST=/app/web/dist
 
 WORKDIR /app
 
-# TDLib depends on LLVM libunwind (libunwind.so.1), which is not available in conda-forge
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libunwind-14 \
-    && rm -rf /var/lib/apt/lists/*
+RUN groupadd --gid 10001 telegramail \
+    && useradd --uid 10001 --gid telegramail --create-home --home-dir /app telegramail
 
-# Pixi binary + project environment (includes Python + runtime libs)
-COPY --from=pixi-builder /root/.pixi /root/.pixi
-COPY --from=pixi-builder /app /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --requirement requirements.txt
 
-ENV PATH=/root/.pixi/bin:$PATH
+COPY --chown=telegramail:telegramail app/ ./app/
+COPY --chown=telegramail:telegramail scripts/ ./scripts/
+COPY --from=web-builder --chown=telegramail:telegramail /web/dist ./web/dist
+RUN mkdir -p /app/data && chown telegramail:telegramail /app/data
 
-CMD ["pixi", "run", "dev"]
+USER telegramail
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "scripts/healthcheck.py"]
+
+CMD ["python", "scripts/entrypoint.py"]
