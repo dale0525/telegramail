@@ -2,7 +2,9 @@ services:
   telegramail:
     container_name: telegramail
     image: ghcr.io/dale0525/telegramail:${TELEGRAMAIL_IMAGE_TAG:-latest}
-    pull_policy: always
+    build:
+      context: .
+    pull_policy: build
     restart: unless-stopped
     env_file:
       - .env

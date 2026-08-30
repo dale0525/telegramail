@@ -34,6 +34,80 @@ def signed_init_data() -> str:
 
 
 class ThreadDeleteApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bulk_delete_queues_every_thread_in_one_request_and_wakes_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = V2Repository(Path(directory) / "api.db", master_key=b"k" * 32)
+            account = repo.create_account(
+                {
+                    "email": "owner@example.test",
+                    "imap_server": "imap.example.test",
+                    "imap_port": 993,
+                    "smtp_server": "smtp.example.test",
+                    "smtp_port": 465,
+                },
+                "password",
+            )
+            thread_ids: list[int] = []
+            with repo.db.transaction(immediate=True) as conn:
+                for index in range(2):
+                    thread_ids.append(int(conn.execute(
+                        """INSERT INTO mail_threads(account_id, subject_normalized, created_at, updated_at)
+                           VALUES (?, ?, ?, ?)""",
+                        (int(account["id"]), f"thread-{index}", 1, 1),
+                    ).lastrowid))
+
+            app = create_app(
+                Settings(
+                    session_secret="s" * 32,
+                    telegram_bot_token=BOT_TOKEN,
+                    setup_code="one-time",
+                    secure_cookies=False,
+                    web_dist=None,
+                ),
+                db=repo,
+            )
+
+            class RuntimeWake:
+                calls = 0
+
+                def wake(self):
+                    self.calls += 1
+
+            wake = RuntimeWake()
+            app.state.worker_runtime = wake
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                setup = await client.post("/api/v1/auth/setup", json={"initData": signed_init_data(), "code": "one-time"})
+                response = await client.post(
+                    "/api/v1/threads/bulk-delete",
+                    headers={"X-CSRF-Token": setup.json()["csrf_token"]},
+                    json={"items": [
+                        {"thread_id": str(thread_ids[0]), "idempotency_key": "bulk-1"},
+                        {"thread_id": str(thread_ids[1]), "idempotency_key": "bulk-2"},
+                    ]},
+                )
+                duplicate_thread = await client.post(
+                    "/api/v1/threads/bulk-delete",
+                    headers={"X-CSRF-Token": setup.json()["csrf_token"]},
+                    json={"items": [
+                        {"thread_id": str(thread_ids[0]), "idempotency_key": "duplicate-1"},
+                        {"thread_id": str(thread_ids[0]), "idempotency_key": "duplicate-2"},
+                    ]},
+                )
+
+            self.assertEqual(response.status_code, 202, response.text)
+            self.assertEqual(duplicate_thread.status_code, 422, duplicate_thread.text)
+            self.assertEqual(wake.calls, 1)
+            self.assertEqual(
+                [(item["thread_id"], item["status"]) for item in response.json()["items"]],
+                [(str(thread_ids[0]), "queued"), (str(thread_ids[1]), "queued")],
+            )
+            self.assertEqual(
+                repo.db.connect().execute(
+                    "SELECT COUNT(*) FROM delete_operations WHERE status = 'queued'"
+                ).fetchone()[0],
+                2,
+            )
+
     async def test_delete_snapshots_every_live_message_and_tombstones_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = V2Repository(Path(directory) / "api.db", master_key=b"k" * 32)
@@ -124,9 +198,12 @@ class ThreadDeleteApiTests(unittest.IsolatedAsyncioTestCase):
                 client.cookies.set("telegramail_session", session_cookie)
                 listed = await client.get("/api/v1/threads")
                 deleted_detail = await client.get(f"/api/v1/threads/{thread_id}/messages")
+                replay = await client.delete(f"/api/v1/threads/{thread_id}", headers=headers)
             self.assertEqual(listed.status_code, 200)
             self.assertNotIn(str(thread_id), [row["id"] for row in listed.json()])
             self.assertEqual(deleted_detail.status_code, 404)
+            self.assertEqual(replay.status_code, 202, replay.text)
+            self.assertEqual(replay.json()["id"], accepted.json()["id"])
 
 
 if __name__ == "__main__":

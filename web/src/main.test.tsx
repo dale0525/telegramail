@@ -20,6 +20,7 @@ const { apiMock, MockApiError } = vi.hoisted(() => {
       removeAccount: vi.fn(),
       send: vi.fn(),
       removeThread: vi.fn(),
+      removeThreads: vi.fn(),
       llmSettings: vi.fn(),
       saveLlmSettings: vi.fn(),
       testLlmConnection: vi.fn(),
@@ -572,7 +573,10 @@ describe("Mini App accessibility and destructive action safeguards", () => {
     apiMock.authStatus.mockResolvedValue({ authenticated: true, telegram_user_id: testTelegramUserId });
     apiMock.accounts.mockResolvedValue([account, secondAccount]);
     apiMock.threads.mockResolvedValue(threads);
-    apiMock.removeThread.mockResolvedValue({ id: "delete:batch", status: "queued" });
+    apiMock.removeThreads.mockResolvedValue([
+      { threadId: "thread-1", id: "delete:1", status: "queued" },
+      { threadId: "thread-2", id: "delete:2", status: "queued" },
+    ]);
 
     render(<App />);
     const first = await screen.findByRole("button", { name: /第一线程/ });
@@ -592,9 +596,12 @@ describe("Mini App accessibility and destructive action safeguards", () => {
     expect(await screen.findByRole("heading", { name: "确认删除 2 个线程？" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
 
-    await waitFor(() => expect(apiMock.removeThread).toHaveBeenCalledTimes(2));
-    expect(apiMock.removeThread).toHaveBeenNthCalledWith(1, "thread-1", "stable-idempotency-key");
-    expect(apiMock.removeThread).toHaveBeenNthCalledWith(2, "thread-2", "stable-idempotency-key");
+    await waitFor(() => expect(apiMock.removeThreads).toHaveBeenCalledTimes(1));
+    expect(apiMock.removeThreads).toHaveBeenCalledWith([
+      { threadId: "thread-1", idempotencyKey: "stable-idempotency-key" },
+      { threadId: "thread-2", idempotencyKey: "stable-idempotency-key" },
+    ]);
+    expect(apiMock.removeThread).not.toHaveBeenCalled();
     expect(await screen.findByText("没有邮件。")).toBeInTheDocument();
   });
 
