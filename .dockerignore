@@ -37,11 +37,10 @@ wheels/
 *.egg
 MANIFEST
 
-# C extensions (but keep TDLib libraries)
+# Native extensions are not copied from the host into the Python image.
 *.so
-!app/resources/tdlib/*.so
-!app/resources/tdlib/*.dylib
-!app/resources/tdlib/*.dll
+*.dylib
+*.dll
 
 # Virtual environments
 .venv/
@@ -70,6 +69,11 @@ Thumbs.db
 
 # Data directory (will be mounted as volume)
 data/
+
+# The web-builder runs npm ci for the Linux image. Do not copy a host's
+# platform-specific dependency tree over those installed dependencies.
+web/node_modules/
+web/dist/
 
 # Docker
 Dockerfile

@@ -5,10 +5,8 @@ on:
     branches:
       - main
     tags:
-      - "v*"
+      - "v[0-9]+.[0-9]+.[0-9]+"
     paths-ignore:
-      - "README.md"
-      - "README_CN.md"
       - "docs/**"
       - "*.md"
       - ".gitignore"
@@ -17,7 +15,6 @@ on:
       - "data/**"
       - "logs/**"
       - "*.log"
-      - "*.txt"
       - ".env*"
       - "docker-compose.override.yml"
   workflow_dispatch:
@@ -30,68 +27,48 @@ on:
         description: "Manually build and push docker image"
 
 env:
-  IMAGE_NAME: telegramail
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKER_METADATA_SHORT_SHA_LENGTH: 12
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Verify Docker Hub credentials
-        run: |
-          if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
-            echo "Error: DOCKER_USERNAME secret is not set"
-            exit 1
-          fi
-          if [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
-            echo "Error: DOCKER_PASSWORD secret is not set"
-            exit 1
-          fi
-          echo "Docker Hub credentials are configured"
-
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-          logout: false
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify TDLib libraries
-        run: |
-          echo "Checking TDLib library files..."
-          ls -la app/resources/tdlib/
-
-          # Check for required library files
-          if [ ! -f "app/resources/tdlib/libtdjson_linux_amd64.so" ]; then
-            echo "Error: Missing TDLib library for linux/amd64"
-            exit 1
-          fi
-
-          if [ ! -f "app/resources/tdlib/libtdjson_linux_arm64.so" ]; then
-            echo "Error: Missing TDLib library for linux/arm64"
-            exit 1
-          fi
-
-          echo "All required TDLib libraries found"
+      # GHCR creates a new container package as private. After the first run,
+      # make the package public once so unauthenticated Compose pulls work.
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,prefix=sha-
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64

@@ -1,18 +1,131 @@
-import os
+import json
 import re
+from urllib.parse import urlsplit
+from collections.abc import Mapping
+from typing import Any
 from app.llm import OpenAIClient
 from app.utils import Logger
 from app.i18n import _
 from app.email_utils.labels import LLM_EMAIL_CATEGORIES_SET, normalize_llm_category
 from json_repair import repair_json
 from app.email_utils.text import remove_spaces_and_urls
-from bs4 import BeautifulSoup, NavigableString, Tag
 from html import escape as html_escape
+from app.services.telegram_html import sanitize_telegram_limited_html
 
 logger = Logger().get_logger(__name__)
 
-_TELEGRAM_ALLOWED_INLINE_TAGS = {"b", "i", "code"}
 
+_MAX_IMPORTANT_LINKS = 5
+_MAX_IMPORTANT_LINK_CANDIDATES = 10
+_MAX_IMPORTANT_LINK_LENGTH = 4096
+
+
+def _strip_link_markup(value: Any, *, max_length: int | None = None) -> str:
+    """Turn untrusted markup into single-line plain text with an optional cap."""
+
+    text = re.sub(r"<[^>]*>", "", str(value or ""))
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
+    text = " ".join(text.split())
+    return text[:max_length] if max_length is not None else text
+
+
+def _normalize_url_item(item: Any) -> dict[str, str] | None:
+    """Validate one LLM link without allowing non-browser or credential URLs."""
+
+    if isinstance(item, str):
+        raw_link = item
+        raw_caption = item
+    elif isinstance(item, Mapping):
+        raw_link = item.get("link", item.get("url", ""))
+        raw_caption = item.get("caption", item.get("title", item.get("text", "")))
+    else:
+        return None
+    link = str(raw_link or "").strip()
+    if not link or len(link) > _MAX_IMPORTANT_LINK_LENGTH:
+        return None
+    if any(ord(char) < 0x20 or ord(char) == 0x7f for char in link):
+        return None
+    try:
+        parsed = urlsplit(link)
+        # Accessing these properties validates malformed ports/IPv6 hosts.
+        hostname = parsed.hostname
+        _ = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc or not hostname:
+        return None
+    # Credentials in model output can leak secrets into later Telegram/API
+    # projections.  Browser links do not need userinfo, so reject it outright.
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    if any(char.isspace() for char in parsed.netloc):
+        return None
+    caption = _strip_link_markup(raw_caption, max_length=25) or link[:25]
+    return {"caption": caption, "link": link}
+
+
+def sanitize_important_links(
+    value: Any,
+    extra_links: Any = None,
+    *,
+    max_links: int = _MAX_IMPORTANT_LINKS,
+) -> list[dict[str, str]]:
+    """Safely normalize canonical ``important_links`` and legacy ``urls``.
+
+    The helper accepts decoded lists as well as JSON text from a durable claim
+    path.  Only HTTP(S) links without credentials are retained, duplicates are
+    removed, and the bounded result is safe to carry on ``IncomingMail``.
+    """
+
+    try:
+        limit = max(0, min(int(max_links), _MAX_IMPORTANT_LINKS))
+    except (TypeError, ValueError):
+        limit = _MAX_IMPORTANT_LINKS
+
+    def candidates(raw: Any) -> list[Any]:
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return [raw]
+            return candidates(decoded)
+        if isinstance(raw, Mapping):
+            # A persisted result may be wrapped as {important_links: ...}.
+            for key in ("important_links", "urls"):
+                if key in raw:
+                    return candidates(raw.get(key))
+            return [raw]
+        if isinstance(raw, (list, tuple)):
+            return list(raw)
+        return []
+
+    cleaned: list[dict[str, str]] = []
+    seen_links: set[str] = set()
+    for item in candidates(value)[:_MAX_IMPORTANT_LINK_CANDIDATES]:
+        normalized = _normalize_url_item(item)
+        if not normalized or normalized["link"] in seen_links:
+            continue
+        seen_links.add(normalized["link"])
+        cleaned.append(normalized)
+        if len(cleaned) >= limit:
+            break
+
+    # Deterministic links (for example unsubscribe URLs) take precedence over
+    # model-picked links while preserving the existing five-link cap.
+    extras: list[dict[str, str]] = []
+    for item in candidates(extra_links)[:_MAX_IMPORTANT_LINK_CANDIDATES]:
+        normalized = _normalize_url_item(item)
+        if not normalized or normalized["link"] in seen_links:
+            continue
+        seen_links.add(normalized["link"])
+        extras.append(normalized)
+        if len(extras) >= limit:
+            break
+    if extras:
+        return cleaned[: max(0, limit - len(extras))] + extras[:limit]
+    return cleaned[:limit]
 
 def _locale_to_language_name(locale_code: str) -> str:
     """
@@ -41,40 +154,7 @@ def _locale_to_language_name(locale_code: str) -> str:
 
 
 def _sanitize_telegram_limited_html(raw_html: str) -> str:
-    """
-    Sanitize an untrusted HTML fragment for Telegram HTML parse mode.
-
-    Only keeps <b>, <i>, <code> tags (no attributes). Everything else is stripped
-    to plain text and HTML-escaped.
-    """
-    if not raw_html:
-        return ""
-
-    # Normalize common line-break tags to newlines before parsing.
-    normalized = (
-        raw_html.replace("<br />", "\n")
-        .replace("<br/>", "\n")
-        .replace("<br>", "\n")
-    )
-
-    soup = BeautifulSoup(f"<div>{normalized}</div>", "html.parser")
-    root = soup.div
-
-    def render(node) -> str:
-        if isinstance(node, NavigableString):
-            return html_escape(str(node), quote=False)
-        if isinstance(node, Tag):
-            name = (node.name or "").lower()
-            if name == "br":
-                return "\n"
-            if name in _TELEGRAM_ALLOWED_INLINE_TAGS:
-                inner = "".join(render(child) for child in node.contents)
-                return f"<{name}>{inner}</{name}>"
-            # Strip tag but keep its children
-            return "".join(render(child) for child in node.contents)
-        return ""
-
-    return "".join(render(child) for child in root.contents).strip()
+    return sanitize_telegram_limited_html(raw_html)
 
 
 def _escape_telegram_html_text(text: str) -> str:
@@ -145,7 +225,29 @@ def format_enhanced_email_summary(summary_data: dict) -> str:
     return "\n".join(parts)
 
 
-def summarize_email(email_body: str, extra_urls: list[dict] | None = None) -> dict | None:
+def _setting(settings: Mapping[str, Any] | Any | None, *names: str, default: Any = None) -> Any:
+    """Read a setting from a repository result (dict or small value object)."""
+    if settings is None:
+        return default
+    for name in names:
+        if isinstance(settings, Mapping) and name in settings:
+            value = settings[name]
+        else:
+            value = getattr(settings, name, None)
+        if value is not None:
+            return value
+    return default
+
+
+def summarize_email(
+    email_body: str,
+    extra_urls: list[dict] | None = None,
+    *,
+    llm_settings: Mapping[str, Any] | Any | None = None,
+    client: Any = None,
+    stream: bool = False,
+    strict_stream: bool = False,
+) -> dict | None:
     """
     Use OpenAI's large language models to summarize an email with enhanced structure.
 
@@ -153,11 +255,9 @@ def summarize_email(email_body: str, extra_urls: list[dict] | None = None) -> di
     a structured format that includes summary, priority, action items, deadlines, and other
     key information. The summary should capture the main purpose of the email, urgency level,
     required actions, deadlines, and essential content for quick understanding and decision making.
-    The summary should be in the language specified by the DEFAULT_LANGUAGE environment variable.
-
-    If the request fails for any reason, try other models in the list specified
-    by the OPENAI_EMAIL_SUMMARIZE_MODELS environment variable. If all models fail,
-    return None.
+    The provider, credential, model, threshold, and language are supplied by
+    the Mini App's persisted settings.  No environment variables are consulted;
+    a missing/disabled setting is a deliberate no-op.
 
     Parameters
     ----------
@@ -174,10 +274,12 @@ def summarize_email(email_body: str, extra_urls: list[dict] | None = None) -> di
         - action_items: List of specific actions required
         - deadline: Any mentioned deadlines or time constraints
         - key_contacts: Important people mentioned
-        - urls: Relevant URLs from the email
+        - important_links: Relevant browser links from the email
+        - urls: Legacy alias for important_links
         Returns None if all LLM requests failed.
     """
-    default_language = os.getenv("DEFAULT_LANGUAGE", "en_US")
+    # The persisted Mini App setting controls all human-readable output.
+    default_language = str(_setting(llm_settings, "default_language", "language", "llm_language", default="en_US"))
     language_name = _locale_to_language_name(default_language)
     messages = [
         {
@@ -201,7 +303,7 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
 - key_contacts: string[] (max 3, names only, plain text)
 - category: "task" | "meeting" | "financial" | "travel" | "newsletter" | "system" | "social" | "other"
 - category_confidence: number | null (0.0 - 1.0)
-- urls: array of {{"caption": string, "link": string}} (max 5; link must be http/https; include unsubscribe link when present; avoid obviously irrelevant tracking-only links)
+- important_links: array of {{"caption": string, "link": string}} (max 5; link must be http/https; choose only links that materially help the recipient complete the email's main task; normally exclude tracking pixels, logos, decorative links, unsubscribe/preferences and generic footer links unless the email's main purpose is managing that subscription)
 """,
         },
         {
@@ -213,21 +315,47 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
 """,
         },
     ]
+    setting_models = _setting(llm_settings, "models", "summary_models", "email_summarize_models", "model", "llm_models", "llm_model")
+    if isinstance(setting_models, str):
+        setting_models = [part.strip() for part in setting_models.split(",") if part.strip()]
+    models = list(setting_models or ())
+    base_url = _setting(llm_settings, "base_url", "openai_base_url", "llm_base_url", default="")
+    api_key = _setting(llm_settings, "api_key", "openai_api_key", "llm_api_key", default="")
+    enabled = bool(_setting(llm_settings, "enabled", "enable", "llm_enabled", default=False))
+    threshold = _setting(llm_settings, "threshold", "summary_threshold", default=120)
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError):
+        threshold = 120
     if (
-        os.getenv("OPENAI_EMAIL_SUMMARIZE_MODELS") is None
-        or os.getenv("OPENAI_BASE_URL") is None
-        or os.getenv("OPENAI_API_KEY") is None
-        or not str(os.getenv("ENABLE_LLM_SUMMARY", "0")) == "1"
-        or len(remove_spaces_and_urls(email_body))
-        < int(os.getenv("LLM_SUMMARY_THRESHOLD", "100"))
+        not models
+        or not base_url
+        or not api_key
+        or not enabled
+        or len(remove_spaces_and_urls(email_body)) < threshold
     ):
         return None
-    models = os.getenv("OPENAI_EMAIL_SUMMARIZE_MODELS").split(",")
-    openai_client = OpenAIClient()
+    if client is None:
+        try:
+            openai_client = OpenAIClient(llm_settings)
+        except TypeError:
+            # Small test doubles may expose a zero-argument constructor.  They
+            # still receive the explicit settings through ``configure`` below.
+            openai_client = OpenAIClient()
+    else:
+        openai_client = client
+    if llm_settings is not None and callable(getattr(openai_client, "configure", None)):
+        openai_client.configure(llm_settings)
+    last_error: Exception | None = None
     for model in models:
         try:
-            completion = openai_client.generate_completion(model, messages, True)
-            json_str = openai_client.extract_response_text(completion)
+            if stream and callable(getattr(openai_client, "stream_completion", None)):
+                json_str = openai_client.stream_completion(model, messages, True)
+            else:
+                completion = openai_client.generate_completion(model, messages, True)
+                json_str = openai_client.extract_response_text(completion)
+            if not json_str:
+                raise ValueError("empty LLM completion")
             result = repair_json(
                 json_str=json_str, ensure_ascii=False, return_objects=True
             )
@@ -247,10 +375,11 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                 "deadline",
                 "key_contacts",
                 "category",
-                "urls",
             ]
 
-            if all(field in real_result for field in required_fields):
+            if all(field in real_result for field in required_fields) and (
+                "important_links" in real_result or "urls" in real_result
+            ):
                 # Ensure proper data types
                 real_result["action_required"] = bool(
                     real_result.get("action_required", False)
@@ -266,10 +395,12 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                     if isinstance(real_result.get("key_contacts"), list)
                     else []
                 )
-                real_result["urls"] = (
-                    real_result.get("urls", [])
-                    if isinstance(real_result.get("urls"), list)
-                    else []
+                # ``important_links`` is canonical.  Providers using the old
+                # ``urls`` key remain accepted during rolling upgrades.
+                raw_links = (
+                    real_result["important_links"]
+                    if real_result.get("important_links") is not None
+                    else real_result.get("urls", [])
                 )
 
                 allowed_priorities = {"high", "medium", "low"}
@@ -302,11 +433,8 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                 summary = _sanitize_telegram_limited_html(summary)
                 real_result["summary"] = summary[:800]
 
-                def _strip_tags(value: str) -> str:
-                    return re.sub(r"<[^>]+>", "", value or "").strip()
-
                 real_result["action_items"] = [
-                    _strip_tags(str(item))[:100]
+                    _strip_link_markup(item, max_length=100)
                     for item in real_result.get("action_items", [])
                     if str(item).strip()
                 ][:5]
@@ -319,66 +447,33 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                     if deadline_text.lower() in {"null", "none", ""}:
                         real_result["deadline"] = None
                     else:
-                        real_result["deadline"] = _strip_tags(deadline_text)[:120]
+                        real_result["deadline"] = _strip_link_markup(deadline_text, max_length=120)
 
                 real_result["key_contacts"] = [
-                    _strip_tags(str(name))[:50]
+                    _strip_link_markup(name, max_length=50)
                     for name in real_result.get("key_contacts", [])
                     if str(name).strip()
                 ][:3]
 
-                def _normalize_url_item(item: dict) -> dict | None:
-                    if not isinstance(item, dict):
-                        return None
-                    caption_raw = str(item.get("caption", "")).strip()
-                    link = str(item.get("link", "")).strip()
-                    if not link.startswith(("http://", "https://")):
-                        return None
-                    caption = _strip_tags(caption_raw)[:25]
-                    if not caption:
-                        caption = link[:25]
-                    return {"caption": caption, "link": link}
-
-                max_urls = 5
-                cleaned_urls: list[dict] = []
-                seen_links = set()
-                for url in real_result.get("urls", [])[:10]:
-                    normalized = _normalize_url_item(url)
-                    if not normalized:
-                        continue
-                    link = normalized["link"]
-                    if link in seen_links:
-                        continue
-                    seen_links.add(link)
-                    cleaned_urls.append(normalized)
-                    if len(cleaned_urls) >= max_urls:
-                        break
-
-                # Merge extra URLs (e.g., deterministic unsubscribe links), keep unique and capped.
-                merged_extra: list[dict] = []
-                for url in (extra_urls or [])[:10]:
-                    normalized = _normalize_url_item(url)
-                    if not normalized:
-                        continue
-                    link = normalized["link"]
-                    if link in seen_links:
-                        continue
-                    seen_links.add(link)
-                    merged_extra.append(normalized)
-
-                if merged_extra:
-                    keep_llm = max(0, max_urls - len(merged_extra))
-                    real_result["urls"] = (
-                        cleaned_urls[:keep_llm] + merged_extra[:max_urls]
-                    )
-                else:
-                    real_result["urls"] = cleaned_urls
+                cleaned_links = sanitize_important_links(raw_links, extra_urls)
+                real_result["important_links"] = cleaned_links
+                # Keep the legacy key for callers that still read ``urls``.
+                real_result["urls"] = list(cleaned_links)
 
                 return real_result
             else:
-                # Fallback: check for old format compatibility
-                if "summary" in real_result and "urls" in real_result:
+                # Fallback: check for old format compatibility.  Older models
+                # may omit the structured label fields but still provide links.
+                if "summary" in real_result and (
+                    "important_links" in real_result or "urls" in real_result
+                ):
                     # Convert old format to new format
+                    raw_links = (
+                        real_result["important_links"]
+                        if real_result.get("important_links") is not None
+                        else real_result.get("urls", [])
+                    )
+                    cleaned_links = sanitize_important_links(raw_links, extra_urls)
                     return {
                         "summary": real_result.get("summary", ""),
                         "priority": "medium",
@@ -388,11 +483,15 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                         "key_contacts": [],
                         "category": "other",
                         "category_confidence": None,
-                        "urls": real_result.get("urls", []),
+                        "important_links": cleaned_links,
+                        "urls": list(cleaned_links),
                     }
                 else:
                     raise ValueError("Invalid response format")
         except Exception as e:
             logger.error(f"failed to summarize email content: {e}")
+            last_error = e
             continue
+    if stream and strict_stream and last_error is not None:
+        raise last_error
     return None

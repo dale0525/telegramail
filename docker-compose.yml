@@ -1,11 +1,45 @@
-version: "3.8"
-
 services:
-    telegramail:
-        image: logictan/telegramail:latest
-        container_name: telegramail
-        restart: unless-stopped
-        env_file:
-            - .env
-        volumes:
-            - ./data:/app/data
+  telegramail:
+    container_name: telegramail
+    image: ghcr.io/dale0525/telegramail:${TELEGRAMAIL_IMAGE_TAG:-latest}
+    pull_policy: always
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TELEGRAMAIL_DATA_DIR: /app/data
+      TELEGRAMAIL_WEB_DIST: /app/web/dist
+    dns:
+      - 223.5.5.5
+      - 114.114.114.114
+      - 8.8.8.8
+    volumes:
+      - ${TELEGRAMAIL_DATA_DIR:-./data}:/app/data
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  cloudflared:
+    container_name: telegramail-cloudflared
+    image: cloudflare/cloudflared:2026.8.1
+    restart: unless-stopped
+    dns:
+      - 223.5.5.5
+      - 114.114.114.114
+      - 8.8.8.8
+    depends_on:
+      telegramail:
+        condition: service_healthy
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - http2
+      - --edge-ip-version
+      - "4"
+      - run
+      - --token
+      - ${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN must be set in .env}

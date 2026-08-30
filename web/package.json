@@ -1,0 +1,29 @@
+{
+  "name": "telegramail-miniapp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run check && vite build",
+    "test": "vitest run --passWithNoTests",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "6.0.5",
+    "markdown-it": "^14.1.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "7.0.2",
+    "vite": "8.2.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.3.2",
+    "@types/markdown-it": "^14.1.2",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "jsdom": "26.1.0",
+    "vitest": "4.1.10"
+  }
+}

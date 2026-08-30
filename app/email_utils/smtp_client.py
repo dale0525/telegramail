@@ -1,4 +1,6 @@
 import asyncio
+import smtplib
+import socket
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -133,10 +135,11 @@ class SMTPClient:
         self.timeout_seconds = int(timeout_seconds)
 
     async def send_email(self, **kwargs) -> bool:
+        """Async v2 boundary: preserve delivery-relevant SMTP exceptions."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self.send_email_sync(**kwargs))
+        return await loop.run_in_executor(None, lambda: self.send_email_strict(**kwargs))
 
-    def send_email_sync(
+    def send_email_strict(
         self,
         *,
         from_email: str,
@@ -199,8 +202,22 @@ class SMTPClient:
                 _send_one(header_to=[from_email], header_cc=[], rcpt=chunk)
 
             return True
+        except (smtplib.SMTPRecipientsRefused, smtplib.SMTPResponseException,
+                TimeoutError, socket.timeout, ConnectionError,
+                smtplib.SMTPServerDisconnected):
+            # The v2 worker must distinguish final SMTP rejection from an
+            # uncertain I/O outcome after DATA. Preserve that information.
+            raise
         except Exception as e:
             logger.error(f"Failed to send email: {e}")
+            return False
+
+    def send_email_sync(self, **kwargs: Any) -> bool:
+        """Legacy synchronous API retains its historical boolean contract."""
+        try:
+            return self.send_email_strict(**kwargs)
+        except Exception as exc:
+            logger.error(f"Failed to send email: {exc}")
             return False
 
     def _send_via_smtp(
@@ -221,12 +238,10 @@ class SMTPClient:
         ) as smtp:
             smtp.ehlo()
             if not self.use_ssl:
-                try:
-                    smtp.starttls()
-                    smtp.ehlo()
-                except Exception:
-                    # STARTTLS not available; continue in plain if configured that way.
-                    pass
+                if not smtp.has_extn("STARTTLS"):
+                    raise ConnectionError("SMTP server does not offer STARTTLS")
+                smtp.starttls()
+                smtp.ehlo()
 
             if self.username:
                 smtp.login(self.username, self.password)
