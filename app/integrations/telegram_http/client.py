@@ -209,13 +209,11 @@ class TelegramUpdateDispatcher:
         client: "TelegramBotApiClient",
         *,
         mini_app_url: str | None = None,
-        setup_handler: Callable[[int | str, int | None, str], Awaitable[str | None] | str | None] | None = None,
         message_handler: MessageHandler | None = None,
         callback_handler: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None,
     ) -> None:
         self.client = client
         self.mini_app_url = mini_app_url
-        self.setup_handler = setup_handler
         self.message_handler = message_handler
         self.callback_handler = callback_handler
 
@@ -239,22 +237,10 @@ class TelegramUpdateDispatcher:
             return True
         command = text.strip().split(maxsplit=1)[0].split("@", 1)[0].lower()
         chat_id = chat["id"]
-        sender = message.get("from")
-        user_id = sender.get("id") if isinstance(sender, Mapping) and isinstance(sender.get("id"), int) else None
         if command == "/start":
             await self._set_menu(chat_id)
             if not await self._dispatch_message_handler(message):
-                await self.client.send_message(chat_id, "TelegramMail 已连接。使用 /menu 打开菜单，使用 /setup 开始设置。")
-        elif command == "/setup":
-            reply = "请在 Mini App 中使用一次性设置码完成配置。"
-            if self.setup_handler is not None:
-                result = self.setup_handler(chat_id, user_id, text)
-                reply = await result if hasattr(result, "__await__") else result
-            if reply:
-                await self.client.send_message(chat_id, str(reply))
-        elif command == "/menu":
-            await self._set_menu(chat_id)
-            await self.client.send_message(chat_id, "菜单已更新。")
+                await self.client.send_message(chat_id, "Telegramail 已连接。点击菜单按钮打开 Mini App。")
         elif not await self._dispatch_message_handler(message):
             return True
         return True
@@ -312,7 +298,6 @@ class TelegramBotApiClient:
         sleep: Sleep = asyncio.sleep,
         clock: Clock = time.monotonic,
         mini_app_url: str | None = None,
-        setup_handler: Callable[[int | str, int | None, str], Awaitable[str | None] | str | None] | None = None,
         message_handler: MessageHandler | None = None,
         callback_handler: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None,
         update_handler: UpdateHandler | None = None,
@@ -339,7 +324,6 @@ class TelegramBotApiClient:
         self._dispatcher = TelegramUpdateDispatcher(
             self,
             mini_app_url=mini_app_url,
-            setup_handler=setup_handler,
             message_handler=message_handler,
             callback_handler=callback_handler,
         )
@@ -471,6 +455,12 @@ class TelegramBotApiClient:
 
     async def delete_webhook(self, *, drop_pending_updates: bool = False) -> Any:
         return await self._call("deleteWebhook", {"drop_pending_updates": drop_pending_updates})
+
+    async def set_my_commands(self, commands: Sequence[Mapping[str, str]]) -> Any:
+        return await self._call(
+            "setMyCommands",
+            {"commands": [dict(command) for command in commands]},
+        )
 
     async def set_chat_menu_button(
         self, menu_button: Mapping[str, Any], *, chat_id: int | str | None = None

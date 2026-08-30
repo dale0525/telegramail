@@ -30,7 +30,21 @@ Telegramail uses the Telegram Bot API and Mini Apps only. It does not need your 
 
 ## Quick start with the pre-built image
 
-You need Docker Compose, a bot created with [@BotFather](https://t.me/BotFather), and a public HTTPS hostname. Create a named Cloudflare Tunnel, route that hostname to `http://telegramail:8080`, and keep its connector token.
+You need:
+
+- Docker Compose
+- A Telegram bot created with [@BotFather](https://t.me/BotFather)
+- A Cloudflare account and a domain already added to Cloudflare
+
+### 1. Create a Cloudflare Tunnel and get its token
+
+1. In the Cloudflare dashboard, open **Networking → Tunnels** and select **Create Tunnel**.
+2. Enter a name such as `telegramail`, then create the tunnel.
+3. Select **Docker** as the environment. Cloudflare displays a command containing `--token eyJ...`; copy only the `eyJ...` value after `--token`. Do not run the full command. This value is your `CLOUDFLARE_TUNNEL_TOKEN`.
+
+For an existing tunnel, open its **Overview** page and select **Add a replica** to display the installation command again. Anyone who has this token can run your tunnel, so protect it like a password. See Cloudflare's official [Tunnel setup guide](https://developers.cloudflare.com/tunnel/setup/) and [token documentation](https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/).
+
+### 2. Download the Compose configuration
 
 ```bash
 mkdir telegramail && cd telegramail
@@ -40,7 +54,19 @@ mkdir -p data
 sudo chown 10001:10001 data
 ```
 
-Edit `.env` and set the bot token, public URL, Cloudflare Tunnel token, setup code, session secrets, and master key. The comments in the file explain how to generate each secret.
+### 3. Configure `.env`
+
+Open `.env` and make sure these three values describe the same deployment:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=token_from_BotFather
+WEB_BASE_URL=https://mail.example.com
+CLOUDFLARE_TUNNEL_TOKEN=eyJ...
+```
+
+`WEB_BASE_URL` is the full HTTPS origin you will publish through Cloudflare. Do not include a path or trailing `/`. Follow the comments in `.env` to set `SETUP_CODE`, `SESSION_SECRET`, `TELEGRAM_WEBHOOK_SECRET`, and `MASTER_KEY`; never commit the real `.env` file.
+
+### 4. Initialize and start
 
 ```bash
 docker compose pull
@@ -48,11 +74,25 @@ docker compose run --rm --no-deps telegramail python scripts/migrate_v2.py --ini
 docker compose up -d
 ```
 
-Open `https://your-host/health/ready`; a ready instance returns HTTP 200. Then send `/start` to your bot, open the Mini App, enter `SETUP_CODE` once to claim the administrator account, and add your mail accounts from Settings.
+### 5. Route the hostname to Telegramail
+
+1. Return to Cloudflare **Networking → Tunnels** and wait for the new tunnel to show **Healthy**.
+2. Open the tunnel. Under **Routes**, select **Add route → Published application**.
+3. Set **Hostname** to the same hostname used by `WEB_BASE_URL`, such as `mail.example.com`.
+4. For **Service URL**, select HTTP and enter `http://telegramail:8080`, then save.
+
+Do not use `localhost:8080` here. `cloudflared` and Telegramail run in separate containers; the Compose service name `telegramail` resolves to the application container. Cloudflare creates the tunnel route for the hostname when you save the published application.
+
+### 6. Verify and sign in
+
+```bash
+docker compose ps
+curl -fsS https://mail.example.com/health/ready
+```
+
+Both containers should be running, and the second command should return JSON containing `"status":"ok"`. Send `/start` to the bot, select **Telegramail** from the chat menu to open the Mini App, enter `SETUP_CODE` once to claim the administrator account, and then add your mail accounts.
 
 GitHub Actions publishes `ghcr.io/dale0525/telegramail`. `latest` follows `main`; a Git tag such as `v2.1.0` publishes image tag `2.1.0`. Set `TELEGRAMAIL_IMAGE_TAG=2.1.0` in `.env` to pin that version.
-
-The commands above assume the GHCR package is public. GitHub creates it as private on the first publication, so the project owner must change its visibility to Public once before anonymous pulls will work.
 
 To update an existing v2 installation:
 

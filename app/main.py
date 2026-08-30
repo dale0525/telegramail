@@ -59,6 +59,11 @@ def create_app():
             # This is a deployment gate: private Topics must be enabled before
             # a worker can project mail into the Bot API.
             await telegram.ensure_topics_enabled()
+            # Replace any BotFather/v1 command list. The v2 Mini App owns every
+            # action after the one bootstrap command.
+            await telegram.set_my_commands([
+                {"command": "start", "description": "打开 Telegramail"},
+            ])
             await telegram.set_webhook(
                 webhook_url,
                 secret_token=settings.webhook_secret,

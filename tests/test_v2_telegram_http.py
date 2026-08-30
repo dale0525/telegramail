@@ -200,7 +200,7 @@ class TelegramHttpClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.mini_app_only)
         self.assertEqual(result.filename, "large.bin")
 
-    async def test_real_dispatcher_handles_start_setup_menu_and_callback(self):
+    async def test_dispatcher_handles_only_start_and_callback(self):
         methods = []
 
         async def handler(request):
@@ -210,16 +210,33 @@ class TelegramHttpClientTests(unittest.IsolatedAsyncioTestCase):
         client = self.client(handler, mini_app_url="https://mail.example.test")
         try:
             await client.handle_update({"update_id": 1, "message": {"chat": {"id": 42}, "from": {"id": 42}, "text": "/start"}})
-            await client.handle_update({"update_id": 2, "message": {"chat": {"id": 42}, "from": {"id": 42}, "text": "/setup"}})
-            await client.handle_update({"update_id": 3, "message": {"chat": {"id": 42}, "from": {"id": 42}, "text": "/menu"}})
+            await client.handle_update({"update_id": 2, "message": {"chat": {"id": 42}, "from": {"id": 42}, "text": "/ignored-one"}})
+            await client.handle_update({"update_id": 3, "message": {"chat": {"id": 42}, "from": {"id": 42}, "text": "/ignored-two"}})
             await client.handle_update({"update_id": 4, "callback_query": {"id": "callback-1", "from": {"id": 42}, "data": "ignored"}})
         finally:
             await client.aclose()
 
         self.assertEqual(
             methods,
-            ["setChatMenuButton", "sendMessage", "sendMessage", "setChatMenuButton", "sendMessage", "answerCallbackQuery"],
+            ["setChatMenuButton", "sendMessage", "answerCallbackQuery"],
         )
+
+    async def test_set_my_commands_replaces_legacy_menu_with_start_only(self):
+        async def handler(_request):
+            return telegram_response(True)
+
+        client = self.client(handler)
+        try:
+            self.assertTrue(await client.set_my_commands([
+                {"command": "start", "description": "打开 Telegramail"},
+            ]))
+        finally:
+            await client.aclose()
+
+        self.assertTrue(self.requests[-1].url.path.endswith("setMyCommands"))
+        self.assertEqual(json.loads(self.requests[-1].content), {
+            "commands": [{"command": "start", "description": "打开 Telegramail"}],
+        })
 
 
 class _FlakyDispatcher:
@@ -293,7 +310,7 @@ class TelegramWebhookDeliveryTests(unittest.IsolatedAsyncioTestCase):
                         (701, "message", "{}", int(time.time()) - 61),
                     )
                 self.assertEqual(
-                    (await http.post("/api/v1/telegram/webhook", headers=headers, json={"update_id": 701, "message": {"text": "/menu"}})).status_code,
+                    (await http.post("/api/v1/telegram/webhook", headers=headers, json={"update_id": 701, "message": {"text": "/ignored"}})).status_code,
                     204,
                 )
 
