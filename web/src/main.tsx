@@ -1829,7 +1829,7 @@ export function DeleteConfirmation({
     >
       <h2 id="delete-title">{count > 1 ? `确认删除 ${count} 个线程？` : "确认删除线程？"}</h2>
       <p id="delete-description">
-        后台会先通过 <b>{provider}</b> 从邮箱服务器删除线程中的所有邮件，再删除对应的 Telegram Topic。
+        后台会先删除对应的 Telegram Topic，再通过 <b>{provider}</b> 从邮箱服务器删除线程中的所有邮件。
         任一步骤失败都会保留进度并自动重试；删除只能从 Telegram Mini App 发起。
       </p>
       <footer>
@@ -2263,17 +2263,18 @@ export function App() {
     if (!targets.length) return;
     setDeleting(true);
     try {
-      const results = await Promise.allSettled(
-        targets.map((id) => {
-          const key = deleteKeys.current.get(id) ?? api.idempotencyKey();
-          deleteKeys.current.set(id, key);
-          return api.removeThread(id, key);
-        }),
-      );
+      const requests = targets.map((id) => {
+        const idempotencyKey = deleteKeys.current.get(id) ?? api.idempotencyKey();
+        deleteKeys.current.set(id, idempotencyKey);
+        return { threadId: id, idempotencyKey };
+      });
+      const results = targets.length > 1
+        ? await api.removeThreads(requests)
+        : [{ threadId: targets[0], ...(await api.removeThread(targets[0], requests[0].idempotencyKey)) }];
       const acceptedStatuses = new Set(["accepted", "queued", "running", "deleting", "succeeded", "deleted"]);
-      const deletedIds = targets.filter((_, index) => {
-        const result = results[index];
-        return result?.status === "fulfilled" && acceptedStatuses.has(result.value.status);
+      const deletedIds = targets.filter((id) => {
+        const result = results.find((item) => item.threadId === id);
+        return Boolean(result && acceptedStatuses.has(result.status));
       });
       const failedCount = targets.length - deletedIds.length;
       // The durable delete continues in the background. Leave the topic detail

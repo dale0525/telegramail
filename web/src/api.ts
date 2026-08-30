@@ -125,6 +125,7 @@ type Operation = {
     | "deleting";
   error?: string | null;
 };
+type BulkDeleteItemWire = Operation & { thread_id: string };
 type AccountWire = {
   id?: string | number;
   email: string;
@@ -740,5 +741,27 @@ export const api = {
       method: "DELETE",
       headers: { "Idempotency-Key": key },
     });
+  },
+  async removeThreads(items: Array<{ threadId: string; idempotencyKey: string }>) {
+    if (mockEnabled) {
+      await wait();
+      return Promise.all(items.map(async ({ threadId, idempotencyKey }) => ({
+        threadId,
+        ...(await api.removeThread(threadId, idempotencyKey)),
+      })));
+    }
+    const response = await request<{ items: BulkDeleteItemWire[] }>("/threads/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({
+        items: items.map(({ threadId, idempotencyKey }) => ({
+          thread_id: threadId,
+          idempotency_key: idempotencyKey,
+        })),
+      }),
+    });
+    return response.items.map(({ thread_id, ...operation }) => ({
+      threadId: thread_id,
+      ...operation,
+    }));
   },
 };

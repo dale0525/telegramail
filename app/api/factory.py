@@ -278,6 +278,39 @@ class OperationResponse(_DTO):
     error: str | None = None
 
 
+class BulkDeleteItemRequest(_DTO):
+    model_config = ConfigDict(extra="forbid")
+
+    thread_id: str
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class BulkDeleteRequest(_DTO):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[BulkDeleteItemRequest] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def require_unique_thread_ids(self) -> "BulkDeleteRequest":
+        normalized = []
+        for item in self.items:
+            try:
+                normalized.append(str(int(item.thread_id)))
+            except ValueError:
+                normalized.append(item.thread_id.strip())
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("thread_id must be unique within a bulk delete request")
+        return self
+
+
+class BulkDeleteItemResponse(OperationResponse):
+    thread_id: str
+
+
+class BulkDeleteResponse(_DTO):
+    items: list[BulkDeleteItemResponse]
+
+
 @dataclass
 class _RuntimeState:
     used_setup_codes: set[str] = field(default_factory=set)
@@ -1651,12 +1684,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Operation not found")
         return operation
 
-    @router.delete("/threads/{thread_id}", response_model=OperationResponse, status_code=202)
-    async def delete_thread(
-        thread_id: str,
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-        _: Session = Depends(require_csrf),
-    ) -> dict[str, Any]:
+    async def queue_thread_delete(thread_id: str, idempotency_key: str | None) -> dict[str, Any]:
         durable_create = (
             getattr(database, "create_thread_delete_operation", None)
             or getattr(database, "create_delete_operation", None)
@@ -1668,6 +1696,13 @@ def create_app(
                 internal_thread_id = int(thread_id)
             except ValueError as exc:
                 raise HTTPException(status_code=404, detail="Thread not found") from exc
+            existing = _v2_one(
+                database,
+                "SELECT * FROM delete_operations WHERE thread_id = ? AND idempotency_key = ?",
+                (internal_thread_id, idempotency_key.strip()),
+            )
+            if existing:
+                return durable_operation_view("delete", existing)
             thread = _v2_one(
                 database,
                 "SELECT id, account_id FROM mail_threads WHERE id = ? AND status <> 'tombstoned'",
@@ -1687,12 +1722,52 @@ def create_app(
             operation_thread_id = operation.get("thread_id")
             if operation_thread_id not in (None, internal_thread_id):
                 raise HTTPException(status_code=409, detail="Idempotency-Key was used with a different request")
-            worker_runtime = getattr(app.state, "worker_runtime", None)
-            wake_workers = getattr(worker_runtime, "wake", None)
-            if callable(wake_workers):
-                wake_workers()
             return durable_operation_view("delete", operation)
         return create_operation("thread.delete", idempotency_key or "", thread_id, "delete_thread", thread_id)
+
+    def wake_worker_runtime() -> None:
+        worker_runtime = getattr(app.state, "worker_runtime", None)
+        wake_workers = getattr(worker_runtime, "wake", None)
+        if callable(wake_workers):
+            wake_workers()
+
+    @router.post("/threads/bulk-delete", response_model=BulkDeleteResponse, status_code=202)
+    async def bulk_delete_threads(
+        payload: BulkDeleteRequest,
+        _: Session = Depends(require_csrf),
+    ) -> dict[str, Any]:
+        results: list[dict[str, Any]] = []
+        accepted = False
+        try:
+            for item in payload.items:
+                try:
+                    operation = await queue_thread_delete(item.thread_id, item.idempotency_key)
+                except HTTPException as exc:
+                    results.append({
+                        "thread_id": item.thread_id,
+                        "id": "",
+                        "kind": "thread.delete",
+                        "status": "failed",
+                        "result": None,
+                        "error": str(exc.detail),
+                    })
+                else:
+                    accepted = True
+                    results.append({"thread_id": item.thread_id, **operation})
+        finally:
+            if accepted:
+                wake_worker_runtime()
+        return {"items": results}
+
+    @router.delete("/threads/{thread_id}", response_model=OperationResponse, status_code=202)
+    async def delete_thread(
+        thread_id: str,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        _: Session = Depends(require_csrf),
+    ) -> dict[str, Any]:
+        operation = await queue_thread_delete(thread_id, idempotency_key)
+        wake_worker_runtime()
+        return operation
 
     @router.post("/telegram/webhook", status_code=204, include_in_schema=False)
     async def telegram_webhook(
