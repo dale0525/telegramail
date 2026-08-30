@@ -206,15 +206,21 @@ class MailWorkerRuntime:
             self._record_error("projection", None)
             return False
 
-    async def _drain_summaries(self, *, limit: int = 100) -> bool:
-        """Process newly queued summaries before projecting their Telegram card."""
+    async def _drain_summaries(self, *, limit: int = 1) -> bool:
+        """Process a bounded summary batch without delaying worker readiness."""
         try:
+            processed = 0
             for _ in range(max(1, int(limit))):
                 job = self.summary.run_once() if self.summary is not None else None
                 if inspect.isawaitable(job):
                     job = await job
                 if job is None:
                     break
+                processed += 1
+            if processed == max(1, int(limit)):
+                # LLM calls can take tens of seconds. Yield between items so a
+                # large backlog cannot keep the first worker cycle unready.
+                self.wake()
             return True
         except asyncio.CancelledError:
             raise
