@@ -47,8 +47,12 @@ class _BatchProjection:
 class _BatchIngestion:
     def __init__(self, projection: _BatchProjection) -> None:
         self.projection = projection
+        self.ingested = False
 
     async def ingest_account(self, account) -> int:
+        if self.ingested:
+            return 0
+        self.ingested = True
         self.projection.queued += 3
         return 3
 
@@ -109,6 +113,19 @@ class RuntimeHealthTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(projection.projected, 3)
         finally:
             await runtime.stop()
+
+    async def test_fresh_projection_backlog_yields_after_one_item_and_wakes_next_cycle(self) -> None:
+        runtime = MailWorkerRuntime(poll_seconds=30)
+        projection = _BatchProjection()
+        projection.queued = 3
+        runtime.projection = projection
+
+        succeeded = await runtime._drain_fresh_projections()
+
+        self.assertTrue(succeeded)
+        self.assertEqual(projection.projected, 1)
+        self.assertEqual(projection.queued, 2)
+        self.assertTrue(runtime._wake_requested.is_set())
 
     async def test_woken_delete_batch_is_drained_before_runtime_sleeps(self) -> None:
         runtime = MailWorkerRuntime(poll_seconds=30)
