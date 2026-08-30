@@ -191,14 +191,20 @@ class MailWorkerRuntime:
             self._record_error(component, None)
             return False
 
-    async def _drain_fresh_projections(self, *, limit: int = 100) -> bool:
+    async def _drain_fresh_projections(self, *, limit: int = 1) -> bool:
         try:
+            processed = 0
             for _ in range(max(1, int(limit))):
                 job = self.projection.run_once(include_failed=False)
                 if inspect.isawaitable(job):
                     job = await job
                 if job is None:
                     break
+                processed += 1
+            if processed == max(1, int(limit)):
+                # Telegram and provider calls can each be slow. Let readiness
+                # observe progress between jobs, then continue without sleeping.
+                self.wake()
             return True
         except asyncio.CancelledError:
             raise
