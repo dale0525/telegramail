@@ -4,7 +4,9 @@
 
 Telegramail puts your email in Telegram. One self-hosted service can watch several IMAP/SMTP accounts, send new mail to your bot, and give you a Mini App for reading, writing, replying, and forwarding.
 
-![A Telegramail email and its generated summary inside Telegram](./docs/images/telegramail-inbox.png)
+| Email delivered to Telegram | Unified inbox in the Mini App |
+| --- | --- |
+| ![A Telegramail email with a generated summary, important links, and an attachment inside Telegram](./docs/images/telegramail-telegram-en.png) | ![Telegramail's Mini App showing multiple mailboxes and email threads](./docs/images/telegramail-mini-app-en.png) |
 
 ## Is Telegramail for you?
 

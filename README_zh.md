@@ -4,7 +4,9 @@
 
 Telegramail 把邮箱放进 Telegram。一个自托管服务可以同时连接多个 IMAP/SMTP 邮箱，通过 Bot 推送新邮件，并用 Mini App 完成阅读、写信、回复和转发。
 
-![Telegram 中的 Telegramail 邮件与自动摘要](./docs/images/telegramail-inbox.png)
+| Telegram 邮件投递 | Mini App 统一收件箱 |
+| --- | --- |
+| ![Telegram 中含自动摘要、重要链接和附件的 Telegramail 邮件](./docs/images/telegramail-telegram-zh.png) | ![Telegramail Mini App 中的多邮箱与邮件线程](./docs/images/telegramail-mini-app-zh.png) |
 
 ## Telegramail 适合你吗？
 
