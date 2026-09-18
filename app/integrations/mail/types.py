@@ -75,6 +75,10 @@ class IncomingMail:
     # in-process value only; durable adapters may persist a JSON projection
     # separately without coupling this transport object to SQLite.
     important_links: list[dict[str, str]] = field(default_factory=list)
+    # Deterministic unsubscribe links derived from the message body.  Kept apart
+    # from important_links so a reader can always tell model output from
+    # body-derived content; only extract_unsubscribe_links may populate it.
+    unsubscribe_links: list[dict[str, str]] = field(default_factory=list)
     in_reply_to: str | None = None
     references: tuple[str, ...] = ()
     attachments: tuple[Attachment, ...] = ()

@@ -1201,6 +1201,47 @@ class TestV2SQLiteAdapter(unittest.IsolatedAsyncioTestCase):
                 except FileNotFoundError:
                     pass
 
+    async def test_ingestion_persists_unsubscribe_link_without_a_summary(self):
+        # A mail whose summary is skipped must still expose its unsubscribe
+        # affordance: extraction belongs to ingestion, not to the LLM result.
+        from app.db import V2Repository
+
+        fd, path = tempfile.mkstemp(prefix="telegramail-v2-unsub-ingest-", suffix=".db")
+        os.close(fd)
+        try:
+            repo = V2Repository(path, master_key=b"x" * 32)
+            account = repo.create_account({
+                "email": "me@example.com", "imap_server": "imap.example.com", "imap_port": 993,
+                "imap_ssl": True, "smtp_server": "smtp.example.com", "smtp_port": 465, "smtp_ssl": True,
+            }, "secret")
+            adapter = V2MailRepositoryAdapter(repo)
+            mail = IncomingMail(
+                account_id=account["id"], mailbox="INBOX", uid="unsub", uidvalidity="e1",
+                sender="news@example.com", subject="Newsletter", text_body="Short note",
+                html_body=(
+                    "<p>Newsletter</p>"
+                    "<a href='https://example.test/unsubscribe?token=1'>Unsubscribe</a>"
+                ),
+            )
+
+            self.assertEqual(
+                await MailIngestionWorker(adapter, lambda _: _IMAP([mail]), _Telegram()).ingest_account(account),
+                1,
+            )
+            row = repo.get_email_by_imap_uid(account["id"], mailbox="INBOX", uid="unsub", uidvalidity="e1")
+            self.assertIsNotNone(row)
+            self.assertEqual(
+                row["unsubscribe_links"],
+                [{"caption": "退订", "link": "https://example.test/unsubscribe?token=1"}],
+            )
+            self.assertEqual(row["summary_status"], "pending")
+        finally:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.unlink(path + suffix)
+                except FileNotFoundError:
+                    pass
+
     async def test_oversized_html_projection_persists_text_fallback_for_summary_refresh(self):
         from app.db import V2Repository
 

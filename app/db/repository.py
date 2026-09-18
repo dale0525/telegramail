@@ -164,12 +164,25 @@ def _decode_important_links(value: Any) -> list[dict[str, str]]:
     return _normalize_important_links(value)
 
 
+def _decode_unsubscribe_links(value: Any) -> list[dict[str, str]]:
+    """Decode the body-derived unsubscribe projection.
+
+    This is a separate column from the LLM link projection so a reader can
+    always tell which buttons came from the model and which were derived from
+    the message body.  Malformed and legacy values become an empty list.
+    """
+
+    return _normalize_important_links(value)
+
+
 def _row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
     result = dict(row)
     if "llm_important_links_json" in result:
         result["important_links"] = _decode_important_links(result.get("llm_important_links_json"))
+    if "unsubscribe_links_json" in result:
+        result["unsubscribe_links"] = _decode_unsubscribe_links(result.get("unsubscribe_links_json"))
     return result
 
 
@@ -899,7 +912,8 @@ class V2Repository:
                            WHERE p.email_id = e.id ORDER BY p.part_index, p.id LIMIT 1)
                               AS telegram_delivery_status,
                           e.sender, e.subject,
-                          e.email_date, e.llm_summary, e.llm_important_links_json, e.body_text, e.llm_priority,
+                          e.email_date, e.llm_summary, e.llm_important_links_json,
+                          e.unsubscribe_links_json, e.body_text, e.llm_priority,
                           e.llm_category, e.summary_status, e.summary_updated_at
                    FROM mail_threads t
                    JOIN emails e ON e.id = t.latest_email_id AND e.tombstoned_at IS NULL
@@ -969,6 +983,7 @@ class V2Repository:
             rows = conn.execute(
                 """SELECT p.id AS delivery_part_id, p.email_id, p.part_index,
                           p.telegram_message_id, e.llm_important_links_json,
+                          e.unsubscribe_links_json,
                           t.id AS thread_id, t.telegram_chat_id,
                           t.telegram_message_thread_id
                    FROM telegram_delivery_parts p
@@ -1538,7 +1553,8 @@ class V2Repository:
                                 summary: object = _UNSET,
                                 important_links: object = _UNSET,
                                 important_links_json: object = _UNSET,
-                                urls: object = _UNSET) -> Optional[Dict[str, Any]]:
+                                urls: object = _UNSET,
+                                unsubscribe_links: object = _UNSET) -> Optional[Dict[str, Any]]:
         """Write the legacy-compatible LLM label fields on a v2 email."""
         confidence_value = None if confidence is None else max(0.0, min(1.0, float(confidence)))
         timestamp = int(labeled_at) if labeled_at is not None else _now()
@@ -1562,9 +1578,23 @@ class V2Repository:
                 important_links = urls
         if important_links is not _UNSET:
             fields["llm_important_links_json"] = _encode_important_links(important_links)
+        if unsubscribe_links is not _UNSET:
+            fields["unsubscribe_links_json"] = _encode_important_links(unsubscribe_links)
         with self.db.transaction(immediate=True) as conn:
             assignments = ", ".join(f"{name} = ?" for name in fields)
             cur = conn.execute(f"UPDATE emails SET {assignments} WHERE id = ?", tuple(fields.values()) + (int(email_id),))
+            if cur.rowcount != 1:
+                return None
+            return _row(conn.execute("SELECT * FROM emails WHERE id = ?", (int(email_id),)).fetchone())
+
+    def update_email_unsubscribe_links(self, email_id: int, links: Any) -> Optional[Dict[str, Any]]:
+        """Persist the body-derived unsubscribe projection for one email."""
+
+        with self.db.transaction(immediate=True) as conn:
+            cur = conn.execute(
+                "UPDATE emails SET unsubscribe_links_json = ?, updated_at = ? WHERE id = ?",
+                (_encode_important_links(links), _now(), int(email_id)),
+            )
             if cur.rowcount != 1:
                 return None
             return _row(conn.execute("SELECT * FROM emails WHERE id = ?", (int(email_id),)).fetchone())
@@ -2600,7 +2630,7 @@ class V2Repository:
             "thread_id", "message_id", "sender", "recipient", "cc", "bcc", "subject", "email_date",
             "body_text", "body_html", "delivered_to", "in_reply_to", "references_header", "llm_category",
             "llm_priority", "llm_confidence", "llm_labeled_at", "llm_summary", "llm_important_links_json",
-            "important_links", "urls",
+            "unsubscribe_links_json", "important_links", "urls", "unsubscribe_links",
         }
         values = {key: value for key, value in email.items() if key in permitted}
         links_value = values.pop("important_links", _UNSET)
@@ -2610,6 +2640,11 @@ class V2Repository:
             values["llm_important_links_json"] = _encode_important_links(links_value)
         elif "llm_important_links_json" in values:
             values["llm_important_links_json"] = _encode_important_links(values["llm_important_links_json"])
+        unsubscribe_value = values.pop("unsubscribe_links", _UNSET)
+        if unsubscribe_value is not _UNSET:
+            values["unsubscribe_links_json"] = _encode_important_links(unsubscribe_value)
+        elif "unsubscribe_links_json" in values:
+            values["unsubscribe_links_json"] = _encode_important_links(values["unsubscribe_links_json"])
         with self.db.transaction(immediate=True) as conn:
             existing = conn.execute("SELECT * FROM emails WHERE account_id = ? AND mailbox = ? AND uidvalidity = ? AND uid = ?", (int(account_id), normalized_mailbox, normalized_uidvalidity, normalized_uid)).fetchone()
             if existing is not None:

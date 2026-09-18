@@ -6,8 +6,9 @@ from dataclasses import dataclass
 import re
 from typing import Any, Callable
 
+from app.email_utils.mail_body import prepare_email_body
 from app.services.telegram_mail_card import build_safe_mail_card, has_projectable_mail_content
-from app.services.telegram_mail_links import html_to_plain_text, sanitize_important_links
+from app.services.telegram_mail_links import merge_mail_action_links, sanitize_important_links
 from app.services.telegram_mail_ui import topic_action_keyboard, topic_delete_keyboard
 from app.integrations.telegram_http import MiniAppOnlyProjection, is_missing_forum_topic_error
 
@@ -108,7 +109,7 @@ class MailTelegramProjection:
         # Never pass untrusted mail HTML to Telegram's parser. The card service
         # accepts parsed plain text only and escapes every dynamic value before
         # wrapping the fixed presentation chrome in Telegram-supported HTML.
-        card_body = mail.text_body or html_to_plain_text(mail.html_body)
+        card_body = prepare_email_body(mail.html_body, mail.text_body)
         text_fragments = build_safe_mail_card(subject=mail.subject, sender=mail.sender,
                                               received_at=mail.received_at, body_text=card_body,
                                               summary=mail.summary, category=mail.category,
@@ -123,11 +124,11 @@ class MailTelegramProjection:
         )
         text_card = text_fragments[0] if text_fragments else ""
         caption = caption_fragments[0] if caption_fragments else text_card[:1024]
-        # Action buttons may only come from the structured LLM result carried by
-        # ``IncomingMail.important_links``.  Never recover URLs from the mail
-        # body here: that path turns arbitrary provider content into Telegram
-        # actions and is intentionally retired for production projections.
-        action_links = _mail_important_links(mail)
+        # Action buttons come from two named sources: the structured LLM result
+        # on IncomingMail.important_links, and the unsubscribe link extracted
+        # from the body during ingestion.  General body URL harvesting stays
+        # retired: it turns arbitrary provider content into Telegram actions.
+        action_links = _mail_action_links(mail)
         results: list[Any] = []
         primary_message_kind = "text"
 
@@ -296,8 +297,8 @@ class MailTelegramProjection:
         # Prefer the freshly generated links on the mail value, then use the
         # persisted JSON row when a summary job was restored after a restart.
         # Neither source requires parsing the untrusted message body.
-        action_links = _mail_important_links(mail, analysis=analysis, row=email_row)
-        card_body = mail.text_body or html_to_plain_text(mail.html_body)
+        action_links = _mail_action_links(mail, analysis=analysis, row=email_row)
+        card_body = prepare_email_body(mail.html_body, mail.text_body)
         text_fragments = build_safe_mail_card(
             subject=mail.subject,
             sender=mail.sender,
@@ -365,7 +366,32 @@ class MailTelegramProjection:
         return result is True
 
 
-def _mail_important_links(
+def _mail_action_links(
+    mail: Any,
+    *,
+    analysis: Mapping[str, Any] | None = None,
+    row: Mapping[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Build the Telegram keyboard from the unsubscribe and LLM link sources.
+
+    Both sources are structured values; neither is recovered by harvesting URLs
+    from the message body.  The unsubscribe link is merged in first so the
+    five-button cap cannot evict it.
+    """
+
+    unsubscribe: list[Any] = []
+    value = _field(mail, "unsubscribe_links")
+    if value is not None:
+        unsubscribe.append(value)
+    if isinstance(analysis, Mapping) and analysis.get("unsubscribe_links") is not None:
+        unsubscribe.append(analysis.get("unsubscribe_links"))
+    if isinstance(row, Mapping) and row.get("unsubscribe_links_json") is not None:
+        unsubscribe.append(row.get("unsubscribe_links_json"))
+
+    return merge_mail_action_links(_first_links(unsubscribe), _llm_links(mail, analysis=analysis, row=row))
+
+
+def _llm_links(
     mail: Any,
     *,
     analysis: Mapping[str, Any] | None = None,
@@ -373,11 +399,9 @@ def _mail_important_links(
 ) -> list[dict[str, str]]:
     """Read only structured/persisted LLM links for Telegram keyboards.
 
-    ``IncomingMail`` gained ``important_links`` after the first v2 rollout;
-    keeping the row/analysis fallbacks here lets summary refresh work across a
-    rolling deployment while the durable column is being backfilled.  Deliberately
-    absent are ``text_body``/``html_body`` fallbacks: body URL extraction is no
-    longer a production action-link source.
+    IncomingMail gained important_links after the first v2 rollout; keeping the
+    row/analysis fallbacks here lets summary refresh work across a rolling
+    deployment while the durable column is being backfilled.
     """
 
     candidates: list[Any] = []
@@ -385,9 +409,9 @@ def _mail_important_links(
     if value is not None:
         candidates.append(value)
 
-    # ``urls`` is the pre-v2 structured LLM key.  It remains a compatibility
-    # source only when explicitly supplied by the analysis object; it is never
-    # inferred from message text.
+    # urls is the pre-v2 structured LLM key.  It remains a compatibility source
+    # only when explicitly supplied by the analysis object; it is never inferred
+    # from message text.
     if isinstance(analysis, Mapping):
         for key in ("important_links", "urls"):
             if key in analysis and analysis.get(key) is not None:
@@ -401,6 +425,12 @@ def _mail_important_links(
         ):
             if key in row and row.get(key) is not None:
                 candidates.append(row.get(key))
+
+    return _first_links(candidates)
+
+
+def _first_links(candidates: list[Any]) -> list[dict[str, str]]:
+    """Return the first candidate that sanitizes to at least one link."""
 
     for candidate in candidates:
         cleaned = sanitize_important_links(candidate)
