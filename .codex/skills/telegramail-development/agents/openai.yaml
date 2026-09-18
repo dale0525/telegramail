@@ -1,0 +1,4 @@
+interface:
+  display_name: "Telegramail Development"
+  short_description: "Develop, test, and safely deploy Telegramail v2"
+  default_prompt: "Use $telegramail-development for Telegramail development, testing, or authorized production deployment."
