@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS emails (
     llm_labeled_at INTEGER,
     llm_summary TEXT,
     llm_important_links_json TEXT NOT NULL DEFAULT '[]',
+    unsubscribe_links_json TEXT NOT NULL DEFAULT '[]',
     summary_status TEXT NOT NULL DEFAULT 'pending',
     summary_updated_at INTEGER,
     direction TEXT NOT NULL DEFAULT 'incoming' CHECK (direction IN ('incoming', 'outgoing')),
@@ -512,6 +513,7 @@ def _apply_schema_migrations(conn: sqlite3.Connection, now: int) -> None:
         "llm_labeled_at": "INTEGER",
         "llm_summary": "TEXT",
         "llm_important_links_json": "TEXT NOT NULL DEFAULT '[]'",
+        "unsubscribe_links_json": "TEXT NOT NULL DEFAULT '[]'",
         "summary_status": "TEXT NOT NULL DEFAULT 'pending'",
         "summary_updated_at": "INTEGER",
         "direction": "TEXT NOT NULL DEFAULT 'incoming'",
@@ -591,6 +593,10 @@ def _apply_schema_migrations(conn: sqlite3.Connection, now: int) -> None:
     conn.execute(
         """UPDATE emails SET llm_important_links_json = '[]'
            WHERE llm_important_links_json IS NULL OR trim(llm_important_links_json) = ''"""
+    )
+    conn.execute(
+        """UPDATE emails SET unsubscribe_links_json = '[]'
+           WHERE unsubscribe_links_json IS NULL OR trim(unsubscribe_links_json) = ''"""
     )
     _ensure_columns(conn, "draft_attachments", {
         "local_path": "TEXT",
@@ -777,6 +783,7 @@ def _upgrade_emails_epoch_if_needed(conn: sqlite3.Connection) -> bool:
                 llm_labeled_at INTEGER,
                 llm_summary TEXT,
                 llm_important_links_json TEXT NOT NULL DEFAULT '[]',
+                unsubscribe_links_json TEXT NOT NULL DEFAULT '[]',
                 summary_status TEXT NOT NULL DEFAULT 'pending',
                 summary_updated_at INTEGER,
                 direction TEXT NOT NULL DEFAULT 'incoming' CHECK (direction IN ('incoming', 'outgoing')),
@@ -786,8 +793,8 @@ def _upgrade_emails_epoch_if_needed(conn: sqlite3.Connection) -> bool:
                 UNIQUE(account_id, mailbox, uidvalidity, uid)
             )
         """)
-    conn.execute("""INSERT INTO emails__epoch_new(id, account_id, thread_id, message_id, mailbox, uid, uidvalidity, sender, recipient, cc, bcc, subject, email_date, body_text, body_html, delivered_to, in_reply_to, references_header, llm_category, llm_priority, llm_confidence, llm_labeled_at, llm_summary, llm_important_links_json, summary_status, summary_updated_at, direction, tombstoned_at, created_at, updated_at)
-                    SELECT id, account_id, thread_id, message_id, mailbox, uid, COALESCE(uidvalidity, ''), sender, recipient, cc, bcc, subject, email_date, body_text, body_html, delivered_to, in_reply_to, references_header, llm_category, llm_priority, llm_confidence, llm_labeled_at, llm_summary, COALESCE(llm_important_links_json, '[]'), COALESCE(summary_status, CASE WHEN llm_summary IS NOT NULL THEN 'completed' ELSE 'pending' END), summary_updated_at, direction, tombstoned_at, created_at, updated_at
+    conn.execute("""INSERT INTO emails__epoch_new(id, account_id, thread_id, message_id, mailbox, uid, uidvalidity, sender, recipient, cc, bcc, subject, email_date, body_text, body_html, delivered_to, in_reply_to, references_header, llm_category, llm_priority, llm_confidence, llm_labeled_at, llm_summary, llm_important_links_json, unsubscribe_links_json, summary_status, summary_updated_at, direction, tombstoned_at, created_at, updated_at)
+                    SELECT id, account_id, thread_id, message_id, mailbox, uid, COALESCE(uidvalidity, ''), sender, recipient, cc, bcc, subject, email_date, body_text, body_html, delivered_to, in_reply_to, references_header, llm_category, llm_priority, llm_confidence, llm_labeled_at, llm_summary, COALESCE(llm_important_links_json, '[]'), COALESCE(unsubscribe_links_json, '[]'), COALESCE(summary_status, CASE WHEN llm_summary IS NOT NULL THEN 'completed' ELSE 'pending' END), summary_updated_at, direction, tombstoned_at, created_at, updated_at
                     FROM emails""")
     conn.execute("DROP TABLE emails")
     conn.execute("ALTER TABLE emails__epoch_new RENAME TO emails")

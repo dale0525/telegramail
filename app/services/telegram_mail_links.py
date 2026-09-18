@@ -1,8 +1,11 @@
 """Deterministic, safe action-link handling for Telegram mail cards.
 
-Email HTML is untrusted input.  Production Telegram paths consume only the
-structured LLM link sanitizer below; the older body extractor remains solely
-for compatibility with offline callers and must not be used for projections.
+Two sources feed a Telegram keyboard.  The LLM summary supplies structured
+``important_links``, and this module derives an unsubscribe link directly from
+the message body.  Only the structured sanitizer may consume model output; the
+body extractor below is the single place where untrusted provider content is
+allowed to become a link, and it matches a fixed vocabulary before applying the
+same URL rules as every other link.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ MAX_ACTION_LINKS = 5
 MAX_CAPTION_LENGTH = 42
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]*>")
+_UNSUBSCRIBE_CAPTION = "退订"
 _UNSUBSCRIBE_TERMS = (
     "unsubscribe",
     "optout",
@@ -34,23 +38,8 @@ _UNSUBSCRIBE_TERMS = (
     "解除订阅",
     "解除訂閱",
 )
-_BROWSER_TERMS = (
-    "view in browser",
-    "view this email",
-    "read online",
-    "open in browser",
-    "在浏览器中查看",
-    "在瀏覽器中查看",
-    "网页版本",
-    "網頁版本",
-)
-_PREFERENCE_TERMS = (
-    "manage preferences",
-    "email preferences",
-    "subscription preferences",
-    "管理订阅",
-    "管理訂閱",
-)
+# URL characters that terminate a sentence rather than belong to the link.
+_TRAILING_PUNCTUATION = ".,);]>}"
 
 
 def sanitize_important_links(
@@ -90,7 +79,7 @@ def sanitize_important_links(
     # compatibility wrapping for adapters that return the decoded row/object.
     if isinstance(value, Mapping):
         wrapped = None
-        for key in ("important_links", "llm_important_links", "urls", "links"):
+        for key in ("important_links", "llm_important_links", "urls", "links", "unsubscribe_links"):
             if key in value:
                 wrapped = value.get(key)
                 break
@@ -116,109 +105,161 @@ def sanitize_important_links(
     return cleaned
 
 
-# Naming aliases keep integrations that call the value an LLM link list
-# source-compatible while all aliases retain the same body-free contract.
-sanitize_llm_links = sanitize_important_links
-sanitize_telegram_links = sanitize_important_links
-
-
-def extract_email_action_links(
-    html_body: str | None = None,
-    text_body: str | None = None,
+def extract_unsubscribe_links(
+    html_body: Any = None,
+    text_body: Any = None,
     *,
-    max_links: int = MAX_ACTION_LINKS,
+    max_links: int = 1,
 ) -> list[dict[str, str]]:
-    """Return high-value links for a Telegram inline keyboard.
+    """Return the unsubscribe link a message explicitly offers, if any.
 
-    Unsubscribe/manage-preference links are promoted first, followed by
-    browser-view links and other visible call-to-action anchors.  Empty/image
-    tracking anchors are ignored.  Plain-text URLs are used only as a fallback
-    for messages whose HTML does not expose anchor text.
+    A sender's unsubscribe affordance is the one link a recipient may always
+    need, and models routinely drop it as footer noise.  The HTML anchors are
+    consulted first; when they carry no match the plain-text part is scanned for
+    a line naming an unsubscribe action, which covers senders that ship a
+    text-only rendering.
+
+    Only ``_UNSUBSCRIBE_TERMS`` may select a link, hidden anchors are skipped,
+    and the result passes the same HTTP(S)/credential rules as every other
+    keyboard link.  An unmatched message yields nothing rather than a guess.
     """
 
-    limit = min(max(int(max_links), 0), MAX_ACTION_LINKS)
+    try:
+        limit = min(max(int(max_links), 0), MAX_ACTION_LINKS)
+    except (TypeError, ValueError):
+        limit = MAX_ACTION_LINKS
     if limit == 0:
         return []
 
-    candidates: list[tuple[int, int, str, str]] = []
+    urls = _unsubscribe_urls_from_html(html_body)
+    if not urls:
+        urls = _unsubscribe_urls_from_text(text_body)
+
+    links: list[dict[str, str]] = []
     seen: set[str] = set()
-    order = 0
-
-    def add(url: Any, label: Any, *, priority: int, fallback: str = "打开链接") -> None:
-        nonlocal order
-        normalized = _safe_url(url)
-        if not normalized or normalized in seen:
-            return
-        text = _collapse(label)
-        combined = f"{text} {normalized}".casefold()
-        if _is_unsubscribe(combined):
-            caption = "退订"
-            priority = min(priority, 0)
-        elif _is_browser_link(combined):
-            caption = "在浏览器中查看"
-            priority = min(priority, 1)
-        elif _is_preference_link(combined):
-            caption = "管理订阅"
-            priority = min(priority, 1)
-        else:
-            caption = _truncate(text or fallback)
-        seen.add(normalized)
-        candidates.append((priority, order, caption, normalized))
-        order += 1
-
-    if html_body and str(html_body).strip():
-        try:
-            soup = BeautifulSoup(str(html_body), "html.parser")
-            for link in soup.find_all("a", href=True):
-                if _is_hidden(link):
-                    continue
-                label = link.get_text(" ", strip=True)
-                if not label:
-                    label = str(link.get("aria-label") or link.get("title") or "").strip()
-                if not label:
-                    image = link.find("img")
-                    label = image.get("alt", "") if isinstance(image, Tag) else ""
-                href = str(link.get("href") or "").strip()
-                # Anchors with no visible label are commonly tracking pixels.
-                # Keep them only when the URL itself clearly carries an action.
-                if not label and not _is_action_url(href):
-                    continue
-                add(href, label, priority=2)
-        except Exception:
-            # A malformed provider body must not prevent mail delivery.
-            pass
-
-    # If HTML had no useful links, recover explicit URLs from the parsed text.
-    # This also catches html2text output from HTML-only messages.
-    if len(candidates) < limit and text_body:
-        for raw in _URL_RE.findall(str(text_body)):
-            add(raw.rstrip(".,);]}>"), "", priority=3)
-            if len(candidates) >= limit:
-                break
-
-    candidates.sort(key=lambda item: (item[0], item[1]))
-    return [
-        {"caption": caption, "link": url}
-        for _, _, caption, url in candidates[:limit]
-    ]
+    for url in urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        links.append({"caption": _UNSUBSCRIBE_CAPTION, "link": url})
+        if len(links) >= limit:
+            break
+    return links
 
 
-def html_to_plain_text(html_body: str | None) -> str:
-    """Best-effort visible text for HTML-only messages and card fallbacks."""
+def merge_mail_action_links(
+    unsubscribe: Any,
+    llm: Any,
+    *,
+    max_links: int = MAX_ACTION_LINKS,
+) -> list[dict[str, str]]:
+    """Combine body-derived and model-derived links into one keyboard.
 
-    if not html_body or not str(html_body).strip():
-        return ""
+    The unsubscribe link is placed first so a five-button cap cannot evict it;
+    the model's own order is preserved for everything after it.  Both inputs go
+    through the structured sanitizer, so a malformed or hostile value is dropped
+    instead of reaching Telegram.
+    """
+
+    try:
+        limit = min(max(int(max_links), 0), MAX_ACTION_LINKS)
+    except (TypeError, ValueError):
+        limit = MAX_ACTION_LINKS
+    if limit == 0:
+        return []
+
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for source in (unsubscribe, llm):
+        for link in sanitize_important_links(source, max_links=limit):
+            if link["link"] in seen:
+                continue
+            seen.add(link["link"])
+            merged.append(link)
+            if len(merged) >= limit:
+                return merged
+    return merged
+
+
+def _unsubscribe_urls_from_html(html_body: Any) -> list[str]:
+    if html_body is None or not str(html_body).strip():
+        return []
     try:
         soup = BeautifulSoup(str(html_body), "html.parser")
         for tag in soup.find_all(("script", "style", "noscript")):
             tag.decompose()
-        return "\n".join(
-            line.strip()
-            for line in soup.get_text("\n", strip=True).splitlines()
-            if line.strip()
-        )
+        urls: list[str] = []
+        for anchor in soup.find_all("a", href=True):
+            if _is_hidden(anchor):
+                continue
+            href = str(anchor.get("href") or "").strip()
+            label = anchor.get_text(" ", strip=True)
+            if not _is_unsubscribe(f"{label.casefold()} {href.casefold()}"):
+                continue
+            normalized = _safe_url(href)
+            if normalized:
+                urls.append(normalized)
+        return urls
     except Exception:
-        return ""
+        # A malformed provider body must never break mail processing.
+        return []
+
+
+def _unsubscribe_urls_from_text(text_body: Any) -> list[str]:
+    if text_body is None or not str(text_body).strip():
+        return []
+    lines = str(text_body).splitlines()
+    for index, line in enumerate(lines):
+        folded = line.casefold()
+        if not _is_unsubscribe(folded):
+            continue
+        matches = list(_URL_RE.finditer(line))
+        if matches:
+            for match in _ordered_matches(folded, matches):
+                url = _safe_url(_strip_trailing(match.group(0)))
+                if url:
+                    return [url]
+            continue
+        # Senders commonly put the URL on the line after the sentence.
+        for following in lines[index + 1:]:
+            candidate = _strip_url_decoration(following)
+            if not candidate:
+                break
+            if candidate.casefold().startswith("http"):
+                match = _URL_RE.match(candidate)
+                if match:
+                    url = _safe_url(_strip_trailing(match.group(0)))
+                    if url:
+                        return [url]
+            break
+    return []
+
+
+def _ordered_matches(folded: str, matches: list[Any]) -> list[Any]:
+    """Order URL matches so the one after the term is tried first."""
+
+    positions = [folded.find(term) for term in _UNSUBSCRIBE_TERMS if term in folded]
+    term_index = min(positions) if positions else -1
+    after = [match for match in matches if match.start() >= term_index]
+    before = [match for match in matches if match.start() < term_index]
+    return after + before
+
+
+def _strip_trailing(url: str) -> str:
+    return url.rstrip(_TRAILING_PUNCTUATION)
+
+
+def _strip_url_decoration(line: str) -> str:
+    """Remove plain-text list markers and angle brackets around a URL line.
+
+    A bare URL is only one of the ways senders write one; "- https://..." and
+    "<https://...>" are just as common in a text-only rendering.
+    """
+
+    value = str(line or "").strip().lstrip("-*").strip()
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1].strip()
+    return value
 
 
 def _clean_caption(value: Any) -> str:
@@ -234,7 +275,10 @@ def _safe_url(value: Any) -> str | None:
     url = str(value or "").strip()
     if len(url) > 4096:
         return None
-    if any(ord(character) < 0x20 for character in url):
+    # Telegram rejects a keyboard button whose URL still contains whitespace or
+    # control characters, and a rejected keyboard fails the whole delivery.
+    # Such a URL is malformed rather than merely unusual, so drop it instead.
+    if any(character.isspace() or ord(character) < 0x20 for character in url):
         return None
     try:
         parsed = urlsplit(url)
@@ -264,26 +308,15 @@ def _is_unsubscribe(value: str) -> bool:
     return any(term in value for term in _UNSUBSCRIBE_TERMS)
 
 
-def _is_browser_link(value: str) -> bool:
-    return any(term in value for term in _BROWSER_TERMS)
-
-
-def _is_preference_link(value: str) -> bool:
-    return any(term in value for term in _PREFERENCE_TERMS)
-
-
-def _is_action_url(value: str) -> bool:
-    combined = str(value or "").casefold()
-    return _is_unsubscribe(combined) or _is_browser_link(combined) or _is_preference_link(combined)
-
-
 def _is_hidden(tag: Tag) -> bool:
-    if tag.get("hidden") is not None or str(tag.get("aria-hidden", "")).casefold() == "true":
-        return True
-    for ancestor in tag.parents:
-        if not isinstance(ancestor, Tag):
+    # The element itself counts as well as its ancestors: a link the reader
+    # cannot see must never become a visible button.
+    for node in (tag, *tag.parents):
+        if not isinstance(node, Tag):
             continue
-        style = str(ancestor.get("style", "")).replace(" ", "").casefold()
+        if node.get("hidden") is not None or str(node.get("aria-hidden", "")).casefold() == "true":
+            return True
+        style = str(node.get("style", "")).replace(" ", "").casefold()
         if "display:none" in style or "visibility:hidden" in style:
             return True
     return False
@@ -291,9 +324,7 @@ def _is_hidden(tag: Tag) -> bool:
 
 __all__ = [
     "MAX_ACTION_LINKS",
-    "extract_email_action_links",
-    "html_to_plain_text",
+    "extract_unsubscribe_links",
+    "merge_mail_action_links",
     "sanitize_important_links",
-    "sanitize_llm_links",
-    "sanitize_telegram_links",
 ]

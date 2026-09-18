@@ -31,11 +31,14 @@ _MAX_INLINE_ASSETS_PER_EMAIL = 32
 _CONTENT_ID_RE = re.compile(r"^[^\x00-\x20\x7f<>]{1,512}$")
 
 
-def _decode_row_links(row: Any) -> list[dict[str, str]]:
-    """Decode the durable LLM link projection for worker value objects."""
+def _decode_row_links(row: Any, *keys: str, max_links: int | None = None) -> list[dict[str, str]]:
+    """Decode one durable link projection for worker value objects.
+
+    The keys are tried in order; the first present, non-null value wins.
+    """
 
     value: Any = None
-    for key in ("important_links", "llm_important_links_json", "important_links_json"):
+    for key in keys:
         try:
             value = row[key]
         except (KeyError, IndexError):
@@ -47,7 +50,11 @@ def _decode_row_links(row: Any) -> list[dict[str, str]]:
     try:
         from app.email_utils.llm import sanitize_important_links
 
-        return sanitize_important_links(value)
+        return (
+            sanitize_important_links(value)
+            if max_links is None
+            else sanitize_important_links(value, max_links=max_links)
+        )
     except Exception:
         try:
             parsed = json.loads(str(value))
@@ -206,7 +213,8 @@ class V2MailRepositoryAdapter:
             uidvalidity=mail.uidvalidity,
             message_id=mail.message_id, sender=mail.sender, recipient=", ".join(mail.to), cc=", ".join(mail.cc), subject=mail.subject, email_date=mail.received_at,
             body_text=mail.text_body, body_html=mail.html_body, in_reply_to=mail.in_reply_to, references_header=" ".join(mail.references),
-            important_links=getattr(mail, "important_links", ()))
+            important_links=getattr(mail, "important_links", ()),
+            unsubscribe_links=getattr(mail, "unsubscribe_links", ()))
         email_id = int(row["id"])
         self._email_ids[key] = email_id
         # Inline resources must also be persisted when the message already
@@ -391,6 +399,19 @@ class V2MailRepositoryAdapter:
     def upsert_contact(self, account_id: Any, address: str) -> None:
         self.repository.upsert_contact(int(account_id), address)
 
+    def update_unsubscribe_links(self, mail: IncomingMail) -> bool:
+        """Persist the body-derived unsubscribe projection after ingestion."""
+
+        email_id = getattr(mail, "email_id", None) or self._email_ids.get(self._email_key(mail))
+        if email_id is None:
+            return False
+        links = getattr(mail, "unsubscribe_links", ())
+        if not links:
+            return False
+        return self.repository.update_email_unsubscribe_links(
+            int(email_id), links
+        ) is not None
+
     def update_incoming_labels(self, mail: IncomingMail, analysis: dict[str, Any]) -> bool:
         email_id = getattr(mail, "email_id", None) or self._email_ids.get(self._email_key(mail))
         if email_id is None:
@@ -402,7 +423,8 @@ class V2MailRepositoryAdapter:
                                                         summary=analysis.get("summary"),
                                                         important_links=analysis.get(
                                                             "important_links", analysis.get("urls", ())
-                                                        )) is not None
+                                                        ),
+                                                        unsubscribe_links=analysis.get("unsubscribe_links", ())) is not None
 
     # Durable LLM summary queue -----------------------------------------
     #
@@ -510,7 +532,10 @@ class V2MailRepositoryAdapter:
             summary=row["llm_summary"], category=row["llm_category"],
             priority=row["llm_priority"], in_reply_to=row["in_reply_to"],
             references=tuple((row["references_header"] or "").split()),
-            important_links=_decode_row_links(row),
+            important_links=_decode_row_links(
+                row, "important_links", "llm_important_links_json", "important_links_json"
+            ),
+            unsubscribe_links=_decode_row_links(row, "unsubscribe_links_json", max_links=1),
             attachments=self._load_email_attachments(email_id),
             email_id=email_id,
         )

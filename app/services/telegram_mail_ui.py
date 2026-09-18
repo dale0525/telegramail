@@ -9,7 +9,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.integrations.telegram_http import TelegramApiError
 from app.services.telegram_html import sanitize_telegram_limited_html, telegram_limited_html_to_text
-from app.services.telegram_mail_links import sanitize_important_links
+from app.services.telegram_mail_links import merge_mail_action_links, sanitize_important_links
 
 
 PAGE_SIZE = 5
@@ -23,10 +23,10 @@ def topic_delete_keyboard(
 ) -> dict[str, Any]:
     """Build Topic-local controls, optionally including extracted mail links.
 
-    The delete button remains the first row for backwards compatibility.  URL
-    buttons are deliberately supplied as data rather than interpolated into
-    Telegram HTML, so an untrusted email can never become markup or callback
-    data.
+    The delete button remains the first row for backwards compatibility.  Link
+    captions and URLs reach the Bot API as keyboard data, never as Telegram HTML
+    and never as callback data, so untrusted mail content cannot become markup
+    or drive a callback.
     """
 
     rows: list[list[dict[str, Any]]] = [[{
@@ -641,7 +641,7 @@ class TelegramMailBotUi:
                     message_id,
                     reply_markup=topic_delete_keyboard(
                         thread_id,
-                        action_links=thread.get("llm_important_links_json"),
+                        action_links=_target_important_links(thread),
                     ),
                 )
             else:
@@ -952,20 +952,24 @@ def _one_line(value: Any, fallback: str) -> str:
 
 
 def _target_important_links(target: Mapping[str, Any]) -> list[dict[str, str]]:
-    """Return persisted LLM links for a historical delivery part.
+    """Return persisted action links for a historical delivery part.
 
-    Historical backfill targets may expose either a decoded ``important_links``
-    list or the raw JSON column while repositories roll forward.  The old
-    ``body_text``/``body_html`` extraction path is intentionally not consulted.
+    Historical backfill targets may expose either decoded lists or the raw JSON
+    columns while repositories roll forward.  The body-derived unsubscribe
+    projection is merged in first; the old body_text/body_html extraction path
+    is intentionally not consulted.
     """
 
+    unsubscribe = sanitize_important_links(target.get("unsubscribe_links_json"), max_links=1)
+    llm: list[dict[str, str]] = []
     for key in ("important_links", "llm_important_links_json", "important_links_json"):
         if key not in target or target.get(key) is None:
             continue
         cleaned = sanitize_important_links(target.get(key))
         if cleaned:
-            return cleaned
-    return []
+            llm = cleaned
+            break
+    return merge_mail_action_links(unsubscribe, llm)
 
 
 def _mini_app_link(base_url: str, **params: Any) -> str:

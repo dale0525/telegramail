@@ -23,6 +23,7 @@ from app.integrations.telegram_http import is_missing_forum_topic_error
 from app.integrations.mail.types import DeleteOperation, FetchedMessages, IncomingMail, ProjectionJob, SendOperation, SummaryJob
 from app.services.account_verification import classify_connection_error
 from app.services.telegram_mail_card import has_projectable_mail_content
+from app.services.telegram_mail_links import extract_unsubscribe_links
 
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,21 @@ def _safe_important_links(value: Any) -> list[dict[str, str]]:
     from app.email_utils.llm import sanitize_important_links
 
     return sanitize_important_links(value)
+
+
+def _mail_unsubscribe_links(mail: IncomingMail) -> list[dict[str, str]]:
+    """Derive the unsubscribe link from the body without failing the job.
+
+    Extraction reads untrusted provider content, so a malformed body must never
+    prevent a summary from being persisted.  The result is a pure function of the
+    body; a message whose body yields no link reports none rather than echoing a
+    value this call did not verify.
+    """
+
+    try:
+        return extract_unsubscribe_links(mail.html_body, mail.text_body)
+    except Exception:
+        return []
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -404,6 +420,7 @@ class MailSummaryWorker:
                             if row.get("llm_important_links_json") is not None
                             else row.get("urls")
                         ),
+                        unsubscribe_links=_safe_important_links(row.get("unsubscribe_links_json")),
                         email_id=int(email_id),
                     )
                     result = {**result, "mail": mail, "id": int(email_id)}
@@ -428,12 +445,18 @@ class MailSummaryWorker:
         return None
 
     async def _summarize(self, mail: IncomingMail, settings: Any) -> dict[str, Any] | None:
+        # Summarize the body a reader would see.  A sender that ships a stub
+        # text part alongside a real HTML part must not produce a summary of
+        # the stub.
+        from app.email_utils.mail_body import prepare_email_body
+
+        body = prepare_email_body(mail.html_body, mail.text_body)
         callback = self.summarizer
         if callback is None:
             from app.email_utils.llm import summarize_email
             return await asyncio.to_thread(
                 summarize_email,
-                mail.text_body,
+                body,
                 llm_settings=settings,
                 stream=True,
                 strict_stream=True,
@@ -444,8 +467,8 @@ class MailSummaryWorker:
             first_name = next(iter(inspect.signature(callback).parameters), "").lower()
         except (TypeError, ValueError):
             first_name = ""
-        first_value = mail if first_name in {"mail", "email", "message", "incoming"} else mail.text_body
-        second_value = mail.text_body if first_value is mail else mail
+        first_value = mail if first_name in {"mail", "email", "message", "incoming"} else body
+        second_value = body if first_value is mail else mail
         attempts = (
             lambda: callback(first_value, llm_settings=settings, stream=True),
             lambda: callback(first_value, settings),
@@ -486,10 +509,13 @@ class MailSummaryWorker:
                     priority=str(analysis.get("priority") or "medium"),
                     confidence=analysis.get("category_confidence"), summary=analysis.get("summary"),
                     important_links=analysis.get("important_links", analysis.get("urls", ())),
+                    unsubscribe_links=analysis.get("unsubscribe_links", ()),
                 )
                 try:
                     value = label_method(**label_kwargs)
                 except TypeError:
+                    # An older store may not know the body-derived projection.
+                    label_kwargs.pop("unsubscribe_links", None)
                     label_kwargs.pop("important_links", None)
                     value = label_method(**label_kwargs)
                 await _maybe_await(value)
@@ -610,6 +636,11 @@ class MailSummaryWorker:
                 # Disabled/missing/short-content jobs are intentionally left
                 # as ``skipped``.  The UI maps this internal state to “待生成”
                 # without claiming a summary was generated.
+                #
+                # This threshold deliberately measures the raw plain-text part,
+                # not the body ``_summarize`` would have used: widening it would
+                # make previously skipped mail newly summarizable, which is a
+                # product change rather than a defect fix.
                 job.state, job.error = "skipped", None
                 await self._complete_remote(job, False, status="skipped")
                 return job
@@ -620,8 +651,13 @@ class MailSummaryWorker:
                     else analysis.get("urls", getattr(job.mail, "important_links", ()))
                 )
                 cleaned_links = _safe_important_links(raw_links)
+                unsubscribe_links = _mail_unsubscribe_links(job.mail)
                 analysis = dict(analysis)
                 analysis["important_links"] = cleaned_links
+                # Only a real extraction may reach the durable row; an empty
+                # result must not erase what ingestion already persisted.
+                if unsubscribe_links:
+                    analysis["unsubscribe_links"] = unsubscribe_links
                 # Keep old callback/repository consumers source-compatible while
                 # making the canonical value explicit for new adapters.
                 analysis["urls"] = list(cleaned_links)
@@ -633,6 +669,7 @@ class MailSummaryWorker:
                     category=str(analysis.get("category") or "") or None,
                     priority=str(analysis.get("priority") or "") or None,
                     important_links=cleaned_links,
+                    unsubscribe_links=unsubscribe_links or getattr(job.mail, "unsubscribe_links", ()),
                 )
                 await self._notify(job, analysis)
             job.state, job.error = "completed", None
@@ -701,6 +738,17 @@ class MailIngestionWorker:
                 if not inserted:
                     await _advance_uid(self.store, account_id, mailbox, batch.uidvalidity, mail.uid)
                     continue
+                # The unsubscribe affordance is derived from the body, so it is
+                # captured at ingestion rather than after an optional LLM run:
+                # a disabled or skipped summary must not hide it.
+                unsubscribe_links = _mail_unsubscribe_links(mail)
+                if unsubscribe_links:
+                    mail = replace(mail, unsubscribe_links=unsubscribe_links)
+                    method = getattr(self.store, "update_unsubscribe_links", None)
+                    if callable(method):
+                        # Optional hook: a store that cannot persist the
+                        # projection must not fail mail receipt.
+                        await _maybe_await(method(mail))
                 # LLM work is deliberately detached from IMAP receipt.  A
                 # supplied summary worker owns retries and persistence; the
                 # synchronous path remains for backwards-compatible callers
@@ -782,14 +830,17 @@ class MailIngestionWorker:
                     else analysis.get("urls", getattr(mail, "important_links", ()))
                 )
                 cleaned_links = _safe_important_links(raw_links)
+                unsubscribe_links = _mail_unsubscribe_links(mail)
                 analysis = dict(analysis)
                 analysis["important_links"] = cleaned_links
                 analysis["urls"] = list(cleaned_links)
+                analysis["unsubscribe_links"] = unsubscribe_links
                 await _call(self.store, ("update_incoming_labels", "update_email_labels"), mail, analysis)
                 return replace(mail, summary=str(analysis.get("summary") or "") or None,
                                category=str(analysis.get("category") or "") or None,
                                priority=str(analysis.get("priority") or "") or None,
-                               important_links=cleaned_links)
+                               important_links=cleaned_links,
+                               unsubscribe_links=unsubscribe_links)
         except Exception:
             # Do not include message content or model output in logs/errors.
             pass
