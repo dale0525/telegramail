@@ -66,7 +66,6 @@ def _normalize_url_item(item: Any) -> dict[str, str] | None:
 
 def sanitize_important_links(
     value: Any,
-    extra_links: Any = None,
     *,
     max_links: int = _MAX_IMPORTANT_LINKS,
 ) -> list[dict[str, str]]:
@@ -112,19 +111,6 @@ def sanitize_important_links(
         if len(cleaned) >= limit:
             break
 
-    # Deterministic links (for example unsubscribe URLs) take precedence over
-    # model-picked links while preserving the existing five-link cap.
-    extras: list[dict[str, str]] = []
-    for item in candidates(extra_links)[:_MAX_IMPORTANT_LINK_CANDIDATES]:
-        normalized = _normalize_url_item(item)
-        if not normalized or normalized["link"] in seen_links:
-            continue
-        seen_links.add(normalized["link"])
-        extras.append(normalized)
-        if len(extras) >= limit:
-            break
-    if extras:
-        return cleaned[: max(0, limit - len(extras))] + extras[:limit]
     return cleaned[:limit]
 
 def _locale_to_language_name(locale_code: str) -> str:
@@ -241,7 +227,6 @@ def _setting(settings: Mapping[str, Any] | Any | None, *names: str, default: Any
 
 def summarize_email(
     email_body: str,
-    extra_urls: list[dict] | None = None,
     *,
     llm_settings: Mapping[str, Any] | Any | None = None,
     client: Any = None,
@@ -455,7 +440,7 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                     if str(name).strip()
                 ][:3]
 
-                cleaned_links = sanitize_important_links(raw_links, extra_urls)
+                cleaned_links = sanitize_important_links(raw_links)
                 real_result["important_links"] = cleaned_links
                 # Keep the legacy key for callers that still read ``urls``.
                 real_result["urls"] = list(cleaned_links)
@@ -473,7 +458,7 @@ Do not hallucinate. If information is missing, use null / [] and keep text conci
                         if real_result.get("important_links") is not None
                         else real_result.get("urls", [])
                     )
-                    cleaned_links = sanitize_important_links(raw_links, extra_urls)
+                    cleaned_links = sanitize_important_links(raw_links)
                     return {
                         "summary": real_result.get("summary", ""),
                         "priority": "medium",

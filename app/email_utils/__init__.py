@@ -1,8 +1,6 @@
 __all__ = [
     "decode_email_subject",
     "decode_email_address",
-    "clean_html_content",
-    "extract_unsubscribe_urls",
     "V2IMAPClient",
     "ConnectionFactory",
     "COMMON_PROVIDERS",
@@ -13,7 +11,7 @@ __all__ = [
 
 def __getattr__(name: str):
     """Keep legacy package exports lazy so v2 IMAP imports stay persistence-free."""
-    if name in {"decode_email_subject", "decode_email_address", "clean_html_content", "extract_unsubscribe_urls"}:
+    if name in {"decode_email_subject", "decode_email_address"}:
         from app.email_utils import text as text_module
         return getattr(text_module, name)
     if name == "V2IMAPClient":
