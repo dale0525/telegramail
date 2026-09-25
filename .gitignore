@@ -181,3 +181,6 @@ cython_debug/
 
 # Mini App dependencies are reproducible from web/package-lock.json.
 web/node_modules/
+
+# Local agent skills and notes; not part of the published repository.
+.agents/
