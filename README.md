@@ -66,7 +66,7 @@ WEB_BASE_URL=https://mail.example.com
 CLOUDFLARE_TUNNEL_TOKEN=eyJ...
 ```
 
-`WEB_BASE_URL` is the full HTTPS origin you will publish through Cloudflare. Do not include a path or trailing `/`. Follow the comments in `.env` to set `SETUP_CODE`, `SESSION_SECRET`, `TELEGRAM_WEBHOOK_SECRET`, and `MASTER_KEY`; never commit the real `.env` file.
+`WEB_BASE_URL` is the full HTTPS origin you will publish through Cloudflare. Do not include a path or trailing `/`. Follow the comments in `.env` to set `SETUP_CODE`, `SESSION_SECRET`, `TELEGRAM_WEBHOOK_SECRET`, and `MASTER_KEY`.
 
 ### 4. Initialize and start
 
@@ -106,6 +106,23 @@ docker compose up -d
 ```
 
 Upgrading from the TDLib-based v1 release? Read the [v1 to v2 migration guide](./docs/migration-v1-to-v2.md).
+
+## Development
+
+The Python API, workers, and tests run through [Pixi](https://pixi.sh/); the Mini App uses npm. Configure `.env` from `.env.example` before starting the API.
+
+```bash
+pixi install
+pixi run test      # Python unittest suite
+pixi run i18n      # regenerate translation keys from the source tree
+pixi run dev       # start the API on http://localhost:8080
+
+cd web
+npm ci
+npm test           # Vitest
+npm run check      # TypeScript
+npm run build      # writes web/dist, which the API serves
+```
 
 ## License
 

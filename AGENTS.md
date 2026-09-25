@@ -3,7 +3,7 @@
 ## 适用范围
 
 - `app/`、`scripts/`、`tests/` 和 `web/src/` 是 Telegramail v2 的主要源码与测试目录。
-- `web/dist/` 是构建产物，不直接编辑。
+- `web/dist/` 是构建产物，不直接编辑；Mini App 改动需重新构建才会被后端提供，构建与测试命令见 `README.md` 的 Development 章节。
 - `.env`、`data/`（含数据库与各类附件）和生产 Compose volumes 属于运行时状态，不得进入发布包或被常规修复覆盖。
 
 ## 修复与发布

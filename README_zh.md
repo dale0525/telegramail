@@ -66,7 +66,7 @@ WEB_BASE_URL=https://mail.example.com
 CLOUDFLARE_TUNNEL_TOKEN=eyJ...
 ```
 
-`WEB_BASE_URL` 是稍后要在 Cloudflare 中发布的完整 HTTPS 地址，不要带路径或结尾 `/`。继续按照 `.env` 内的注释填写 `SETUP_CODE`、`SESSION_SECRET`、`TELEGRAM_WEBHOOK_SECRET` 和 `MASTER_KEY`；不要提交真实的 `.env`。
+`WEB_BASE_URL` 是稍后要在 Cloudflare 中发布的完整 HTTPS 地址，不要带路径或结尾 `/`。继续按照 `.env` 内的注释填写 `SETUP_CODE`、`SESSION_SECRET`、`TELEGRAM_WEBHOOK_SECRET` 和 `MASTER_KEY`。
 
 ### 4. 初始化并启动
 
@@ -106,6 +106,23 @@ docker compose up -d
 ```
 
 从使用 TDLib 的 v1 版本升级？请阅读 [v1 到 v2 迁移指南](./docs/migration-v1-to-v2.zh.md)。
+
+## 开发与测试
+
+Python API、Worker 与测试通过 [Pixi](https://pixi.sh/) 运行，Mini App 使用 npm。启动 API 前请先按 `.env.example` 配置 `.env`。
+
+```bash
+pixi install
+pixi run test      # Python unittest 测试套件
+pixi run i18n      # 从源码重新生成翻译键
+pixi run dev       # 在本机 8080 端口启动 API
+
+cd web
+npm ci
+npm test           # Vitest
+npm run check      # TypeScript
+npm run build      # 生成 web/dist，由 API 提供
+```
 
 ## 许可证
 
