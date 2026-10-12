@@ -18,12 +18,14 @@
     "vite": "8.2.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.3.2",
     "@types/markdown-it": "^14.1.2",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "jsdom": "26.1.0",
+    "tailwindcss": "^4.3.3",
     "vitest": "4.1.10"
   }
 }

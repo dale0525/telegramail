@@ -518,17 +518,32 @@ export function replaceTrailingSignature(body: string, oldSignature: string, new
 const formatBytes = (size: number) =>
   size >= 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(1)} MiB` : `${Math.ceil(size / 1024)} KiB`;
 
+/* Shared utility strings. The visual language (grouped inset cards, hairline
+   strokes, pill controls) comes from the Stitch design system
+   "Telegram Mini App Email Workspace". */
+const cardClass =
+  "rounded-xl border border-outline-variant/60 bg-surface-container-lowest shadow-[0_1px_3px_rgba(0,0,0,0.04),0_4px_12px_rgba(0,0,0,0.02)]";
+const primaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-primary-container px-4 text-sm font-semibold text-on-primary-container transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100";
+const secondaryButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-outline-variant bg-surface-container-lowest px-4 text-sm font-semibold text-on-surface-variant transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100";
+const dangerButtonClass =
+  "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-error/40 bg-error-container px-4 text-sm font-semibold text-on-error-container transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100";
+const textButtonClass =
+  "inline-flex min-h-9 items-center gap-1 rounded-lg px-2 text-sm font-semibold text-primary-container transition active:bg-primary-container/10 disabled:cursor-not-allowed disabled:opacity-50";
+const fieldLabelClass = "grid gap-1.5 text-sm font-semibold text-on-surface";
+const inputClass =
+  "min-h-11 w-full rounded-xl border border-outline-variant bg-surface-container-lowest px-3 text-sm font-normal text-on-surface outline-none transition placeholder:text-outline focus:border-primary-container";
+const sectionLabelClass =
+  "text-[11px] font-semibold tracking-[0.06em] text-on-surface-variant uppercase";
+
 function useTelegramTheme() {
   useEffect(() => {
     const app = window.Telegram?.WebApp;
     const apply = () => {
+      // The Mini App palette is a fixed design system; Telegram only selects
+      // the light or dark variant, which the stylesheet keys off data-theme.
       document.documentElement.dataset.theme = app?.colorScheme ?? "light";
-      Object.entries(app?.themeParams ?? {}).forEach(([name, value]) =>
-        document.documentElement.style.setProperty(
-          `--tg-${name.replace(/_/g, "-")}`,
-          value,
-        ),
-      );
     };
     app?.ready();
     app?.expand();
@@ -549,16 +564,27 @@ function Toast({
     return () => clearTimeout(timer);
   }, [message, onClose]);
   return message ? (
-    <div className="toast" role="status">
-      {message}
-      <button aria-label="关闭提示" onClick={onClose}>
+    <div
+      className="fixed right-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] left-3 z-30 mx-auto flex max-w-[480px] items-center gap-2 rounded-xl bg-inverse-surface px-3.5 py-3 text-sm text-inverse-on-surface shadow-[0_10px_28px_rgba(0,0,0,0.25)] sm:left-auto sm:mx-0 sm:w-auto sm:max-w-[min(28rem,calc(100%-1.5rem))]"
+      role="status"
+    >
+      <span className="flex-1">{message}</span>
+      <button
+        className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-lg leading-none text-inverse-on-surface/80 transition active:bg-inverse-on-surface/15"
+        aria-label="关闭提示"
+        onClick={onClose}
+      >
         ×
       </button>
     </div>
   ) : null;
 }
 function Loading() {
-  return <div className="loading" aria-label="加载中" />;
+  return (
+    <div className="flex justify-center py-6" role="status" aria-label="加载中">
+      <span className="size-6 animate-spin rounded-full border-[3px] border-primary-container/25 border-t-primary-container" />
+    </div>
+  );
 }
 
 const focusableSelector = [
@@ -713,13 +739,22 @@ export function TokenInput({
       onChange(values.slice(0, -1));
   };
   return (
-    <div className="field token-field">
-      <label htmlFor={inputId}>{label}</label>
-      <div className="tokens" onClick={() => input.current?.focus()}>
+    <div className="relative z-20 grid gap-1.5">
+      <label className="text-sm font-semibold text-on-surface" htmlFor={inputId}>
+        {label}
+      </label>
+      <div
+        className="flex min-h-11 flex-wrap items-center gap-1.5 rounded-xl border border-outline-variant bg-surface-container-lowest p-1.5"
+        onClick={() => input.current?.focus()}
+      >
         {values.map((email) => (
-          <span className="token" key={email}>
-            {email}
+          <span
+            className="inline-flex max-w-full items-center gap-0.5 rounded-lg bg-primary-fixed py-1 pr-1 pl-2.5 text-xs font-medium text-on-primary-fixed-variant"
+            key={email}
+          >
+            <span className="break-all">{email}</span>
             <button
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-base leading-none transition active:bg-primary-container/15"
               type="button"
               aria-label={`移除 ${email}`}
               onClick={() =>
@@ -731,6 +766,7 @@ export function TokenInput({
           </span>
         ))}
         <input
+          className="min-h-9 min-w-28 flex-1 border-0 bg-transparent px-1.5 text-sm text-on-surface outline-none placeholder:text-outline"
           ref={input}
           value={draft}
           disabled={disabled}
@@ -748,14 +784,20 @@ export function TokenInput({
         />
       </div>
       {error && (
-        <p id={`${label}-error`} className="inline-error">
+        <p id={`${label}-error`} className="m-0 text-xs font-medium text-error" role="alert">
           {error}
         </p>
       )}
       {matches.length > 0 && (
-        <ul id={listboxId} className="suggestions" role="listbox" aria-label="联系人建议">
+        <ul
+          id={listboxId}
+          className={`absolute top-full right-0 left-0 z-30 mt-1 max-h-64 list-none overflow-auto rounded-xl border border-outline-variant bg-surface-container-lowest p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.16)]`}
+          role="listbox"
+          aria-label="联系人建议"
+        >
           {matches.map((contact, index) => (
             <li
+              className="flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-2 text-sm aria-selected:bg-primary-fixed"
               id={`${listboxId}-${index}`}
               key={contact.email}
               role="option"
@@ -765,7 +807,8 @@ export function TokenInput({
                 add(contact.email);
               }}
             >
-              <strong>{contact.name}</strong> {contact.email}
+              <strong className="font-semibold">{contact.name}</strong>
+              <span className="text-on-surface-variant">{contact.email}</span>
             </li>
           ))}
         </ul>
@@ -860,30 +903,38 @@ export function AccountForm({
   return (
     <section
       ref={dialog}
-      className="sheet"
+      className={`mx-auto flex max-h-[calc(100vh-1.5rem)] w-full max-w-[520px] flex-col overflow-hidden rounded-t-2xl border border-outline-variant/60 bg-surface-container-lowest sm:rounded-2xl ${cardClass}`}
       role="dialog"
       aria-modal="true"
       aria-labelledby="account-title"
     >
-      <header>
-        <h2 id="account-title">{account ? "编辑账户" : "添加账户"}</h2>
-        <button className="icon-button" onClick={onClose} aria-label="关闭">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-outline-variant/60 bg-surface-container-lowest/90 px-4 py-3 backdrop-blur-md">
+        <h2 className="m-0 text-lg font-semibold" id="account-title">
+          {account ? "编辑账户" : "添加账户"}
+        </h2>
+        <button
+          className="inline-flex size-9 items-center justify-center rounded-lg text-2xl leading-none text-on-surface-variant transition active:bg-surface-container"
+          onClick={onClose}
+          aria-label="关闭"
+        >
           ×
         </button>
       </header>
-      <form onSubmit={submit}>
-        <label className="field">
+      <form className="grid gap-4 overflow-y-auto p-4" onSubmit={submit}>
+        <label className={fieldLabelClass}>
           显示名称
           <input
+            className={inputClass}
             data-dialog-initial-focus
             required
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
         </label>
-        <label className="field">
+        <label className={fieldLabelClass}>
           邮箱
           <input
+            className={inputClass}
             required
             type="email"
             autoComplete="email"
@@ -891,9 +942,10 @@ export function AccountForm({
             onChange={(e) => setForm({ ...form, email: e.target.value })}
           />
         </label>
-        <label className="field">
+        <label className={fieldLabelClass}>
           服务商
           <select
+            className={inputClass}
             value={form.provider}
             onChange={(e) => {
               const provider = e.target.value as ProviderPreset;
@@ -909,9 +961,12 @@ export function AccountForm({
             <option value="custom">自定义 IMAP / SMTP</option>
           </select>
         </label>
-        <div className="field">
-          <label htmlFor="imap-server">IMAP 服务器</label>
+        <div className="grid gap-1.5">
+          <label className="text-sm font-semibold text-on-surface" htmlFor="imap-server">
+            IMAP 服务器
+          </label>
           <input
+            className={inputClass}
             id="imap-server"
             required
             autoComplete="off"
@@ -920,32 +975,40 @@ export function AccountForm({
             placeholder="imap.example.com"
           />
         </div>
-        <label className="field">
+        <label className={fieldLabelClass}>
           IMAP 端口
-          <input type="number" required min={1} max={65535} value={form.imapPort}
+          <input className={inputClass} type="number" required min={1} max={65535} value={form.imapPort}
             onChange={(e) => setForm({ ...form, provider: "custom", imapPort: Number(e.target.value) })} />
         </label>
-        <label className="field">
+        <label className={fieldLabelClass}>
           SMTP 服务器
-          <input required autoComplete="off" value={form.smtpServer}
+          <input className={inputClass} required autoComplete="off" value={form.smtpServer}
             onChange={(e) => setForm({ ...form, provider: "custom", smtpServer: e.target.value })}
             placeholder="smtp.example.com" />
         </label>
-        <label className="field">
+        <label className={fieldLabelClass}>
           SMTP 端口
-          <input type="number" required min={1} max={65535} value={form.smtpPort}
+          <input className={inputClass} type="number" required min={1} max={65535} value={form.smtpPort}
             onChange={(e) => setForm({ ...form, provider: "custom", smtpPort: Number(e.target.value) })} />
         </label>
-        <label className="field ssl-field">
-          <input type="checkbox" checked={form.imapSsl} disabled /> <span>IMAP TLS/SSL（必需）</span>
+        <label className="flex items-center gap-2.5 rounded-xl border border-outline-variant/60 bg-surface-container-low px-3 py-2.5 text-sm font-medium text-on-surface-variant">
+          <input className="size-4 accent-primary-container" type="checkbox" checked={form.imapSsl} disabled />
+          <span>IMAP TLS/SSL（必需）</span>
         </label>
-        <label className="field ssl-field">
-          <input type="checkbox" checked={form.smtpSsl} disabled /> <span>{form.smtpSsl ? "SMTP TLS/SSL（必需）" : "SMTP STARTTLS（必需）"}</span>
+        <label className="flex items-center gap-2.5 rounded-xl border border-outline-variant/60 bg-surface-container-low px-3 py-2.5 text-sm font-medium text-on-surface-variant">
+          <input className="size-4 accent-primary-container" type="checkbox" checked={form.smtpSsl} disabled />
+          <span>{form.smtpSsl ? "SMTP TLS/SSL（必需）" : "SMTP STARTTLS（必需）"}</span>
         </label>
-        <p className="muted">IMAP 与 SMTP 均要求加密连接；保存后会在后台自动验证连接。</p>
-        <label className="field">
-          密码 {account && <small>留空则不修改</small>}
+        <p className="m-0 text-xs text-on-surface-variant">
+          IMAP 与 SMTP 均要求加密连接；保存后会在后台自动验证连接。
+        </p>
+        <label className={fieldLabelClass}>
+          <span className="flex flex-wrap items-baseline gap-1.5">
+            密码
+            {account && <small className="text-xs font-normal text-on-surface-variant">留空则不修改</small>}
+          </span>
           <input
+            className={inputClass}
             required={!account}
             type="password"
             autoComplete="new-password"
@@ -953,39 +1016,63 @@ export function AccountForm({
             onChange={(e) => setForm({ ...form, password: e.target.value })}
           />
         </label>
-        <div className="field signatures-field">
-          <div className="field-label" id="signature-label">
-            签名 <small>支持 Markdown；发送时会以 HTML 邮件格式呈现。</small>
+        <div className="grid gap-3">
+          <div className="grid gap-1" id="signature-label">
+            <span className="text-sm font-semibold text-on-surface">签名</span>
+            <small className="text-xs font-normal text-on-surface-variant">
+              支持 Markdown；发送时会以 HTML 邮件格式呈现。
+            </small>
           </div>
           {signatures.length > 0 && (
-            <div className="signature-list" aria-label="签名列表">
+            <div className="grid gap-2.5" aria-label="签名列表">
               {signatures.map((item) => (
-                <article className={`signature-card ${item.id === defaultSignatureId ? "is-default" : ""}`} key={item.id}>
-                  <div className="signature-card-heading">
+                <article
+                  className={`grid min-w-0 gap-2.5 rounded-xl border p-3 ${
+                    item.id === defaultSignatureId
+                      ? "border-primary-container/50 bg-primary-fixed/40"
+                      : "border-outline-variant/60 bg-surface-container-low/60"
+                  }`}
+                  key={item.id}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
                     <input
+                      className={`${inputClass} min-w-0 flex-1`}
                       aria-label={`签名名称 ${item.name}`}
                       value={item.name}
                       onChange={(event) => updateSignature(item.id, { name: event.target.value })}
                     />
-                    {item.id === defaultSignatureId && <span className="signature-badge">默认</span>}
+                    {item.id === defaultSignatureId && (
+                      <span className="shrink-0 rounded-full bg-primary-container px-2.5 py-1 text-[11px] font-semibold text-on-primary-container">
+                        默认
+                      </span>
+                    )}
                   </div>
                   <textarea
+                    className={`${inputClass} min-w-0 py-2.5`}
                     aria-label={`签名内容 ${item.name}`}
                     rows={3}
                     value={item.markdown}
                     onChange={(event) => updateSignature(item.id, { markdown: event.target.value })}
                   />
-                  <div className="signature-preview" aria-label={`签名预览 ${item.name}`} dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(renderEmailMarkdown(item.markdown)) }} />
-                  <div className="signature-card-actions">
+                  <div
+                    className="signature-preview rounded-xl border border-outline-variant/60 bg-surface-container-lowest px-3 py-2.5 text-sm"
+                    aria-label={`签名预览 ${item.name}`}
+                    dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(renderEmailMarkdown(item.markdown)) }}
+                  />
+                  <div className="flex flex-wrap items-center justify-end gap-1.5">
                     <button
                       type="button"
-                      className="text-button"
+                      className={textButtonClass}
                       disabled={item.id === defaultSignatureId}
                       onClick={() => setDefaultSignatureId(item.id)}
                     >
                       {item.id === defaultSignatureId ? "默认签名" : "设为默认"}
                     </button>
-                    <button type="button" className="danger text-button" onClick={() => removeSignature(item.id)}>
+                    <button
+                      type="button"
+                      className="inline-flex min-h-9 items-center rounded-lg px-2 text-sm font-semibold text-error transition active:bg-error-container/60 disabled:opacity-50"
+                      onClick={() => removeSignature(item.id)}
+                    >
                       删除
                     </button>
                   </div>
@@ -993,41 +1080,52 @@ export function AccountForm({
               ))}
             </div>
           )}
-          <div className="signature-add" aria-label="添加签名">
+          <div
+            className="flex flex-wrap items-center gap-2.5 rounded-xl border border-dashed border-outline-variant p-3"
+            aria-label="添加签名"
+          >
             <input
+              className={`${inputClass} min-w-0 flex-[1_1_12rem]`}
               aria-label="新签名名称"
               placeholder="签名名称（可选）"
               value={newSignatureName}
               onChange={(event) => setNewSignatureName(event.target.value)}
             />
             <textarea
+              className={`${inputClass} min-w-0 flex-[2_1_16rem] py-2.5`}
               aria-label="新签名内容"
               rows={3}
               placeholder="输入 Markdown 签名内容"
               value={newSignatureMarkdown}
               onChange={(event) => setNewSignatureMarkdown(event.target.value)}
             />
-            <button type="button" className="secondary" onClick={addSignature} disabled={!newSignatureMarkdown.trim()}>
+            <button type="button" className={secondaryButtonClass} onClick={addSignature} disabled={!newSignatureMarkdown.trim()}>
               添加签名
             </button>
           </div>
-          {!signatures.length && <p className="muted">尚未设置签名；你可以在这里添加一个或多个签名。</p>}
+          {!signatures.length && (
+            <p className="m-0 text-xs text-on-surface-variant">
+              尚未设置签名；你可以在这里添加一个或多个签名。
+            </p>
+          )}
         </div>
         {error && (
-          <p className="inline-error" role="alert">
+          <p className="m-0 rounded-xl bg-error-container px-3 py-2.5 text-sm font-medium text-on-error-container" role="alert">
             {error}
           </p>
         )}
-        <footer>
-          <button type="button" className="secondary" onClick={onClose}>
+        <footer className="sticky bottom-0 -mx-4 -mb-4 flex flex-wrap items-center justify-end gap-2 border-t border-outline-variant/60 bg-surface-container-lowest/95 px-4 py-3 backdrop-blur-md">
+          <button type="button" className={secondaryButtonClass} onClick={onClose}>
             取消
           </button>
           {account && onRequestDelete && (
-            <button type="button" className="danger" onClick={() => onRequestDelete(account)}>
+            <button type="button" className={dangerButtonClass} onClick={() => onRequestDelete(account)}>
               删除账户
             </button>
           )}
-          <button disabled={busy}>{busy ? "保存中…" : "保存账户"}</button>
+          <button className={primaryButtonClass} disabled={busy}>
+            {busy ? "保存中…" : "保存账户"}
+          </button>
         </footer>
       </form>
     </section>
@@ -1121,26 +1219,43 @@ export function LlmSettingsForm({
     }
   };
   return (
-    <section ref={dialog} className="sheet llm-settings" role="dialog" aria-modal="true" aria-labelledby="llm-settings-title">
-      <header>
-        <div>
-          <p className="eyebrow">摘要服务</p>
-          <h2 id="llm-settings-title">LLM 设置</h2>
+    <section
+      ref={dialog}
+      className={`mx-auto flex max-h-[calc(100vh-1.5rem)] w-full max-w-[520px] flex-col overflow-hidden rounded-t-2xl border border-outline-variant/60 bg-surface-container-lowest sm:rounded-2xl ${cardClass}`}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="llm-settings-title"
+    >
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-outline-variant/60 bg-surface-container-lowest/90 px-4 py-3 backdrop-blur-md">
+        <div className="grid gap-0.5">
+          <p className="m-0 text-[11px] font-semibold tracking-[0.06em] text-secondary uppercase">摘要服务</p>
+          <h2 className="m-0 text-lg font-semibold" id="llm-settings-title">LLM 设置</h2>
         </div>
-        <button className="icon-button" onClick={onClose} aria-label="关闭">×</button>
+        <button
+          className="inline-flex size-9 items-center justify-center rounded-lg text-2xl leading-none text-on-surface-variant transition active:bg-surface-container"
+          onClick={onClose}
+          aria-label="关闭"
+        >
+          ×
+        </button>
       </header>
-      <form onSubmit={save}>
-        <label className="setting-toggle">
+      <form className="grid gap-4 overflow-y-auto p-4" onSubmit={save}>
+        <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-secondary/25 bg-secondary-fixed/40 p-3">
           <input
+            className="mt-0.5 size-5 shrink-0 accent-secondary"
             type="checkbox"
             checked={form.enabled}
             onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
           />
-          <span><strong>启用邮件摘要</strong><small>新邮件会在后台异步生成摘要。</small></span>
+          <span className="grid gap-0.5">
+            <strong className="text-sm font-semibold text-on-surface">启用邮件摘要</strong>
+            <small className="text-xs font-normal text-on-surface-variant">新邮件会在后台异步生成摘要。</small>
+          </span>
         </label>
-        <label className="field">
+        <label className={fieldLabelClass}>
           Base URL
           <input
+            className={inputClass}
             data-dialog-initial-focus
             required={form.enabled}
             type="url"
@@ -1151,13 +1266,13 @@ export function LlmSettingsForm({
             placeholder="https://api.openai.com/v1"
           />
         </label>
-        <label className="field">
+        <label className={fieldLabelClass}>
           模型
-          <input required={form.enabled} autoComplete="off" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="gpt-4o-mini" />
+          <input className={inputClass} required={form.enabled} autoComplete="off" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="gpt-4o-mini" />
         </label>
-        <label className="field">
+        <label className={fieldLabelClass}>
           摘要语言
-          <select aria-label="摘要语言" value={form.defaultLanguage} onChange={(event) => setForm({ ...form, defaultLanguage: event.target.value })}>
+          <select className={inputClass} aria-label="摘要语言" value={form.defaultLanguage} onChange={(event) => setForm({ ...form, defaultLanguage: event.target.value })}>
             <option value="zh_CN">简体中文</option>
             <option value="zh_TW">繁體中文</option>
             <option value="en_US">English</option>
@@ -1167,31 +1282,57 @@ export function LlmSettingsForm({
             <option value="de_DE">Deutsch</option>
             <option value="es_ES">Español</option>
           </select>
-          <small>摘要中的标题、行动项和其他说明将使用此语言。</small>
+          <small className="text-xs font-normal text-on-surface-variant">摘要中的标题、行动项和其他说明将使用此语言。</small>
         </label>
-        <label className="field">
-          API key <small>{settings.apiKeyConfigured ? "已配置；留空则保留原 key" : "仅发送到服务器保存，不会回显"}</small>
-          <input type="password" autoComplete="new-password" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} placeholder={settings.apiKeyConfigured ? "••••••••" : "sk-…"} />
+        <label className={fieldLabelClass}>
+          <span className="flex flex-wrap items-baseline gap-1.5">
+            API key
+            <small className="text-xs font-normal text-on-surface-variant">
+              {settings.apiKeyConfigured ? "已配置；留空则保留原 key" : "仅发送到服务器保存，不会回显"}
+            </small>
+          </span>
+          <input className={inputClass} type="password" autoComplete="new-password" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} placeholder={settings.apiKeyConfigured ? "••••••••" : "sk-…"} />
         </label>
-        <label className="field">
+        <label className={fieldLabelClass}>
           摘要阈值（正文字符数）
-          <input type="number" min={0} step={1} value={form.summaryThreshold} onChange={(event) => setForm({ ...form, summaryThreshold: Number(event.target.value) })} />
+          <input className={inputClass} type="number" min={0} step={1} value={form.summaryThreshold} onChange={(event) => setForm({ ...form, summaryThreshold: Number(event.target.value) })} />
         </label>
-        <div className="llm-test-row">
-          <button type="button" className="secondary" disabled={testing || busy} onClick={() => void test()}>
+        <div className="flex min-h-11 flex-wrap items-center gap-2.5">
+          <button type="button" className={secondaryButtonClass} disabled={testing || busy} onClick={() => void test()}>
             {testing ? "测试中…" : "测试连接"}
           </button>
-          {testResult && <span className={`llm-test-result ${testResult.ok ? "ok" : "failed"}`} role="status">{testResult.ok ? "连接成功" : testResult.message}</span>}
+          {testResult && (
+            <span
+              className={`text-xs font-medium break-all ${testResult.ok ? "text-tertiary" : "text-error"}`}
+              role="status"
+            >
+              {testResult.ok ? "连接成功" : testResult.message}
+            </span>
+          )}
         </div>
-        <div className="llm-health" aria-label="LLM 状态">
-          <span>状态：<strong>{effectiveTestStatus === "ok" || effectiveTestStatus === "connected" ? "已连接" : effectiveTestStatus === "failed" ? "失败" : "未测试"}</strong></span>
-          <span>失败统计：<strong>{settings.failedCount}</strong></span>
-          {settings.lastError && <span className="inline-error">最近失败：{settings.lastError}</span>}
+        <div
+          className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-outline-variant/60 bg-surface-container-low px-3 py-2.5 text-xs text-on-surface-variant"
+          aria-label="LLM 状态"
+        >
+          <span>
+            状态：
+            <strong className="font-semibold text-on-surface">
+              {effectiveTestStatus === "ok" || effectiveTestStatus === "connected" ? "已连接" : effectiveTestStatus === "failed" ? "失败" : "未测试"}
+            </strong>
+          </span>
+          <span>
+            失败统计：<strong className="font-semibold text-on-surface">{settings.failedCount}</strong>
+          </span>
+          {settings.lastError && <span className="font-medium text-error">最近失败：{settings.lastError}</span>}
         </div>
-        {error && <p className="inline-error" role="alert">{error}</p>}
-        <footer>
-          <button type="button" className="secondary" onClick={onClose}>取消</button>
-          <button disabled={busy}>{busy ? "保存中…" : "保存设置"}</button>
+        {error && (
+          <p className="m-0 rounded-xl bg-error-container px-3 py-2.5 text-sm font-medium text-on-error-container" role="alert">
+            {error}
+          </p>
+        )}
+        <footer className="sticky bottom-0 -mx-4 -mb-4 flex flex-wrap items-center justify-end gap-2 border-t border-outline-variant/60 bg-surface-container-lowest/95 px-4 py-3 backdrop-blur-md">
+          <button type="button" className={secondaryButtonClass} onClick={onClose}>取消</button>
+          <button className={primaryButtonClass} disabled={busy}>{busy ? "保存中…" : "保存设置"}</button>
         </footer>
       </form>
     </section>
@@ -1347,9 +1488,10 @@ export function Composer({
   const content = (
     <>
       {accounts && (
-        <label className="field sender-field">
+        <label className={fieldLabelClass}>
           发件账户
           <select
+            className={inputClass}
             value={selectedAccount.id}
             disabled={Boolean(initial?.replyTo || initial?.forwardOf) || status === "sending"}
             onChange={(event) => chooseSender(event.target.value)}
@@ -1365,7 +1507,7 @@ export function Composer({
         disabled={status === "sending"}
       />
       <button
-        className="text-button"
+        className={`${textButtonClass} self-start`}
         type="button"
         onClick={() => setShowMore(!showMore)}
       >
@@ -1387,31 +1529,49 @@ export function Composer({
           />
         </>
       )}
-      <label className="field">
+      <label className={fieldLabelClass}>
         主题
         <input
+          className={inputClass}
           value={subject}
           disabled={status === "sending"}
           onChange={(e) => setSubject(e.target.value)}
         />
       </label>
-      <div className="field">
-        <label htmlFor="body">正文</label>
-        <div className="toolbar" aria-label="Markdown 工具栏">
-          <button type="button" onClick={() => appendMarkdown("**")}>
+      <div className="grid gap-1.5">
+        <label className="text-sm font-semibold text-on-surface" htmlFor="body">正文</label>
+        <div className="flex flex-wrap gap-1.5" aria-label="Markdown 工具栏">
+          <button
+            className="inline-flex min-h-9 items-center rounded-lg bg-primary-fixed px-2.5 text-sm font-semibold text-on-primary-fixed-variant transition active:scale-[0.98]"
+            type="button"
+            onClick={() => appendMarkdown("**")}
+          >
             粗体
           </button>
-          <button type="button" onClick={() => appendMarkdown("*")}>
+          <button
+            className="inline-flex min-h-9 items-center rounded-lg bg-primary-fixed px-2.5 text-sm font-semibold text-on-primary-fixed-variant transition active:scale-[0.98]"
+            type="button"
+            onClick={() => appendMarkdown("*")}
+          >
             斜体
           </button>
-          <button type="button" onClick={() => appendMarkdown("- ", "")}>
+          <button
+            className="inline-flex min-h-9 items-center rounded-lg bg-primary-fixed px-2.5 text-sm font-semibold text-on-primary-fixed-variant transition active:scale-[0.98]"
+            type="button"
+            onClick={() => appendMarkdown("- ", "")}
+          >
             列表
           </button>
-          <button type="button" onClick={() => appendMarkdown("[链接](", ")")}>
+          <button
+            className="inline-flex min-h-9 items-center rounded-lg bg-primary-fixed px-2.5 text-sm font-semibold text-on-primary-fixed-variant transition active:scale-[0.98]"
+            type="button"
+            onClick={() => appendMarkdown("[链接](", ")")}
+          >
             链接
           </button>
         </div>
         <textarea
+          className={`${inputClass} py-2.5 leading-relaxed`}
           id="body"
           rows={9}
           value={body}
@@ -1421,10 +1581,14 @@ export function Composer({
         />
       </div>
       {signatureSet.items.length > 0 && (
-        <div className="compose-signature" aria-label="邮件签名">
-          <label htmlFor="compose-signature-select">签名</label>
-          <div className="compose-signature-actions">
+        <div
+          className="grid gap-2 rounded-xl border border-outline-variant/60 bg-primary-fixed/30 p-3"
+          aria-label="邮件签名"
+        >
+          <label className="text-sm font-semibold text-on-surface" htmlFor="compose-signature-select">签名</label>
+          <div className="flex flex-wrap items-center gap-2">
             <select
+              className={`${inputClass} min-w-0 flex-[1_1_12rem]`}
               id="compose-signature-select"
               aria-label="签名"
               value={selectedSignatureId ?? ""}
@@ -1434,13 +1598,17 @@ export function Composer({
               <option value="">不使用签名</option>
               {signatureSet.items.map((item) => <option value={item.id} key={item.id}>{item.name}{item.id === signatureSet.defaultId ? "（默认）" : ""}</option>)}
             </select>
-            <button type="button" className="secondary" onClick={insertSelectedSignature} disabled={!selectedSignature || status === "sending"}>插入签名</button>
-            <button type="button" className="text-button" onClick={deleteInsertedSignature} disabled={!insertedSignatureId || status === "sending"}>删除签名</button>
+            <button type="button" className={secondaryButtonClass} onClick={insertSelectedSignature} disabled={!selectedSignature || status === "sending"}>插入签名</button>
+            <button type="button" className={textButtonClass} onClick={deleteInsertedSignature} disabled={!insertedSignatureId || status === "sending"}>删除签名</button>
           </div>
-          {selectedSignature && <p className="muted compose-signature-status">{insertedSignatureId === selectedSignature.id ? `已插入“${selectedSignature.name}”` : `将插入“${selectedSignature.name}”`}</p>}
+          {selectedSignature && (
+            <p className="m-0 text-xs text-on-surface-variant">
+              {insertedSignatureId === selectedSignature.id ? `已插入“${selectedSignature.name}”` : `将插入“${selectedSignature.name}”`}
+            </p>
+          )}
         </div>
       )}
-      <div className="attachment">
+      <div className="flex flex-wrap items-center gap-2">
         <input
           ref={fileInput}
           type="file"
@@ -1464,15 +1632,19 @@ export function Composer({
         />
         <button
           type="button"
-          className="secondary"
+          className={secondaryButtonClass}
           onClick={() => fileInput.current?.click()}
         >
           添加附件
         </button>
         {attachments.map((file, index) => (
-          <span className="token" key={`${file.name}${index}`}>
-            {file.name}（{formatBytes(file.size)}）{" "}
+          <span
+            className="inline-flex max-w-full items-center gap-0.5 rounded-lg bg-surface-container py-1 pr-1 pl-2.5 text-xs font-medium text-on-surface-variant"
+            key={`${file.name}${index}`}
+          >
+            <span className="break-all">{file.name}（{formatBytes(file.size)}）</span>
             <button
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-base leading-none transition active:bg-surface-container-high"
               type="button"
               aria-label={`移除 ${file.name}`}
               onClick={() =>
@@ -1485,12 +1657,16 @@ export function Composer({
         ))}
       </div>
       {error && (
-        <p className="inline-error" role="alert">
+        <p className="m-0 rounded-xl bg-error-container px-3 py-2.5 text-sm font-medium text-on-error-container" role="alert">
           {error}
         </p>
       )}
       {status && (
-        <p className={`delivery ${status}`}>
+        <p
+          className={`m-0 text-sm font-semibold ${
+            status === "sent" ? "text-tertiary" : status === "failed" || status === "ambiguous" ? "text-error" : "text-on-surface-variant"
+          }`}
+        >
           状态：{status === "sending" ? "发送中" : status}
         </p>
       )}
@@ -1499,72 +1675,84 @@ export function Composer({
   return (
     <section
       ref={dialog}
-      className="sheet compose"
+      className={`mx-auto flex max-h-[calc(100vh-1.5rem)] w-full max-w-[560px] flex-col overflow-hidden rounded-t-2xl border border-outline-variant/60 bg-surface-container-lowest sm:rounded-2xl ${cardClass}`}
       role="dialog"
       aria-modal="true"
       aria-labelledby="compose-title"
     >
-      <header>
-        <h2 id="compose-title">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-outline-variant/60 bg-surface-container-lowest/90 px-4 py-3 backdrop-blur-md">
+        <h2 className="m-0 text-lg font-semibold" id="compose-title">
           {initial?.replyTo
             ? "回复邮件"
             : initial?.forwardOf
               ? "转发邮件"
               : "新邮件"}
         </h2>
-        <button className="icon-button" onClick={persistAndClose} aria-label="关闭">
+        <button
+          className="inline-flex size-9 items-center justify-center rounded-lg text-2xl leading-none text-on-surface-variant transition active:bg-surface-container"
+          onClick={persistAndClose}
+          aria-label="关闭"
+        >
           ×
         </button>
       </header>
       {preview ? (
         <>
-          <div className="preview">
-            <p>
-              <b>发件账户：</b>
-              {selectedAccount.email}
-            </p>
-            <p>
-              <b>收件人：</b>
-              {to.join(", ")}
-            </p>
-            {cc.length > 0 && (
-              <p>
-                <b>抄送：</b>
-                {cc.join(", ")}
+          <div className="grid gap-2.5 overflow-y-auto p-4">
+            <div className="grid gap-2 rounded-xl border border-outline-variant/60 bg-surface-container-low p-3.5 text-sm">
+              <p className="m-0">
+                <b className="font-semibold text-on-surface-variant">发件账户：</b>
+                {selectedAccount.email}
               </p>
-            )}
-            {bcc.length > 0 && (
-              <p>
-                <b>密送：</b>
-                {bcc.join(", ")}
+              <p className="m-0">
+                <b className="font-semibold text-on-surface-variant">收件人：</b>
+                {to.join(", ")}
               </p>
-            )}
+              {cc.length > 0 && (
+                <p className="m-0">
+                  <b className="font-semibold text-on-surface-variant">抄送：</b>
+                  {cc.join(", ")}
+                </p>
+              )}
+              {bcc.length > 0 && (
+                <p className="m-0">
+                  <b className="font-semibold text-on-surface-variant">密送：</b>
+                  {bcc.join(", ")}
+                </p>
+              )}
+            </div>
             {attachments.length > 0 && (
-              <div className="preview-attachments">
-                <b>附件：</b>
-                <ul>
+              <div className="grid gap-1.5 rounded-xl border border-outline-variant/60 p-3.5 text-sm">
+                <b className="font-semibold text-on-surface-variant">附件：</b>
+                <ul className="m-0 grid gap-1 pl-5">
                   {attachments.map((file, index) => (
                     <li key={`${file.name}${index}`}>{file.name}（{formatBytes(file.size)}）</li>
                   ))}
                 </ul>
               </div>
             )}
-            <h3>{subject || "（无主题）"}</h3>
-            <div
-              className="preview-body"
-              dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(renderEmailMarkdown(body)) }}
-            />
+            <div className="rounded-xl border border-outline-variant/60 bg-surface-container-lowest p-4">
+              <h3 className="mt-0 mb-2.5 text-base font-semibold">{subject || "（无主题）"}</h3>
+              <div
+                className="preview-body text-sm"
+                dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(renderEmailMarkdown(body)) }}
+              />
+            </div>
+            {error && (
+              <p className="m-0 rounded-xl bg-error-container px-3 py-2.5 text-sm font-medium text-on-error-container" role="alert">
+                {error}
+              </p>
+            )}
           </div>
-          {error && <p className="inline-error" role="alert">{error}</p>}
-          <footer>
+          <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-outline-variant/60 bg-surface-container-lowest/95 px-4 py-3 backdrop-blur-md">
             <button
-              className="secondary"
+              className={secondaryButtonClass}
               onClick={() => setPreview(false)}
               disabled={status === "sending"}
             >
               返回编辑
             </button>
-            <button onClick={send} disabled={status === "sending"}>
+            <button className={primaryButtonClass} onClick={send} disabled={status === "sending"}>
               {status === "sending"
                 ? "发送中…"
                 : status === "failed" || status === "ambiguous"
@@ -1575,12 +1763,13 @@ export function Composer({
         </>
       ) : (
         <>
-          <div className="compose-body">{content}</div>
-          <footer>
-            <button className="secondary" onClick={persistAndClose}>
+          <div className="grid gap-3.5 overflow-y-auto p-4">{content}</div>
+          <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-outline-variant/60 bg-surface-container-lowest/95 px-4 py-3 backdrop-blur-md">
+            <button className={secondaryButtonClass} onClick={persistAndClose}>
               保存草稿并关闭
             </button>
             <button
+              className={primaryButtonClass}
               onClick={() => {
                 if (to.length) {
                   setError("");
@@ -1640,15 +1829,15 @@ export function ThreadDetail({
     return (
       <>
         {hasExternalImages && !externalImagesAllowed && (
-          <div className="external-images-notice">
-            <span>外部图片已拦截，加载后可能向发件方暴露你的访问。</span>
-            <button type="button" className="secondary" onClick={() => setExternalImagesAllowed(true)}>
+          <div className="flex flex-wrap items-center gap-2.5 rounded-xl border border-outline-variant/60 bg-surface-container-low px-3 py-2.5 text-xs text-on-surface-variant">
+            <span className="flex-1">外部图片已拦截，加载后可能向发件方暴露你的访问。</span>
+            <button type="button" className={secondaryButtonClass} onClick={() => setExternalImagesAllowed(true)}>
               显示外部图片
             </button>
           </div>
         )}
         <div
-          className={`message-body ${message.html ? "email-html" : "email-markdown"}`}
+          className={`text-sm ${message.html ? "email-html" : "email-markdown"}`}
           dangerouslySetInnerHTML={{
             __html: sanitizeEmailHtml(rendered, {
               allowExternalImages: externalImagesAllowed,
@@ -1660,16 +1849,17 @@ export function ThreadDetail({
     );
   };
   return (
-    <main className="detail">
-      <header className="topbar">
-        <button className="secondary" onClick={onBack}>
+    <main className="mx-auto grid w-full max-w-[560px] gap-3.5 px-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[calc(6rem+env(safe-area-inset-bottom))]">
+      <header className="flex flex-wrap items-center gap-2">
+        <button className={secondaryButtonClass} onClick={onBack}>
           ← 收件箱
         </button>
-        <button className="secondary" onClick={onOpenLlmSettings}>
+        <span className="flex-1" />
+        <button className={secondaryButtonClass} onClick={onOpenLlmSettings}>
           LLM 设置
         </button>
         <button
-          className="danger"
+          className={dangerButtonClass}
           disabled={!canDelete}
           title={canDelete ? "删除此线程" : "删除只能从 Telegram Mini App 发起"}
           onClick={onDelete}
@@ -1677,41 +1867,127 @@ export function ThreadDetail({
           删除
         </button>
       </header>
-      <h1>{thread.subject}</h1>
-      <p className="muted">{thread.participants.join(" · ")}</p>
-      <div className="summary-switch" role="tablist" aria-label="邮件内容视图">
-        <button type="button" role="tab" aria-selected={view === "summary"} className={view === "summary" ? "selected" : "secondary"} onClick={() => setView("summary")}>摘要</button>
-        <button type="button" role="tab" aria-selected={view === "body"} className={view === "body" ? "selected" : "secondary"} onClick={() => setView("body")}>正文</button>
+      <div className={`grid gap-2.5 p-4 ${cardClass}`}>
+        <h1 className="m-0 text-xl leading-snug font-semibold tracking-[-0.015em]">{thread.subject}</h1>
+        <p className="m-0 text-xs break-all text-on-surface-variant">{thread.participants.join(" · ")}</p>
       </div>
-      {thread.messages.map((message) => (
-        <article className="message" key={message.id}>
-          <div className="avatar">{initials(message.from)}</div>
-          <div>
-            <strong>{message.from}</strong>
-            <time>{fmtDate(message.date)}</time>
-            {view === "body" ? renderBody(message) : (
-              <div className={`summary-panel ${normalizeSummaryStatus(message.summaryStatus ?? thread.summaryStatus, message.summary ?? thread.summary)}`}>
-                <div className="summary-meta">
-                  <span className="summary-status">{summaryStatusLabel(message.summaryStatus ?? thread.summaryStatus, message.summary ?? thread.summary)}</span>
-                  {message.priority && <span className="summary-tag">{message.priority}</span>}
-                  {message.category && <span className="summary-tag">{message.category}</span>}
-                </div>
-                {message.summary ? <div className="message-body summary-body" dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(message.summary) }} /> : <p className="muted">{normalizeSummaryStatus(message.summaryStatus ?? thread.summaryStatus) === "failed" ? `摘要生成失败${message.summaryErrorCode ? `（${message.summaryErrorCode}）` : "。"}` : normalizeSummaryStatus(message.summaryStatus ?? thread.summaryStatus) === "generating" ? "摘要正在生成，请稍候。" : "摘要尚未生成。"}</p>}
-                {normalizeSummaryStatus(message.summaryStatus ?? thread.summaryStatus, message.summary) === "failed" && <button type="button" className="secondary retry-summary" onClick={() => onRetrySummary(message.id)}>重试摘要</button>}
+      <div
+        className="flex gap-1 rounded-xl border border-outline-variant/60 bg-surface-container-low p-1"
+        role="tablist"
+        aria-label="邮件内容视图"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "summary"}
+          className={`min-h-9 flex-1 rounded-lg text-sm font-semibold transition ${
+            view === "summary" ? "bg-surface-container-lowest text-primary-container shadow-[0_1px_3px_rgba(0,0,0,0.06)]" : "text-on-surface-variant"
+          }`}
+          onClick={() => setView("summary")}
+        >
+          摘要
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "body"}
+          className={`min-h-9 flex-1 rounded-lg text-sm font-semibold transition ${
+            view === "body" ? "bg-surface-container-lowest text-primary-container shadow-[0_1px_3px_rgba(0,0,0,0.06)]" : "text-on-surface-variant"
+          }`}
+          onClick={() => setView("body")}
+        >
+          正文
+        </button>
+      </div>
+      {thread.messages.map((message) => {
+        const status = normalizeSummaryStatus(message.summaryStatus ?? thread.summaryStatus, message.summary ?? thread.summary);
+        return (
+          <article className={`grid grid-cols-[auto_1fr] gap-3 p-4 ${cardClass}`} key={message.id}>
+            <div className="flex size-10 items-center justify-center rounded-full bg-primary-fixed text-sm font-semibold text-on-primary-fixed-variant">
+              {initials(message.from)}
+            </div>
+            <div className="grid min-w-0 gap-2.5">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
+                <strong className="text-sm font-semibold break-all">{message.from}</strong>
+                <time className="text-[11px] text-on-surface-variant">{fmtDate(message.date)}</time>
               </div>
-            )}
-          </div>
-        </article>
-      ))}
+              {view === "body" ? renderBody(message) : (
+                <div
+                  className={`grid gap-2.5 rounded-xl border p-3.5 ${
+                    status === "failed"
+                      ? "border-error/35 bg-error-container/40"
+                      : status === "generating" || status === "pending"
+                        ? "border-secondary/25 bg-secondary-fixed/40"
+                        : "border-secondary/20 bg-secondary-fixed/25"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded-md bg-surface-container-lowest px-2 py-0.5 text-[11px] font-semibold text-secondary">
+                      {summaryStatusLabel(message.summaryStatus ?? thread.summaryStatus, message.summary ?? thread.summary)}
+                    </span>
+                    {message.priority && (
+                      <span className="rounded-md bg-surface-container-lowest px-2 py-0.5 text-[11px] font-medium text-on-surface-variant">
+                        {message.priority}
+                      </span>
+                    )}
+                    {message.category && (
+                      <span className="rounded-md bg-surface-container-lowest px-2 py-0.5 text-[11px] font-medium text-on-surface-variant">
+                        {message.category}
+                      </span>
+                    )}
+                  </div>
+                  {message.summary ? (
+                    <div className="summary-body text-sm" dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(message.summary) }} />
+                  ) : (
+                    <p className="m-0 text-sm text-on-surface-variant">
+                      {status === "failed"
+                        ? `摘要生成失败${message.summaryErrorCode ? `（${message.summaryErrorCode}）` : "。"}`
+                        : status === "generating"
+                          ? "摘要正在生成，请稍候。"
+                          : "摘要尚未生成。"}
+                    </p>
+                  )}
+                  {status === "failed" && (
+                    <button type="button" className={`${secondaryButtonClass} self-start`} onClick={() => onRetrySummary(message.id)}>
+                      重试摘要
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </article>
+        );
+      })}
       {!thread.messages.length && hasSummaryData && (
-        <section className={`summary-panel ${threadSummaryStatus}`}>
-          <div className="summary-meta"><span className="summary-status">{summaryStatusLabel(thread.summaryStatus, thread.summary)}</span></div>
-          {thread.summary ? <div className="message-body summary-body" dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(thread.summary) }} /> : <p className="muted">{threadSummaryStatus === "failed" ? `摘要生成失败${thread.summaryErrorCode ? `（${thread.summaryErrorCode}）` : "。"}` : "摘要尚未生成。"}</p>}
-          {threadSummaryStatus === "failed" && <button type="button" className="secondary retry-summary" onClick={() => onRetrySummary(latest?.id)}>重试摘要</button>}
+        <section
+          className={`grid gap-2.5 rounded-xl border p-4 ${
+            threadSummaryStatus === "failed" ? "border-error/35 bg-error-container/40" : "border-secondary/25 bg-secondary-fixed/40"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="rounded-md bg-surface-container-lowest px-2 py-0.5 text-[11px] font-semibold text-secondary">
+              {summaryStatusLabel(thread.summaryStatus, thread.summary)}
+            </span>
+          </div>
+          {thread.summary ? (
+            <div className="summary-body text-sm" dangerouslySetInnerHTML={{ __html: sanitizeSummaryHtml(thread.summary) }} />
+          ) : (
+            <p className="m-0 text-sm text-on-surface-variant">
+              {threadSummaryStatus === "failed"
+                ? `摘要生成失败${thread.summaryErrorCode ? `（${thread.summaryErrorCode}）` : "。"}`
+                : "摘要尚未生成。"}
+            </p>
+          )}
+          {threadSummaryStatus === "failed" && (
+            <button type="button" className={`${secondaryButtonClass} self-start`} onClick={() => onRetrySummary(latest?.id)}>
+              重试摘要
+            </button>
+          )}
         </section>
       )}
-      <div className="actions">
+      <div className="fixed inset-x-0 bottom-0 z-20 mx-auto flex w-full max-w-[560px] gap-2 border-t border-outline-variant/60 bg-surface-container-lowest/95 px-3 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] backdrop-blur-md">
         <button
+          className={`${primaryButtonClass} flex-1`}
           onClick={() =>
             onCompose({
               accountId: account.id,
@@ -1724,6 +2000,7 @@ export function ThreadDetail({
           回复
         </button>
         <button
+          className={`${secondaryButtonClass} flex-1`}
           onClick={() =>
             onCompose({
               accountId: account.id,
@@ -1737,7 +2014,7 @@ export function ThreadDetail({
           回复全部
         </button>
         <button
-          className="secondary"
+          className={`${secondaryButtonClass} flex-1`}
           onClick={() =>
             onCompose({
               accountId: account.id,
@@ -1821,22 +2098,24 @@ export function DeleteConfirmation({
   return (
     <section
       ref={dialog}
-      className="sheet confirm"
+      className={`mx-auto grid w-full max-w-[420px] gap-3 rounded-2xl p-5 ${cardClass}`}
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-title"
       aria-describedby="delete-description"
     >
-      <h2 id="delete-title">{count > 1 ? `确认删除 ${count} 个线程？` : "确认删除线程？"}</h2>
-      <p id="delete-description">
-        后台会先删除对应的 Telegram Topic，再通过 <b>{provider}</b> 从邮箱服务器删除线程中的所有邮件。
+      <h2 className="m-0 text-lg font-semibold" id="delete-title">
+        {count > 1 ? `确认删除 ${count} 个线程？` : "确认删除线程？"}
+      </h2>
+      <p className="m-0 text-sm leading-relaxed text-on-surface-variant" id="delete-description">
+        后台会先删除对应的 Telegram Topic，再通过 <b className="font-semibold text-on-surface">{provider}</b> 从邮箱服务器删除线程中的所有邮件。
         任一步骤失败都会保留进度并自动重试；删除只能从 Telegram Mini App 发起。
       </p>
-      <footer>
-        <button type="button" className="secondary" data-dialog-initial-focus onClick={onClose}>
+      <footer className="mt-1 flex flex-wrap justify-end gap-2">
+        <button type="button" className={secondaryButtonClass} data-dialog-initial-focus onClick={onClose}>
           取消
         </button>
-        <button type="button" className="danger" onClick={onConfirm} disabled={deleting}>
+        <button type="button" className={dangerButtonClass} onClick={onConfirm} disabled={deleting}>
           {deleting ? "提交中…" : "确认删除"}
         </button>
       </footer>
@@ -1858,18 +2137,37 @@ export function AccountDeleteConfirmation({
   const dialog = useDialog(onClose);
   const [purgeData, setPurgeData] = useState(false);
   return (
-    <section ref={dialog} className="sheet confirm" role="dialog" aria-modal="true" aria-labelledby="account-delete-title" aria-describedby="account-delete-description">
-      <h2 id="account-delete-title">确认删除账户？</h2>
-      <p id="account-delete-description">
-        将移除 <b>{account.email}</b> 的登录配置并停止同步。
+    <section
+      ref={dialog}
+      className={`mx-auto grid w-full max-w-[420px] gap-3 rounded-2xl p-5 ${cardClass}`}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="account-delete-title"
+      aria-describedby="account-delete-description"
+    >
+      <h2 className="m-0 text-lg font-semibold" id="account-delete-title">确认删除账户？</h2>
+      <p className="m-0 text-sm text-on-surface-variant" id="account-delete-description">
+        将移除 <b className="font-semibold text-on-surface">{account.email}</b> 的登录配置并停止同步。
       </p>
-      <label className="delete-option">
-        <input type="checkbox" checked={purgeData} onChange={(event) => setPurgeData(event.target.checked)} />
-        <span><strong>同时删除本地邮件、草稿、联系人和 Telegram Topic</strong><small>此操作不可恢复；不会删除邮箱服务商服务器中的原始邮件。</small></span>
+      <label className="flex cursor-pointer items-start gap-2.5 rounded-xl bg-error-container/50 p-3">
+        <input
+          className="mt-0.5 size-4 shrink-0 accent-error"
+          type="checkbox"
+          checked={purgeData}
+          onChange={(event) => setPurgeData(event.target.checked)}
+        />
+        <span className="grid gap-0.5">
+          <strong className="text-sm font-semibold text-on-surface">同时删除本地邮件、草稿、联系人和 Telegram Topic</strong>
+          <small className="text-xs font-normal text-on-surface-variant">
+            此操作不可恢复；不会删除邮箱服务商服务器中的原始邮件。
+          </small>
+        </span>
       </label>
-      <footer>
-        <button type="button" className="secondary" data-dialog-initial-focus onClick={onClose}>取消</button>
-        <button type="button" className="danger" onClick={() => onConfirm(purgeData)} disabled={deleting}>{deleting ? "提交中…" : "确认删除"}</button>
+      <footer className="mt-1 flex flex-wrap justify-end gap-2">
+        <button type="button" className={secondaryButtonClass} data-dialog-initial-focus onClick={onClose}>取消</button>
+        <button type="button" className={dangerButtonClass} onClick={() => onConfirm(purgeData)} disabled={deleting}>
+          {deleting ? "提交中…" : "确认删除"}
+        </button>
       </footer>
     </section>
   );
@@ -2326,48 +2624,62 @@ export function App() {
       setAccountDeleting(false);
     }
   };
-  if (authChecking) return <main className="setup"><Loading /></main>;
+  if (authChecking)
+    return (
+      <main className="grid min-h-screen place-items-center px-4">
+        <Loading />
+      </main>
+    );
   if (authError)
     return (
-      <main className="setup">
-        <section className="card">
-          <p className="eyebrow">Telegramail</p>
-          <h1>无法恢复会话</h1>
-          <p className="inline-error" role="alert">{authError}</p>
-          <button onClick={() => void bootstrapAuthentication()}>重试</button>
+      <main className="grid min-h-screen place-items-center px-4 py-8">
+        <section className={`grid w-full max-w-[400px] gap-3 p-5 ${cardClass}`}>
+          <p className="m-0 text-[11px] font-semibold tracking-[0.06em] text-primary-container uppercase">Telegramail</p>
+          <h1 className="m-0 text-xl font-semibold tracking-[-0.015em]">无法恢复会话</h1>
+          <p className="m-0 rounded-xl bg-error-container px-3 py-2.5 text-sm font-medium text-on-error-container" role="alert">
+            {authError}
+          </p>
+          <button className={primaryButtonClass} onClick={() => void bootstrapAuthentication()}>重试</button>
         </section>
       </main>
     );
   if (!ready)
     return (
-      <main className="setup">
-        <section className="card">
-          <p className="eyebrow">Telegramail</p>
-          <h1>绑定邮箱服务</h1>
-          <p>仅首次绑定管理员需要 setup code。绑定后，同一 Telegram 账号在其他设备上会自动登录。</p>
-          {setupNotice && <p role="status">{setupNotice}</p>}
-          <form onSubmit={bind}>
-            <label className="field">
+      <main className="grid min-h-screen place-items-center px-4 py-8">
+        <section className={`grid w-full max-w-[400px] gap-3 p-5 ${cardClass}`}>
+          <p className="m-0 text-[11px] font-semibold tracking-[0.06em] text-primary-container uppercase">Telegramail</p>
+          <h1 className="m-0 text-xl font-semibold tracking-[-0.015em]">绑定邮箱服务</h1>
+          <p className="m-0 text-sm leading-relaxed text-on-surface-variant">
+            仅首次绑定管理员需要 setup code。绑定后，同一 Telegram 账号在其他设备上会自动登录。
+          </p>
+          {setupNotice && (
+            <p className="m-0 rounded-xl bg-secondary-fixed/50 px-3 py-2.5 text-sm text-on-surface-variant" role="status">
+              {setupNotice}
+            </p>
+          )}
+          <form className="grid gap-3" onSubmit={bind}>
+            <label className={fieldLabelClass}>
               Setup code
               <input
+                className={inputClass}
                 autoFocus
                 value={setupCode}
                 onChange={(e) => setSetupCode(e.target.value.trim())}
               />
             </label>
             {setupError && (
-              <p className="inline-error" role="alert">
+              <p className="m-0 rounded-xl bg-error-container px-3 py-2.5 text-sm font-medium text-on-error-container" role="alert">
                 {setupError}
               </p>
             )}
-            <button disabled={!setupCode}>绑定</button>
+            <button className={primaryButtonClass} disabled={!setupCode}>绑定</button>
           </form>
         </section>
       </main>
     );
   return (
     <>
-      <div className="app-shell" ref={appShell}>
+      <div className="mx-auto w-full max-w-[560px]" ref={appShell}>
         {current && currentAccount ? (
           <ThreadDetail
             thread={current}
@@ -2384,116 +2696,149 @@ export function App() {
           />
         ) : (
           <>
-            <header className="app-header">
-              <div>
-                <p className="eyebrow">Telegramail</p>
-                <h1>收件箱</h1>
+            <header className="flex flex-wrap items-center justify-between gap-3 px-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-3">
+              <div className="grid gap-0.5">
+                <p className="m-0 text-[11px] font-semibold tracking-[0.06em] text-primary-container uppercase">Telegramail</p>
+                <h1 className="m-0 text-2xl font-bold tracking-[-0.02em]">收件箱</h1>
               </div>
-              <div className="header-actions">
-                <button onClick={() => openComposer()} disabled={!activeAccount}>
+              <div className="flex flex-wrap gap-2">
+                <button className={primaryButtonClass} onClick={() => openComposer()} disabled={!activeAccount}>
                   写邮件
                 </button>
-                <button className="secondary" onClick={() => void openLlmSettings()}>
+                <button className={secondaryButtonClass} onClick={() => void openLlmSettings()}>
                   LLM 设置
                 </button>
               </div>
             </header>
-            <main className="inbox">
-              <section className="accounts">
-                <div className="section-heading">
-                  <h2>账户</h2>
+            <main className="grid gap-4 px-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              <section className="grid gap-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="m-0 flex items-center gap-2 text-sm font-semibold">
+                    账户
+                    {accounts.length > 0 && (
+                      <span className="rounded-full bg-surface-container px-2 py-0.5 text-[11px] font-medium text-on-surface-variant">
+                        {accounts.length} 个账户
+                      </span>
+                    )}
+                  </h2>
                   <button
-                    className="text-button"
+                    className={textButtonClass}
                     onClick={() => setAccountModal(false)}
                   >
-                    添加
+                    ＋ 添加
                   </button>
                 </div>
                 {loading ? (
                   <Loading />
                 ) : (
-                  accounts.map((account) => (
-                    <article className="account" key={account.id}>
-                      <div className="avatar">{initials(account.name)}</div>
-                      <div>
-                        <strong>{account.name}</strong>
-                        <small>
-                          {account.email} · {account.provider === "custom" ? "IMAP / SMTP" : providerPresets[account.provider as Exclude<ProviderPreset, "custom">]?.label ?? account.provider}
-                        </small>
-                        <span className={`status ${account.connectionStatus ?? account.status}`}>
-                          {(account.connectionStatus ?? account.status) === "checking"
-                            ? "正在后台验证连接…"
-                            : (account.connectionStatus ?? account.status) === "connected"
-                              ? "IMAP / SMTP 已连接"
-                              : (account.connectionStatus ?? account.status) === "failed"
-                                ? `连接暂不可用${account.connectionError ? `（${account.connectionError}）` : ""}`
-                                : account.credentialConfigured ? "等待后台验证" : "尚未配置凭据"}
-                        </span>
-                      </div>
-                      <div className="account-actions">
-                        <button
-                          className="text-button"
-                          onClick={() => setAccountModal(account)}
-                        >
-                          编辑
-                        </button>
-                      </div>
-                    </article>
-                  ))
+                  accounts.map((account) => {
+                    const status = account.connectionStatus ?? account.status;
+                    return (
+                      <article className={`grid grid-cols-[auto_1fr] gap-3 p-3.5 ${cardClass}`} key={account.id}>
+                        <div className="flex size-10 items-center justify-center rounded-full bg-primary-fixed text-sm font-semibold text-on-primary-fixed-variant">
+                          {initials(account.name)}
+                        </div>
+                        <div className="grid min-w-0 gap-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                            <strong className="text-sm font-semibold break-all">{account.name}</strong>
+                            <button
+                              className={textButtonClass}
+                              onClick={() => setAccountModal(account)}
+                            >
+                              编辑
+                            </button>
+                          </div>
+                          <small className="text-xs break-all text-on-surface-variant">
+                            {account.email} · {account.provider === "custom" ? "IMAP / SMTP" : providerPresets[account.provider as Exclude<ProviderPreset, "custom">]?.label ?? account.provider}
+                          </small>
+                          <span
+                            className={`inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                              status === "connected"
+                                ? "bg-tertiary-fixed/50 text-tertiary"
+                                : status === "failed"
+                                  ? "bg-error-container text-on-error-container"
+                                  : "bg-surface-container text-on-surface-variant"
+                            }`}
+                          >
+                            <span
+                              className={`size-1.5 rounded-full ${
+                                status === "connected" ? "bg-tertiary" : status === "failed" ? "bg-error" : "bg-outline"
+                              }`}
+                            />
+                            {status === "checking"
+                              ? "正在后台验证连接…"
+                              : status === "connected"
+                                ? "IMAP / SMTP 已连接"
+                                : status === "failed"
+                                  ? `连接暂不可用${account.connectionError ? `（${account.connectionError}）` : ""}`
+                                  : account.credentialConfigured ? "等待后台验证" : "尚未配置凭据"}
+                          </span>
+                        </div>
+                      </article>
+                    );
+                  })
                 )}
                 {!loading && !accounts.length && (
-                  <p className="empty">尚未添加账户。</p>
+                  <p className={`m-0 p-5 text-center text-sm text-on-surface-variant ${cardClass}`}>尚未添加账户。</p>
                 )}
               </section>
-              <section className="thread-list" aria-label="邮件线程">
-                <div className="section-heading">
+              <section className="grid gap-2.5" aria-label="邮件线程">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                   {selectionMode ? (
-                    <div className="selection-heading" role="status" aria-live="polite">
-                      <strong>已选择 {selectedThreadIds.size} 个线程</strong>
-                      <button className="text-button" onClick={exitSelection}>取消</button>
+                    <div className="flex flex-1 items-center gap-2" role="status" aria-live="polite">
+                      <strong className="text-sm font-semibold">已选择 {selectedThreadIds.size} 个线程</strong>
+                      <button className={textButtonClass} onClick={exitSelection}>取消</button>
                     </div>
                   ) : (
-                    <h2>邮件</h2>
+                    <h2 className="m-0 text-sm font-semibold">邮件</h2>
                   )}
                   {!selectionMode && (
-                    <small className="selection-hint">长按邮件可批量选择</small>
+                    <small className="text-xs text-on-surface-variant">长按邮件可批量选择</small>
                   )}
-                  <div className="section-actions">
-                    {selectionMode && (
-                      <button
-                        className="danger text-button"
-                        disabled={!canDelete || !selectedThreadIds.size || deleting}
-                        title={canDelete ? "删除已选择的线程" : "删除只能从 Telegram Mini App 发起"}
-                        onClick={() => {
-                          setDeleteTargetIds(Array.from(selectedThreadIds));
-                          setDeleteOpen(true);
-                        }}
-                      >
-                        删除
-                      </button>
-                    )}
-                    <button className="text-button" onClick={() => void refresh()}>
-                      刷新
+                  <span className="flex-1" />
+                  {selectionMode && (
+                    <button
+                      className="inline-flex min-h-9 items-center rounded-lg bg-error-container px-2.5 text-sm font-semibold text-on-error-container transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={!canDelete || !selectedThreadIds.size || deleting}
+                      title={canDelete ? "删除已选择的线程" : "删除只能从 Telegram Mini App 发起"}
+                      onClick={() => {
+                        setDeleteTargetIds(Array.from(selectedThreadIds));
+                        setDeleteOpen(true);
+                      }}
+                    >
+                      删除
                     </button>
-                  </div>
+                  )}
+                  <button className={textButtonClass} onClick={() => void refresh()}>
+                    刷新
+                  </button>
                 </div>
                 {loading ? (
                   <Loading />
                 ) : groupedThreads.length ? (
                   groupedThreads.map(({ accountId, account, threads: accountThreads }) => (
-                    <section className="thread-account-group" key={accountId} aria-labelledby={`account-heading-${accountId}`}>
-                      <div className="thread-account-heading">
-                        <span className="avatar avatar-small">{initials(account?.name ?? account?.email ?? "?")}</span>
-                        <span>
-                          <strong id={`account-heading-${accountId}`}>{account?.name ?? "其他账户"}</strong>
-                          <small>{account?.email ?? "未识别账户"} · {accountThreads.length} 封线程</small>
+                    <section className="grid gap-2" key={accountId} aria-labelledby={`account-heading-${accountId}`}>
+                      <div className="flex items-center gap-2.5 px-1">
+                        <span className="flex size-8 items-center justify-center rounded-full bg-primary-fixed text-xs font-semibold text-on-primary-fixed-variant">
+                          {initials(account?.name ?? account?.email ?? "?")}
+                        </span>
+                        <span className="grid min-w-0 gap-0.5">
+                          <strong className="text-xs font-semibold break-all" id={`account-heading-${accountId}`}>
+                            {account?.name ?? "其他账户"}
+                          </strong>
+                          <small className="text-[11px] break-all text-on-surface-variant">
+                            {account?.email ?? "未识别账户"} · {accountThreads.length} 封线程
+                          </small>
                         </span>
                       </div>
+                      <div className={`overflow-hidden ${cardClass}`}>
                       {accountThreads.map((thread) => {
                         const selected = selectedThreadIds.has(thread.id);
                         return (
                           <button
-                            className={`thread ${thread.unread ? "unread" : ""} ${selected ? "selected" : ""}`}
+                            className={`flex w-full items-start gap-3 border-b border-outline-variant/40 p-3.5 text-left transition last:border-b-0 active:bg-surface-container-low ${
+                              selected ? "bg-primary-fixed/60" : "bg-transparent"
+                            }`}
                             key={thread.id}
                             aria-pressed={selectionMode ? selected : undefined}
                             onPointerDown={(event) => {
@@ -2553,21 +2898,54 @@ export function App() {
                               void openThread(thread);
                             }}
                           >
-                            {selectionMode && <span className="selection-indicator" aria-hidden="true">{selected ? "✓" : ""}</span>}
-                            <span className="avatar">{initials(thread.participants[0] ?? account?.name ?? account?.email)}</span>
-                            <span>
-                              <strong>{thread.subject}</strong>
-                              <small className="thread-preview">{thread.summary ? summaryPlainText(thread.summary) : thread.preview}</small>
-                              {thread.summaryStatus && normalizeSummaryStatus(thread.summaryStatus, thread.summary) !== "generated" && <small className={`summary-list-status ${normalizeSummaryStatus(thread.summaryStatus, thread.summary)}`}>{summaryStatusLabel(thread.summaryStatus, thread.summary)}</small>}
-                              <small>{fmtDate(thread.date)}</small>
+                            {selectionMode && (
+                              <span
+                                className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-xs ${
+                                  selected
+                                    ? "border-primary-container bg-primary-container text-on-primary-container"
+                                    : "border-outline-variant bg-surface-container-lowest"
+                                }`}
+                                aria-hidden="true"
+                              >
+                                {selected ? "✓" : ""}
+                              </span>
+                            )}
+                            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary-fixed text-sm font-semibold text-on-primary-fixed-variant">
+                              {initials(thread.participants[0] ?? account?.name ?? account?.email)}
+                            </span>
+                            <span className="grid min-w-0 flex-1 gap-1">
+                              <span className="flex items-start justify-between gap-2">
+                                <strong className={`text-sm break-words ${thread.unread ? "font-bold" : "font-semibold"}`}>
+                                  {thread.subject}
+                                </strong>
+                                <span className="flex shrink-0 items-center gap-1.5">
+                                  {thread.unread && <span className="size-2 rounded-full bg-primary-container" aria-hidden="true" />}
+                                  <small className="text-[11px] whitespace-nowrap text-on-surface-variant">{fmtDate(thread.date)}</small>
+                                </span>
+                              </span>
+                              <small className="line-clamp-2 text-xs text-on-surface-variant">
+                                {thread.summary ? summaryPlainText(thread.summary) : thread.preview}
+                              </small>
+                              {thread.summaryStatus && normalizeSummaryStatus(thread.summaryStatus, thread.summary) !== "generated" && (
+                                <small
+                                  className={`w-fit rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
+                                    normalizeSummaryStatus(thread.summaryStatus, thread.summary) === "failed"
+                                      ? "bg-error-container text-on-error-container"
+                                      : "bg-secondary-fixed text-secondary"
+                                  }`}
+                                >
+                                  {summaryStatusLabel(thread.summaryStatus, thread.summary)}
+                                </small>
+                              )}
                             </span>
                           </button>
                         );
                       })}
+                      </div>
                     </section>
                   ))
                 ) : (
-                  <p className="empty">没有邮件。</p>
+                  <p className={`m-0 p-5 text-center text-sm text-on-surface-variant ${cardClass}`}>没有邮件。</p>
                 )}
               </section>
             </main>
@@ -2575,7 +2953,7 @@ export function App() {
         )}
       </div>
       {accountModal !== null && (
-        <div className="scrim">
+        <div className="fixed inset-0 z-20 flex items-end justify-center bg-inverse-surface/40 p-3 backdrop-blur-[3px] sm:items-center">
           <AccountForm
             account={accountModal || undefined}
             onClose={() => setAccountModal(null)}
@@ -2595,7 +2973,7 @@ export function App() {
         </div>
       )}
       {llmSettingsOpen && llmSettings && (
-        <div className="scrim">
+        <div className="fixed inset-0 z-20 flex items-end justify-center bg-inverse-surface/40 p-3 backdrop-blur-[3px] sm:items-center">
           <LlmSettingsForm
             settings={llmSettings}
             onClose={() => setLlmSettingsOpen(false)}
@@ -2605,7 +2983,7 @@ export function App() {
         </div>
       )}
       {compose && composeAccount && (
-        <div className="scrim">
+        <div className="fixed inset-0 z-20 flex items-end justify-center bg-inverse-surface/40 p-3 backdrop-blur-[3px] sm:items-center">
           <Composer
             account={composeAccount}
             accounts={accounts}
@@ -2617,7 +2995,7 @@ export function App() {
         </div>
       )}
       {deleteOpen && deleteTargetIds.length > 0 && (
-        <div className="scrim">
+        <div className="fixed inset-0 z-20 flex items-end justify-center bg-inverse-surface/40 p-3 backdrop-blur-[3px] sm:items-center">
           <DeleteConfirmation
             count={deleteTargetIds.length}
             provider={deleteProvider}
@@ -2631,7 +3009,7 @@ export function App() {
         </div>
       )}
       {accountDeleteTarget && (
-        <div className="scrim">
+        <div className="fixed inset-0 z-20 flex items-end justify-center bg-inverse-surface/40 p-3 backdrop-blur-[3px] sm:items-center">
           <AccountDeleteConfirmation
             account={accountDeleteTarget}
             deleting={accountDeleting}
