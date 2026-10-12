@@ -2711,77 +2711,6 @@ export function App() {
               </div>
             </header>
             <main className="grid gap-4 px-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
-              <section className="grid gap-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="m-0 flex items-center gap-2 text-sm font-semibold">
-                    账户
-                    {accounts.length > 0 && (
-                      <span className="rounded-full bg-surface-container px-2 py-0.5 text-[11px] font-medium text-on-surface-variant">
-                        {accounts.length} 个账户
-                      </span>
-                    )}
-                  </h2>
-                  <button
-                    className={textButtonClass}
-                    onClick={() => setAccountModal(false)}
-                  >
-                    ＋ 添加
-                  </button>
-                </div>
-                {loading ? (
-                  <Loading />
-                ) : (
-                  accounts.map((account) => {
-                    const status = account.connectionStatus ?? account.status;
-                    return (
-                      <article className={`grid grid-cols-[auto_1fr] gap-3 p-3.5 ${cardClass}`} key={account.id}>
-                        <div className="flex size-10 items-center justify-center rounded-full bg-primary-fixed text-sm font-semibold text-on-primary-fixed-variant">
-                          {initials(account.name)}
-                        </div>
-                        <div className="grid min-w-0 gap-1.5">
-                          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                            <strong className="text-sm font-semibold break-all">{account.name}</strong>
-                            <button
-                              className={textButtonClass}
-                              onClick={() => setAccountModal(account)}
-                            >
-                              编辑
-                            </button>
-                          </div>
-                          <small className="text-xs break-all text-on-surface-variant">
-                            {account.email} · {account.provider === "custom" ? "IMAP / SMTP" : providerPresets[account.provider as Exclude<ProviderPreset, "custom">]?.label ?? account.provider}
-                          </small>
-                          <span
-                            className={`inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${
-                              status === "connected"
-                                ? "bg-tertiary-fixed/50 text-tertiary"
-                                : status === "failed"
-                                  ? "bg-error-container text-on-error-container"
-                                  : "bg-surface-container text-on-surface-variant"
-                            }`}
-                          >
-                            <span
-                              className={`size-1.5 rounded-full ${
-                                status === "connected" ? "bg-tertiary" : status === "failed" ? "bg-error" : "bg-outline"
-                              }`}
-                            />
-                            {status === "checking"
-                              ? "正在后台验证连接…"
-                              : status === "connected"
-                                ? "IMAP / SMTP 已连接"
-                                : status === "failed"
-                                  ? `连接暂不可用${account.connectionError ? `（${account.connectionError}）` : ""}`
-                                  : account.credentialConfigured ? "等待后台验证" : "尚未配置凭据"}
-                          </span>
-                        </div>
-                      </article>
-                    );
-                  })
-                )}
-                {!loading && !accounts.length && (
-                  <p className={`m-0 p-5 text-center text-sm text-on-surface-variant ${cardClass}`}>尚未添加账户。</p>
-                )}
-              </section>
               <section className="grid gap-2.5" aria-label="邮件线程">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                   {selectionMode ? (
@@ -2946,6 +2875,77 @@ export function App() {
                   ))
                 ) : (
                   <p className={`m-0 p-5 text-center text-sm text-on-surface-variant ${cardClass}`}>没有邮件。</p>
+                )}
+              </section>
+              <section className="grid gap-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="m-0 flex items-center gap-2 text-sm font-semibold">
+                    账户
+                    {accounts.length > 0 && (
+                      <span className="rounded-full bg-surface-container px-2 py-0.5 text-[11px] font-medium text-on-surface-variant">
+                        {accounts.length} 个账户
+                      </span>
+                    )}
+                  </h2>
+                  <button
+                    className={textButtonClass}
+                    onClick={() => setAccountModal(false)}
+                  >
+                    ＋ 添加
+                  </button>
+                </div>
+                {loading ? (
+                  <Loading />
+                ) : (
+                  accounts.map((account) => {
+                    const status = account.connectionStatus ?? account.status;
+                    return (
+                      <article className={`grid grid-cols-[auto_1fr] gap-3 p-3.5 ${cardClass}`} key={account.id}>
+                        <div className="flex size-10 items-center justify-center rounded-full bg-primary-fixed text-sm font-semibold text-on-primary-fixed-variant">
+                          {initials(account.name)}
+                        </div>
+                        <div className="grid min-w-0 gap-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                            <strong className="text-sm font-semibold break-all">{account.name}</strong>
+                            <button
+                              className={textButtonClass}
+                              onClick={() => setAccountModal(account)}
+                            >
+                              编辑
+                            </button>
+                          </div>
+                          <small className="text-xs break-all text-on-surface-variant">
+                            {account.email} · {account.provider === "custom" ? "IMAP / SMTP" : providerPresets[account.provider as Exclude<ProviderPreset, "custom">]?.label ?? account.provider}
+                          </small>
+                          <span
+                            className={`inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                              status === "connected"
+                                ? "bg-tertiary-fixed/50 text-tertiary"
+                                : status === "failed"
+                                  ? "bg-error-container text-on-error-container"
+                                  : "bg-surface-container text-on-surface-variant"
+                            }`}
+                          >
+                            <span
+                              className={`size-1.5 rounded-full ${
+                                status === "connected" ? "bg-tertiary" : status === "failed" ? "bg-error" : "bg-outline"
+                              }`}
+                            />
+                            {status === "checking"
+                              ? "正在后台验证连接…"
+                              : status === "connected"
+                                ? "IMAP / SMTP 已连接"
+                                : status === "failed"
+                                  ? `连接暂不可用${account.connectionError ? `（${account.connectionError}）` : ""}`
+                                  : account.credentialConfigured ? "等待后台验证" : "尚未配置凭据"}
+                          </span>
+                        </div>
+                      </article>
+                    );
+                  })
+                )}
+                {!loading && !accounts.length && (
+                  <p className={`m-0 p-5 text-center text-sm text-on-surface-variant ${cardClass}`}>尚未添加账户。</p>
                 )}
               </section>
             </main>
