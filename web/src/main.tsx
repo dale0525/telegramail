@@ -1795,6 +1795,7 @@ export function ThreadDetail({
   onDelete,
   onRetrySummary,
   canDelete,
+  loading = false,
 }: {
   thread: Thread;
   account: Account;
@@ -1804,12 +1805,22 @@ export function ThreadDetail({
   onDelete(): void;
   onRetrySummary(emailId?: string): void;
   canDelete: boolean;
+  loading?: boolean;
 }) {
   const latest = thread.messages.at(-1);
   const replyTo = latest ? replyRecipients(latest, account.email, false) : [];
   const replyAll = latest ? replyAllRecipients(latest, account.email) : { to: [], cc: [] };
   const hasSummaryData = Boolean(thread.summary || thread.summaryStatus || thread.messages.some((message) => message.summary || message.summaryStatus));
   const [view, setView] = useState<"summary" | "body">(() => hasSummaryData ? "summary" : "body");
+  // The detail view now mounts with list-row data before the bodies arrive, so
+  // the default tab cannot be decided at mount; apply it once the content is in,
+  // unless the user already picked a tab.
+  const viewChosen = useRef(false);
+  useEffect(() => {
+    if (loading || viewChosen.current) return;
+    viewChosen.current = true;
+    setView(hasSummaryData ? "summary" : "body");
+  }, [loading, hasSummaryData]);
   const [externalImagesAllowed, setExternalImagesAllowed] = useState(false);
   useEffect(() => {
     setExternalImagesAllowed(false);
@@ -1883,7 +1894,10 @@ export function ThreadDetail({
           className={`min-h-9 flex-1 rounded-lg text-sm font-semibold transition ${
             view === "summary" ? "bg-surface-container-lowest text-primary-container shadow-[0_1px_3px_rgba(0,0,0,0.06)]" : "text-on-surface-variant"
           }`}
-          onClick={() => setView("summary")}
+          onClick={() => {
+            viewChosen.current = true;
+            setView("summary");
+          }}
         >
           摘要
         </button>
@@ -1894,12 +1908,21 @@ export function ThreadDetail({
           className={`min-h-9 flex-1 rounded-lg text-sm font-semibold transition ${
             view === "body" ? "bg-surface-container-lowest text-primary-container shadow-[0_1px_3px_rgba(0,0,0,0.06)]" : "text-on-surface-variant"
           }`}
-          onClick={() => setView("body")}
+          onClick={() => {
+            viewChosen.current = true;
+            setView("body");
+          }}
         >
           正文
         </button>
       </div>
-      {thread.messages.map((message) => {
+      {loading && (
+        <div className={`flex items-center justify-center gap-3 p-5 ${cardClass}`} role="status" aria-live="polite">
+          <span className="size-5 shrink-0 animate-spin rounded-full border-[3px] border-primary-container/25 border-t-primary-container" />
+          <span className="text-sm text-on-surface-variant">正在加载邮件内容…</span>
+        </div>
+      )}
+      {!loading && thread.messages.map((message) => {
         const status = normalizeSummaryStatus(message.summaryStatus ?? thread.summaryStatus, message.summary ?? thread.summary);
         return (
           <article className={`grid grid-cols-[auto_1fr] gap-3 p-4 ${cardClass}`} key={message.id}>
@@ -1958,7 +1981,7 @@ export function ThreadDetail({
           </article>
         );
       })}
-      {!thread.messages.length && hasSummaryData && (
+      {!loading && !thread.messages.length && hasSummaryData && (
         <section
           className={`grid gap-2.5 rounded-xl border p-4 ${
             threadSummaryStatus === "failed" ? "border-error/35 bg-error-container/40" : "border-secondary/25 bg-secondary-fixed/40"
@@ -1985,7 +2008,8 @@ export function ThreadDetail({
           )}
         </section>
       )}
-      <div className="fixed inset-x-0 bottom-0 z-20 mx-auto flex w-full max-w-[560px] gap-2 border-t border-outline-variant/60 bg-surface-container-lowest/95 px-3 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] backdrop-blur-md">
+      {!loading && (
+        <div className="fixed inset-x-0 bottom-0 z-20 mx-auto flex w-full max-w-[560px] gap-2 border-t border-outline-variant/60 bg-surface-container-lowest/95 px-3 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] backdrop-blur-md">
         <button
           className={`${primaryButtonClass} flex-1`}
           onClick={() =>
@@ -2026,7 +2050,8 @@ export function ThreadDetail({
         >
           转发
         </button>
-      </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -2195,6 +2220,7 @@ export function App() {
   const [accountDeleting, setAccountDeleting] = useState(false);
   const [compose, setCompose] = useState<Partial<ComposePayload> | null>(null);
   const [current, setCurrent] = useState<Thread | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [setupCode, setSetupCode] = useState("");
   const [setupError, setSetupError] = useState("");
@@ -2349,11 +2375,18 @@ export function App() {
   const pendingStatuses = ["pending", "generating", "running", "queued", "processing", "retrying", "scheduled", "waiting", "in_progress", "in-progress"];
   const hasPendingSummaries = threads.some((thread) => pendingStatuses.includes(String(thread.summaryStatus ?? "").toLowerCase()))
     || Boolean(current?.messages.some((message) => pendingStatuses.includes(String(message.summaryStatus ?? "").toLowerCase())));
+  // Refetch the open thread only while that same thread still has work in
+  // flight.  Keying this off the list-wide flag re-downloaded the whole open
+  // thread every 2.5s whenever any unrelated thread was still pending.
+  const currentIsPending = Boolean(current) && (
+    pendingStatuses.includes(String(current?.summaryStatus ?? "").toLowerCase())
+    || Boolean(current?.messages.some((message) => pendingStatuses.includes(String(message.summaryStatus ?? "").toLowerCase())))
+  );
   useEffect(() => {
     if (!ready || (!hasCheckingAccounts && !hasPendingSummaries)) return;
     const timer = window.setInterval(() => {
       void refresh({ silent: true });
-      if (current && hasPendingSummaries && typeof api.thread === "function") {
+      if (current && currentIsPending && typeof api.thread === "function") {
         detailController.current?.abort();
         const controller = new AbortController();
         detailController.current = controller;
@@ -2375,11 +2408,8 @@ export function App() {
     }, 2500);
     return () => {
       window.clearInterval(timer);
-      detailController.current?.abort();
-      detailController.current = null;
-      detailSequence.current += 1;
     };
-  }, [ready, hasCheckingAccounts, hasPendingSummaries, current?.id]);
+  }, [ready, hasCheckingAccounts, hasPendingSummaries, currentIsPending, current?.id]);
   const bind = async (event: React.FormEvent) => {
     event.preventDefault();
     try {
@@ -2435,9 +2465,26 @@ export function App() {
       return null;
     } finally {
       if (detailController.current === controller) detailController.current = null;
+      // Only the newest request may clear the spinner; an aborted or superseded
+      // request must leave it for the load that replaced it.
+      if (sequence === detailSequence.current) setDetailLoading(false);
     }
   };
+  const closeThread = () => {
+    // Leaving must also cancel the in-flight detail request, otherwise a late
+    // response would reopen the thread the user just dismissed.
+    detailController.current?.abort();
+    detailController.current = null;
+    detailSequence.current += 1;
+    setDetailLoading(false);
+    setCurrent(null);
+  };
   const openThread = async (thread: Thread) => {
+    // Enter the detail view immediately with the list-row data so the tap has
+    // visible feedback; the full message bodies arrive from the detail request
+    // below and replace this placeholder in place.
+    setCurrent((old) => (old?.id === thread.id ? old : thread));
+    setDetailLoading(true);
     await loadThread(thread.id, thread);
   };
   useEffect(() => {
@@ -2579,7 +2626,7 @@ export function App() {
       // as soon as Telegramail accepts the request, before Telegram removes the
       // currently open Topic and the native client dismisses its host window.
       setThreads((items) => items.filter((item) => !deletedIds.includes(item.id)));
-      if (current && deletedIds.includes(current.id)) setCurrent(null);
+      if (current && deletedIds.includes(current.id)) closeThread();
       deletedIds.forEach((id) => deleteKeys.current.delete(id));
       setSelectedThreadIds((items) => new Set([...items].filter((id) => !deletedIds.includes(id))));
       if (!failedCount) {
@@ -2684,7 +2731,8 @@ export function App() {
           <ThreadDetail
             thread={current}
             account={currentAccount}
-            onBack={() => setCurrent(null)}
+            loading={detailLoading}
+            onBack={closeThread}
             onOpenLlmSettings={() => void openLlmSettings()}
             onCompose={openComposer}
             canDelete={canDelete}
