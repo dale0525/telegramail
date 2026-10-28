@@ -6,6 +6,11 @@
 - `web/dist/` 是构建产物，不直接编辑；Mini App 改动需重新构建才会被后端提供，构建与测试命令见 `README.md` 的 Development 章节。
 - `.env`、`data/`（含数据库与各类附件）和生产 Compose volumes 属于运行时状态，不得进入发布包或被常规修复覆盖。
 
+## 依赖与信任库
+
+- 运行时的 TLS 信任来自两个互不相干的地方：基础镜像的 Debian `ca-certificates` 包，以及 `certifi`（httpx 走它，`ssl.create_default_context()` 走系统包）。只更新其中一个不生效，两者都要在 `Dockerfile` 与 `requirements.txt` 里处理。
+- 依赖版本在 `requirements.txt` 与 `pixi.toml` 两处同时固定，改一处必须改另一处。`pixi.lock` 是 v6 格式，pixi 0.80 的 `pixi lock` 会顺带把整个文件升到 v7（约 3000 行无关变更），所以改依赖时直接改锁文件里对应的条目，再用 `pixi install --locked` 验证。
+
 ## 修复与发布
 
 - 对应用、Worker、Telegram Bot API 集成或 Mini App 的常规 bug 修复，完成相关测试、全量测试和构建检查后，直接按 `.agents/skills/telegramail-development/references/deployment.md` 部署生产，不再等待额外的部署确认。
