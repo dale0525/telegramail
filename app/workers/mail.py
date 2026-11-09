@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable
 
 from app.integrations.mail.compose import MailComposer
 from app.integrations.mail.telegram import ProjectionDeliveryError, ProjectionWaitingBinding, TelegramTopic, format_topic_name
-from app.integrations.telegram_http import is_missing_forum_topic_error
+from app.integrations.telegram_http import is_missing_forum_topic_error, is_permanent_projection_error
 from app.integrations.mail.types import DeleteOperation, FetchedMessages, IncomingMail, ProjectionJob, SendOperation, SummaryJob
 from app.services.account_verification import classify_connection_error
 from app.services.telegram_mail_card import has_projectable_mail_content
@@ -1066,12 +1066,26 @@ class MailProjectionWorker:
                 return job
             thread = await _call(self.store, ("resolve_thread", "find_thread"), job.mail)
             if thread is None:
-                created_topic = await _call(
-                    self.telegram,
-                    ("ensure_private_topic", "ensure_topic", "create_topic"),
-                    job.account,
-                    format_topic_name(job.mail.sender, job.mail.subject),
-                )
+                try:
+                    created_topic = await _call(
+                        self.telegram,
+                        ("ensure_private_topic", "ensure_topic", "create_topic"),
+                        job.account,
+                        format_topic_name(job.mail.sender, job.mail.subject),
+                    )
+                except Exception as exc:
+                    if not is_permanent_projection_error(exc):
+                        raise
+                    # Telegram refuses every Topic creation (for example the
+                    # upstream BOT_TOPIC_WRONG_HOME regression). Delivering into
+                    # the plain private chat keeps the mail from being dropped
+                    # for as long as the upstream outage lasts.
+                    logger.warning(
+                        "Telegram Topic creation rejected permanently; delivering into the plain chat: projection_id=%s error=%s",
+                        job.id,
+                        getattr(exc, "description", exc),
+                    )
+                    created_topic = await _call(self.telegram, ("private_chat_target",), job.account)
                 thread = created_topic
             assigned = await _call(self.store, ("assign_thread", "set_email_thread"), job.mail, thread)
             assignment_made = True
@@ -1132,7 +1146,8 @@ class MailProjectionWorker:
             else:
                 cleaned = await _compensate_empty_topic(self.store, self.telegram, job.mail, created_topic, assignment_made)
                 if cleaned:
-                    await _complete_projection(self.store, job, False)
+                    await _complete_projection(self.store, job, False,
+                                               retry_exhausted=is_permanent_projection_error(exc))
                 else:
                     await _mark_projection_ambiguous(self.store, job)
         except Exception as exc:
@@ -1142,7 +1157,11 @@ class MailProjectionWorker:
             else:
                 cleaned = await _compensate_empty_topic(self.store, self.telegram, job.mail, created_topic, assignment_made)
                 if cleaned:
-                    await _complete_projection(self.store, job, False)
+                    # A 400 with a named reason will fail identically forever;
+                    # record it as retry-exhausted so it stops consuming a
+                    # createForumTopic call every worker cycle.
+                    await _complete_projection(self.store, job, False,
+                                               retry_exhausted=is_permanent_projection_error(exc))
                 else:
                     await _mark_projection_ambiguous(self.store, job)
         return job
@@ -1286,7 +1305,8 @@ async def _complete_delete_mapping(store: Any, operation_id: Any, mapping: dict[
 
 async def _complete_projection(store: Any, job: ProjectionJob, success: bool,
                                telegram_message_id: int | None = None,
-                               *, message_kind: str | None = None) -> None:
+                               *, message_kind: str | None = None,
+                               retry_exhausted: bool = False) -> None:
     if job.lease_token:
         await _call(
             store,
@@ -1296,6 +1316,7 @@ async def _complete_projection(store: Any, job: ProjectionJob, success: bool,
             telegram_message_id,
             lease_token=job.lease_token,
             message_kind=message_kind,
+            retry_exhausted=retry_exhausted,
         )
     else:
         await _call(
@@ -1305,6 +1326,7 @@ async def _complete_projection(store: Any, job: ProjectionJob, success: bool,
             success,
             telegram_message_id,
             message_kind=message_kind,
+            retry_exhausted=retry_exhausted,
         )
 
 
@@ -1333,6 +1355,10 @@ def _same_topic(left: Any, right: Any) -> bool:
 
 
 async def _delete_new_topic(telegram: Any, topic: Any) -> bool:
+    if isinstance(topic, TelegramTopic) and topic.message_thread_id is None:
+        # Degraded plain-chat delivery created no Topic, so there is nothing to
+        # compensate and no empty Topic can be left behind.
+        return True
     try:
         result = await _delete_topic(telegram, topic)
         return result is True

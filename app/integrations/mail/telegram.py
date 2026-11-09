@@ -17,8 +17,15 @@ from .types import IncomingMail
 
 @dataclass(frozen=True)
 class TelegramTopic:
+    """A delivery target: a forum Topic, or a plain chat message when unsupported.
+
+    ``message_thread_id`` is ``None`` only for the degraded delivery used while
+    Telegram refuses to create forum topics.  The message is then addressable
+    by chat alone and intentionally has no Topic mapping.
+    """
+
     chat_id: int | str
-    message_thread_id: int
+    message_thread_id: int | None
     db_thread_id: int | None = None
 
 
@@ -30,10 +37,16 @@ class ProjectionDeliveryError(RuntimeError):
     """A projection failed after zero or more Telegram messages were accepted."""
 
     def __init__(self, *, sent_any: bool, ambiguous: bool = False,
-                 topic_missing: bool = False) -> None:
+                 topic_missing: bool = False, error_code: int | None = None,
+                 description: str = "") -> None:
         self.sent_any = sent_any
         self.ambiguous = ambiguous
         self.topic_missing = topic_missing
+        # Preserve the Bot API rejection so the lease owner can distinguish a
+        # permanently rejected request from a transient one; without this the
+        # permanent-retry guard never sees the original error code.
+        self.error_code = error_code
+        self.description = description
         super().__init__(type(self).__name__)
 
 
@@ -92,6 +105,11 @@ class MailTelegramProjection:
         result = await self.client.create_forum_topic(chat_id, truncate_topic_name(subject))
         return TelegramTopic(chat_id, int(result["message_thread_id"]))
 
+    async def private_chat_target(self, account: Any) -> TelegramTopic:
+        """Return the plain-chat delivery target used when Topics are unavailable."""
+
+        return TelegramTopic(self._chat_id(account), None)
+
     @staticmethod
     def has_projectable_content(mail: IncomingMail) -> bool:
         return has_projectable_mail_content(
@@ -133,7 +151,10 @@ class MailTelegramProjection:
         primary_message_kind = "text"
 
         def keyboard() -> dict[str, Any] | None:
-            if topic.db_thread_id is not None:
+            # The Topic delete control cannot act on a degraded plain-chat
+            # delivery: there is no Topic to remove, so showing the button would
+            # only produce a delete request Telegram cannot fulfil.
+            if topic.db_thread_id is not None and topic.message_thread_id is not None:
                 return topic_delete_keyboard(topic.db_thread_id, action_links=action_links)
             if action_links:
                 return topic_action_keyboard(action_links)
@@ -220,6 +241,8 @@ class MailTelegramProjection:
                 sent_any=bool(results),
                 ambiguous=bool(getattr(exc, "ambiguous", False)),
                 topic_missing=is_missing_forum_topic_error(exc),
+                error_code=getattr(exc, "error_code", None),
+                description=str(getattr(exc, "description", exc)),
             ) from exc
         if results and isinstance(results[0], Mapping):
             # Carry the primary Bot API message shape to the lease owner so it

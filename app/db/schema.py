@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS telegram_delivery_parts (
     topic_delete_markup_version INTEGER NOT NULL DEFAULT 0,
     topic_delete_markup_attempts INTEGER NOT NULL DEFAULT 0,
     topic_action_markup_version INTEGER NOT NULL DEFAULT 0,
+    retry_exhausted INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE(email_id, part_index)
@@ -548,6 +549,7 @@ def _apply_schema_migrations(conn: sqlite3.Connection, now: int) -> None:
         "topic_delete_markup_version": "INTEGER NOT NULL DEFAULT 0",
         "topic_delete_markup_attempts": "INTEGER NOT NULL DEFAULT 0",
         "topic_action_markup_version": "INTEGER NOT NULL DEFAULT 0",
+        "retry_exhausted": "INTEGER NOT NULL DEFAULT 0",
     })
     _ensure_columns(conn, "llm_settings", {
         "enabled": "INTEGER NOT NULL DEFAULT 0",

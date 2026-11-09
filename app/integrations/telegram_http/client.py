@@ -63,6 +63,23 @@ def is_missing_forum_topic_error(error: BaseException) -> bool:
     return "topic_id_invalid" in description or "message thread not found" in description
 
 
+def is_permanent_projection_error(error: BaseException) -> bool:
+    """Return whether retrying this Bot API failure can never succeed.
+
+    Only a 400 that carries a named reason is treated as permanent. Rate
+    limits, 5xx responses and transport failures stay retryable, so a
+    server-side change such as ``BOT_TOPIC_WRONG_HOME`` stops costing one
+    createForumTopic call per cycle instead of being retried forever.
+    """
+
+    if bool(getattr(error, "ambiguous", False)):
+        return False
+    if getattr(error, "error_code", None) != 400:
+        return False
+    description = str(getattr(error, "description", error)).strip()
+    return bool(description) and not is_missing_forum_topic_error(error)
+
+
 @dataclass(frozen=True)
 class MiniAppOnlyProjection:
     """Result used when a file exceeds the Bot API's 50 MiB document limit."""

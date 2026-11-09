@@ -595,12 +595,14 @@ class V2MailRepositoryAdapter:
         *,
         lease_token: str | None = None,
         message_kind: str | None = None,
+        retry_exhausted: bool = False,
     ) -> bool:
         if not lease_token:
             return False
         return self.repository.complete_projection(int(projection_id), lease_token=lease_token, success=success,
                                                    telegram_message_id=telegram_message_id,
-                                                   message_kind=message_kind) is not None
+                                                   message_kind=message_kind,
+                                                   retry_exhausted=retry_exhausted) is not None
 
     def mark_projection_ambiguous(self, projection_id: int | str, *, lease_token: str | None = None) -> bool:
         if not lease_token:
@@ -610,9 +612,14 @@ class V2MailRepositoryAdapter:
     def resolve_thread(self, mail: IncomingMail) -> TelegramTopic | None:
         row = self.repository.resolve_thread(int(mail.account_id), message_id=mail.message_id, in_reply_to=mail.in_reply_to,
                                            references_header=" ".join(mail.references), subject=mail.subject)
-        if not row or row.get("telegram_chat_id") is None or row.get("telegram_message_thread_id") is None:
+        if not row or row.get("telegram_chat_id") is None:
             return None
-        return TelegramTopic(row["telegram_chat_id"], int(row["telegram_message_thread_id"]), int(row["id"]))
+        # A thread mapped during the Topic outage has no message_thread_id; it
+        # still resolves so the next mail in the thread reuses the plain chat
+        # instead of trying to create another Topic every delivery.
+        thread_id = row.get("telegram_message_thread_id")
+        return TelegramTopic(row["telegram_chat_id"],
+                             None if thread_id is None else int(thread_id), int(row["id"]))
 
     def assign_thread(self, mail: IncomingMail, thread_id: Any) -> TelegramTopic:
         key = self._email_key(mail)
@@ -627,9 +634,11 @@ class V2MailRepositoryAdapter:
                                                     telegram_chat_id=int(thread_id.chat_id), telegram_message_thread_id=thread_id.message_thread_id)
         else:
             row = self.repository.assign_thread(email_id, int(thread_id), account_id=int(mail.account_id), root_message_id=mail.message_id, subject=mail.subject)
-        if not row or row.get("telegram_chat_id") is None or row.get("telegram_message_thread_id") is None:
+        if not row or row.get("telegram_chat_id") is None:
             raise ValueError("thread projection mapping was not persisted")
-        return TelegramTopic(row["telegram_chat_id"], int(row["telegram_message_thread_id"]), int(row["id"]))
+        thread_id = row.get("telegram_message_thread_id")
+        return TelegramTopic(row["telegram_chat_id"],
+                             None if thread_id is None else int(thread_id), int(row["id"]))
 
     def replace_deleted_topic(self, thread_id: int, **mapping: Any) -> Dict[str, Any] | None:
         return self.repository.replace_deleted_topic(int(thread_id), **mapping)
@@ -638,6 +647,12 @@ class V2MailRepositoryAdapter:
         email_id = self._email_ids.get(self._email_key(mail))
         if email_id is None:
             return False
+        if topic.message_thread_id is None:
+            # Degraded plain-chat delivery never persisted a Topic, so the only
+            # state to undo is the email-to-thread assignment itself.
+            return self.repository.rollback_new_topic_assignment(
+                int(email_id), telegram_chat_id=None, telegram_message_thread_id=None
+            ) is not None
         return self.repository.rollback_new_topic_assignment(
             int(email_id), telegram_chat_id=int(topic.chat_id), telegram_message_thread_id=int(topic.message_thread_id)
         ) is not None

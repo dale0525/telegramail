@@ -2979,11 +2979,13 @@ class V2Repository:
         with self.db.transaction(immediate=True) as conn:
             # Fresh mail must not be starved by one permanently failing older
             # projection. Failed rows remain retryable, but queued work gets the
-            # first attempt before retries resume.
+            # first attempt before retries resume. A row whose failure was
+            # definitively rejected by Telegram carries retry_exhausted and is
+            # never claimed again, so one bad mail cannot retry forever.
             statuses = ("queued", "failed") if include_failed else ("queued",)
             marks = ", ".join("?" for _ in statuses)
             row = conn.execute(f"""SELECT id FROM telegram_delivery_parts
-                WHERE status IN ({marks})
+                WHERE status IN ({marks}) AND retry_exhausted = 0
                 ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, created_at, id
                 LIMIT 1""", statuses).fetchone()
             if row is None:
@@ -3003,6 +3005,7 @@ class V2Repository:
         success: bool,
         telegram_message_id: Optional[int] = None,
         message_kind: Optional[str] = None,
+        retry_exhausted: bool = False,
     ) -> Optional[Dict[str, Any]]:
         token = lease_token.strip()
         if not token:
@@ -3014,10 +3017,12 @@ class V2Repository:
         with self.db.transaction(immediate=True) as conn:
             cur = conn.execute("""UPDATE telegram_delivery_parts SET status = ?, telegram_message_id = COALESCE(?, telegram_message_id),
                                   message_kind = COALESCE(?, message_kind),
+                                  retry_exhausted = ?,
                                   lease_token = NULL, lease_until = NULL, updated_at = ?
                                   WHERE id = ? AND status = 'delivering' AND lease_token = ? AND lease_until >= ?""",
                                ("delivered" if success else "failed", telegram_message_id if success else None,
-                                normalized_kind if success else None, now, int(part_id), token, now))
+                                normalized_kind if success else None, 0 if success else int(bool(retry_exhausted)),
+                                now, int(part_id), token, now))
             if cur.rowcount != 1:
                 return None
             return _row(conn.execute("SELECT * FROM telegram_delivery_parts WHERE id = ?", (int(part_id),)).fetchone())

@@ -1498,3 +1498,162 @@ class TestV2SQLiteAdapter(unittest.IsolatedAsyncioTestCase):
                     os.unlink(path + suffix)
                 except FileNotFoundError:
                     pass
+
+    async def test_permanent_send_rejection_fails_once_and_stops_reclaiming(self):
+        from app.db import V2Repository
+
+        fd, path = tempfile.mkstemp(prefix="telegramail-v2-permanent-projection-", suffix=".db")
+        os.close(fd)
+        try:
+            repo = V2Repository(path, master_key=b"x" * 32)
+            repo.bind_admin(42, private_chat_id=9001)
+            account = repo.create_account({"email": "me@example.com", "imap_server": "imap.example.com", "imap_port": 993,
+                                           "imap_ssl": True, "smtp_server": "smtp.example.com", "smtp_port": 465, "smtp_ssl": True}, "secret")
+            adapter = V2MailRepositoryAdapter(repo)
+            mail = IncomingMail(account_id=account["id"], mailbox="INBOX", uid="wrong-home",
+                                sender="sender@example.com", subject="delivery rejected", text_body="body")
+            self.assertTrue(adapter.insert_incoming_if_absent(mail))
+            self.assertTrue(adapter.enqueue_projection(mail))
+
+            class RawTelegram:
+                def __init__(self): self.created = 0
+                async def create_forum_topic(self, _chat, _subject):
+                    self.created += 1
+                    return {"message_thread_id": 88}
+                async def send_message(self, _chat, _text, **_kwargs):
+                    raise TelegramApiError("sendMessage", "Bad Request: chat not found", error_code=400)
+                async def delete_forum_topic(self, _chat, _thread_id):
+                    return True
+
+            raw = RawTelegram()
+            projection = MailTelegramProjection(raw, 9001)
+            worker = MailProjectionWorker(adapter, projection)
+
+            await worker.run_once()
+            self.assertEqual(raw.created, 1)
+            # The same 400 will be rejected identically forever, so the row must
+            # never be claimed again; without this one mail retries every cycle.
+            self.assertIsNone(await worker.run_once())
+            self.assertIsNone(adapter.claim_next_projection("another-worker", 60))
+            self.assertEqual(raw.created, 1)
+            conn = repo.db.connect()
+            try:
+                row = conn.execute("SELECT status, retry_exhausted FROM telegram_delivery_parts").fetchone()
+            finally:
+                conn.close()
+            self.assertEqual((row["status"], row["retry_exhausted"]), ("failed", 1))
+        finally:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.unlink(path + suffix)
+                except FileNotFoundError:
+                    pass
+
+    async def test_transient_transport_failure_stays_retryable(self):
+        from app.db import V2Repository
+
+        fd, path = tempfile.mkstemp(prefix="telegramail-v2-transient-projection-", suffix=".db")
+        os.close(fd)
+        try:
+            repo = V2Repository(path, master_key=b"x" * 32)
+            repo.bind_admin(42, private_chat_id=9001)
+            account = repo.create_account({"email": "me@example.com", "imap_server": "imap.example.com", "imap_port": 993,
+                                           "imap_ssl": True, "smtp_server": "smtp.example.com", "smtp_port": 465, "smtp_ssl": True}, "secret")
+            adapter = V2MailRepositoryAdapter(repo)
+            mail = IncomingMail(account_id=account["id"], mailbox="INBOX", uid="transient",
+                                sender="sender@example.com", subject="temporary", text_body="body")
+            self.assertTrue(adapter.insert_incoming_if_absent(mail))
+            self.assertTrue(adapter.enqueue_projection(mail))
+
+            class RawTelegram:
+                def __init__(self):
+                    self.failing = True
+                    self.created = 0
+                async def create_forum_topic(self, _chat, _subject):
+                    self.created += 1
+                    if self.failing:
+                        raise ConnectionError("Telegram unreachable")
+                    return {"message_thread_id": 77}
+                async def send_message(self, _chat, _text, **_kwargs):
+                    return [{"message_id": 501}]
+
+            raw = RawTelegram()
+            worker = MailProjectionWorker(adapter, MailTelegramProjection(raw, 9001))
+
+            await worker.run_once()
+            self.assertEqual(raw.created, 1)
+            retry = adapter.claim_next_projection("retry-worker", 60)
+            self.assertIsNotNone(retry)
+            self.assertTrue(adapter.complete_projection(retry.id, True, telegram_message_id=501,
+                                                        lease_token=retry.lease_token))
+        finally:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.unlink(path + suffix)
+                except FileNotFoundError:
+                    pass
+
+    async def test_permanent_topic_rejection_falls_back_to_plain_chat_delivery(self):
+        from app.db import V2Repository
+
+        fd, path = tempfile.mkstemp(prefix="telegramail-v2-plain-fallback-", suffix=".db")
+        os.close(fd)
+        try:
+            repo = V2Repository(path, master_key=b"x" * 32)
+            repo.bind_admin(42, private_chat_id=9001)
+            account = repo.create_account({"email": "me@example.com", "imap_server": "imap.example.com", "imap_port": 993,
+                                           "imap_ssl": True, "smtp_server": "smtp.example.com", "smtp_port": 465, "smtp_ssl": True}, "secret")
+            adapter = V2MailRepositoryAdapter(repo)
+            mail = IncomingMail(account_id=account["id"], mailbox="INBOX", uid="plain-fallback",
+                                sender="sender@example.com", subject="topic outage", message_id="<outage@test>",
+                                text_body="body")
+            self.assertTrue(adapter.insert_incoming_if_absent(mail))
+            self.assertTrue(adapter.enqueue_projection(mail))
+
+            class RawTelegram:
+                def __init__(self):
+                    self.created = 0
+                    self.thread_ids = []
+                    self.markup = "unset"
+                async def create_forum_topic(self, _chat, _subject):
+                    self.created += 1
+                    raise TelegramApiError("createForumTopic", "Bad Request: BOT_TOPIC_WRONG_HOME", error_code=400)
+                async def send_message(self, _chat, _text, **kwargs):
+                    self.thread_ids.append(kwargs.get("message_thread_id"))
+                    self.markup = kwargs.get("reply_markup")
+                    return [{"message_id": 601}]
+
+            raw = RawTelegram()
+            worker = MailProjectionWorker(adapter, MailTelegramProjection(raw, 9001))
+
+            await worker.run_once()
+            # Nothing was dropped: the card went out as a plain private-chat
+            # message with no message_thread_id.
+            self.assertEqual(raw.created, 1)
+            self.assertEqual(raw.thread_ids, [None])
+            self.assertIsNone(raw.markup)
+            conn = repo.db.connect()
+            try:
+                part = conn.execute("SELECT status, telegram_message_id FROM telegram_delivery_parts").fetchone()
+                thread = conn.execute("SELECT telegram_message_thread_id FROM mail_threads").fetchone()
+            finally:
+                conn.close()
+            self.assertEqual((part["status"], part["telegram_message_id"]), ("delivered", 601))
+            self.assertIsNone(thread["telegram_message_thread_id"])
+
+            # The next mail in the same conversation reuses the plain-chat
+            # mapping instead of retrying Topic creation for every delivery.
+            reply = IncomingMail(account_id=account["id"], mailbox="INBOX", uid="plain-fallback-2",
+                                 sender="sender@example.com", subject="Re: topic outage",
+                                 message_id="<outage2@test>", in_reply_to="<outage@test>", text_body="body")
+            self.assertTrue(adapter.insert_incoming_if_absent(reply))
+            self.assertTrue(adapter.enqueue_projection(reply))
+            await worker.run_once()
+            self.assertEqual(raw.created, 1)
+            self.assertEqual(raw.thread_ids, [None, None])
+        finally:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.unlink(path + suffix)
+                except FileNotFoundError:
+                    pass
