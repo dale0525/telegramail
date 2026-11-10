@@ -555,6 +555,57 @@ class TelegramBotApiClient:
             payload["reply_markup"] = dict(reply_markup)
         return await self._call("editMessageText", payload)
 
+    async def edit_message_rich_text(
+        self,
+        chat_id: int | str,
+        message_id: int,
+        html: str,
+        *,
+        reply_markup: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Replace a rich message in place.
+
+        Rich messages carry no ``text`` field, so a summary refresh must send
+        ``rich_message`` to ``editMessageText`` instead of the plain ``text``
+        body used by regular messages.
+        """
+
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": int(message_id),
+            "rich_message": {"html": html},
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = dict(reply_markup)
+        return await self._call("editMessageText", payload)
+
+    async def send_rich_message(
+        self,
+        chat_id: int | str,
+        html: str,
+        *,
+        message_thread_id: int | None = None,
+        reply_markup: Mapping[str, Any] | None = None,
+        **extra: Any,
+    ) -> Any:
+        """Send one structured rich message.
+
+        Unlike ``send_message``, rich messages are not split: the Bot API
+        accepts far more than the 4096-character regular limit, and splitting a
+        structured document would break its headings and tables apart.
+        """
+
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "rich_message": {"html": html},
+            **extra,
+        }
+        if message_thread_id is not None:
+            payload["message_thread_id"] = message_thread_id
+        if reply_markup is not None:
+            payload["reply_markup"] = dict(reply_markup)
+        return await self._call("sendRichMessage", payload)
+
     async def edit_message_caption(
         self,
         chat_id: int | str,

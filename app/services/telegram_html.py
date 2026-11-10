@@ -7,7 +7,19 @@ from html import escape
 from bs4 import BeautifulSoup, NavigableString, Tag
 
 
-_ALLOWED_INLINE_TAGS = {"b", "i", "code"}
+_ALLOWED_INLINE_TAGS = {"b", "i", "code", "u", "s", "mark", "tg-spoiler"}
+_SAFE_LINK_SCHEMES = ("http://", "https://", "mailto:", "tel:")
+
+
+def _safe_href(value: object) -> str | None:
+    """Return the link target only when Telegram would treat it as a plain link.
+
+    Email content is untrusted, so a scheme Telegram could read as a command
+    (``javascript:``, ``tg://``) is dropped and the text is kept instead.
+    """
+
+    href = str(value or "").strip()
+    return href if href.lower().startswith(_SAFE_LINK_SCHEMES) else None
 
 
 def sanitize_telegram_limited_html(raw_html: str | None) -> str:
@@ -26,6 +38,9 @@ def sanitize_telegram_limited_html(raw_html: str | None) -> str:
             if name == "br":
                 return "\n"
             inner = "".join(render(child) for child in node.contents)
+            if name == "a":
+                href = _safe_href(node.get("href"))
+                return f'<a href="{escape(href, quote=True)}">{inner}</a>' if href else inner
             if name in _ALLOWED_INLINE_TAGS:
                 return f"<{name}>{inner}</{name}>"
             return inner

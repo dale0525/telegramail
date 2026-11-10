@@ -3018,7 +3018,7 @@ class V2Repository:
         if not token:
             raise ValueError("projection lease token is required")
         normalized_kind = str(message_kind or "").strip().lower() or None
-        if normalized_kind not in {None, "html", "text"}:
+        if normalized_kind not in {None, "html", "text", "rich"}:
             raise ValueError("projection message kind is not valid")
         now = _now()
         with self.db.transaction(immediate=True) as conn:

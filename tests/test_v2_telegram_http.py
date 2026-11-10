@@ -88,6 +88,78 @@ class TelegramHttpClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["parse_mode"], "HTML")
         self.assertIn("inline_keyboard", body["reply_markup"])
 
+    async def test_send_rich_message_sends_rich_message_payload(self):
+        async def handler(request):
+            return telegram_response({"message_id": 11})
+
+        markup = {"inline_keyboard": [[{"text": "Open", "url": "https://example.test"}]]}
+        client = self.client(handler)
+        try:
+            result = await client.send_rich_message(
+                1234,
+                "<h3>Title</h3><p>Body</p>",
+                message_thread_id=88,
+                reply_markup=markup,
+                disable_notification=False,
+            )
+        finally:
+            await client.aclose()
+        self.assertEqual(result, {"message_id": 11})
+        body = json.loads(self.requests[0].content)
+        self.assertEqual(self.requests[0].url.path.split("/")[-1], "sendRichMessage")
+        self.assertEqual(body["chat_id"], 1234)
+        self.assertEqual(body["message_thread_id"], 88)
+        self.assertEqual(body["rich_message"], {"html": "<h3>Title</h3><p>Body</p>"})
+        self.assertIn("inline_keyboard", body["reply_markup"])
+        self.assertFalse(body["disable_notification"])
+        self.assertNotIn("parse_mode", body)
+
+    async def test_edit_message_rich_text_uses_rich_message_payload(self):
+        async def handler(request):
+            return telegram_response({"message_id": 11})
+
+        client = self.client(handler)
+        try:
+            result = await client.edit_message_rich_text(
+                1234, 11, "<h3>Updated</h3>",
+                reply_markup={"inline_keyboard": [[{"text": "Delete", "callback_data": "d"}]]},
+            )
+        finally:
+            await client.aclose()
+        self.assertEqual(result, {"message_id": 11})
+        body = json.loads(self.requests[0].content)
+        self.assertEqual(self.requests[0].url.path.split("/")[-1], "editMessageText")
+        self.assertEqual(body["rich_message"], {"html": "<h3>Updated</h3>"})
+        self.assertIn("inline_keyboard", body["reply_markup"])
+        self.assertNotIn("text", body)
+
+    async def test_delete_flow_edits_only_the_markup_of_a_rich_message(self):
+        """The delete confirmation on a rich message touches the keyboard only.
+
+        ``editMessageReplyMarkup`` needs no message body, which is what keeps the
+        Topic delete/confirm/cancel flow working after the primary card became a
+        rich message instead of a text message.
+        """
+
+        async def handler(request):
+            return telegram_response({"message_id": 11})
+
+        client = self.client(handler)
+        try:
+            await client.edit_message_reply_markup(
+                1234, 11,
+                reply_markup={"inline_keyboard": [[{"text": "删除", "callback_data": "del:1"}]]},
+            )
+            await client.delete_message(1234, 11)
+        finally:
+            await client.aclose()
+        paths = [request.url.path.split("/")[-1] for request in self.requests]
+        self.assertEqual(paths, ["editMessageReplyMarkup", "deleteMessage"])
+        markup_body = json.loads(self.requests[0].content)
+        self.assertNotIn("rich_message", markup_body)
+        self.assertNotIn("text", markup_body)
+        self.assertEqual(markup_body["message_id"], 11)
+
     async def test_send_document_serializes_nested_multipart_fields(self):
         markup = {"inline_keyboard": [[{"text": "Open", "url": "https://example.test"}]]}
 

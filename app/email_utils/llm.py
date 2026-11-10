@@ -280,7 +280,7 @@ Language requirement:
 Do not hallucinate. If information is missing, use null / [] and keep text concise.
 
  JSON schema (MUST include ALL keys):
-- summary: string (may include ONLY <b>, <i>, <code>; no attributes; use \\n for line breaks; keep <= 800 chars)
+- summary: string (may include ONLY <b>, <i>, <code>, <u>, <s>, <tg-spoiler>, and <a href="https://...">; no other attributes; use \\n for line breaks; keep <= 800 chars)
 - priority: "high" | "medium" | "low"
 - action_required: boolean
 - action_items: string[] (max 5, each <= 100 chars, plain text only, no HTML)

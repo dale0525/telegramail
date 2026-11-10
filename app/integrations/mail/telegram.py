@@ -7,7 +7,11 @@ import re
 from typing import Any, Callable
 
 from app.email_utils.mail_body import prepare_email_body
-from app.services.telegram_mail_card import build_safe_mail_card, has_projectable_mail_content
+from app.services.telegram_mail_card import (
+    build_rich_mail_card,
+    build_safe_mail_card,
+    has_projectable_mail_content,
+)
 from app.services.telegram_mail_links import merge_mail_action_links, sanitize_important_links
 from app.services.telegram_mail_ui import topic_action_keyboard, topic_delete_keyboard
 from app.integrations.telegram_http import MiniAppOnlyProjection, is_missing_forum_topic_error
@@ -168,9 +172,41 @@ class MailTelegramProjection:
             results.extend(values)
 
         try:
+            send_rich = getattr(self.client, "send_rich_message", None)
             send_document = getattr(self.client, "send_document", None)
             html_value = str(mail.html_body or "").strip()
-            if html_value and callable(send_document):
+            if callable(send_rich):
+                rich_kwargs: dict[str, Any] = {
+                    "message_thread_id": topic.message_thread_id,
+                    "disable_notification": False,
+                }
+                if keyboard() is not None:
+                    rich_kwargs["reply_markup"] = keyboard()
+                rich_card = build_rich_mail_card(
+                    subject=mail.subject, sender=mail.sender,
+                    received_at=mail.received_at, body_text=card_body,
+                    summary=mail.summary, category=mail.category, priority=mail.priority,
+                )
+                append_visible(await send_rich(topic.chat_id, rich_card, **rich_kwargs))
+                primary_message_kind = "rich"
+                if html_value and callable(send_document):
+                    # The card replaced the document as the primary message, so
+                    # the provider HTML stays available as a silent follow-up
+                    # instead of disappearing from the Topic. Record its id like
+                    # any other chunk: delivery without a Topic deletes a thread
+                    # by walking telegram_delivery_parts, and an unrecorded
+                    # message id would survive that delete as an orphan.
+                    html_result = await send_document(
+                        topic.chat_id,
+                        html_value.encode("utf-8", errors="replace"),
+                        filename=_html_filename(mail.subject),
+                        content_type="text/html",
+                        message_thread_id=topic.message_thread_id,
+                        disable_notification=True,
+                    )
+                    if not isinstance(html_result, MiniAppOnlyProjection) and not getattr(html_result, "mini_app_only", False):
+                        append_visible(html_result)
+            elif html_value and callable(send_document):
                 document_kwargs: dict[str, Any] = {
                     "filename": _html_filename(mail.subject),
                     "content_type": "text/html",
@@ -358,20 +394,31 @@ class MailTelegramProjection:
                     action_links=action_links if index == 0 else None,
                 )
             kind = str(part.get("kind") or part.get("message_kind") or "")
+            if kind == "rich":
+                await self.client.edit_message_rich_text(
+                    int(chat_id), int(message_id),
+                    build_rich_mail_card(
+                        subject=mail.subject, sender=mail.sender,
+                        received_at=mail.received_at, body_text=card_body,
+                        summary=mail.summary, category=mail.category, priority=mail.priority,
+                    ),
+                    reply_markup=reply_markup,
+                )
             # Older rows do not carry an explicit kind. In that case body_html
             # is a reliable indication for normal (non-size-fallback) HTML
             # deliveries; explicit rows win when the fallback was recorded.
-            is_html = kind == "html" or (not kind and bool(email_row and email_row.get("body_html")))
-            if is_html:
-                await self.client.edit_message_caption(
-                    int(chat_id), int(message_id), caption_fragments[0], parse_mode="HTML",
-                    reply_markup=reply_markup,
-                )
             else:
-                await self.client.edit_message_text(
-                    int(chat_id), int(message_id), text_fragments[0], parse_mode="HTML",
-                    reply_markup=reply_markup,
-                )
+                is_html = kind == "html" or (not kind and bool(email_row and email_row.get("body_html")))
+                if is_html:
+                    await self.client.edit_message_caption(
+                        int(chat_id), int(message_id), caption_fragments[0], parse_mode="HTML",
+                        reply_markup=reply_markup,
+                    )
+                else:
+                    await self.client.edit_message_text(
+                        int(chat_id), int(message_id), text_fragments[0], parse_mode="HTML",
+                        reply_markup=reply_markup,
+                    )
             edited = True
         return edited
 

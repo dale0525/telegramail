@@ -180,11 +180,16 @@ class TestV2IngestionAndDelete(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raw.documents[0][2]["message_thread_id"], 55)
         self.assertEqual(raw.documents[0][2]["content_type"], "text/html")
 
-    async def test_html_mail_uses_one_primary_document_with_card_caption_and_sends_only_real_attachments(self):
+    async def test_html_mail_uses_one_primary_rich_card_and_keeps_source_html_as_a_silent_document(self):
         class RawTelegram:
             def __init__(self):
+                self.rich = []
                 self.messages = []
                 self.documents = []
+
+            async def send_rich_message(self, chat, html, **kwargs):
+                self.rich.append((chat, html, kwargs))
+                return {"message_id": 10}
 
             async def send_message(self, chat, text, **kwargs):
                 self.messages.append((chat, text, kwargs))
@@ -196,7 +201,7 @@ class TestV2IngestionAndDelete(unittest.IsolatedAsyncioTestCase):
 
         raw = RawTelegram()
         projection = MailTelegramProjection(raw, 42)
-        await projection.project_mail(
+        result = await projection.project_mail(
             IncomingMail(
                 account_id=1, mailbox="INBOX", uid="html-primary", subject="Report",
                 sender="sender@example.com", text_body="summary", html_body="<p>source</p>",
@@ -208,16 +213,105 @@ class TestV2IngestionAndDelete(unittest.IsolatedAsyncioTestCase):
             ),
             TelegramTopic(42, 55, 123),
         )
+        # The visible card is the rich message; the provider HTML follows as a
+        # silent document so the original rendering is still one tap away.
         self.assertEqual(raw.messages, [])
+        self.assertEqual(len(raw.rich), 1)
+        self.assertEqual(result[0]["message_id"], 10)
+        self.assertEqual(result[0]["message_kind"], "rich")
+        self.assertIn("<h3>", raw.rich[0][1])
+        self.assertIn("Report", raw.rich[0][1])
+        self.assertEqual(raw.rich[0][2]["message_thread_id"], 55)
+        self.assertIn("reply_markup", raw.rich[0][2])
         self.assertEqual(len(raw.documents), 2)
         self.assertEqual(raw.documents[0][1], b"<p>source</p>")
-        self.assertLessEqual(len(raw.documents[0][2]["caption"]), 1024)
-        self.assertEqual(raw.documents[0][2]["disable_notification"], False)
-        self.assertIn("主题", raw.documents[0][2]["caption"])
-        self.assertIn("发件人", raw.documents[0][2]["caption"])
-        self.assertIn("摘要", raw.documents[0][2]["caption"])
+        self.assertEqual(raw.documents[0][2]["disable_notification"], True)
         self.assertEqual(raw.documents[1][1], b"pdf")
         self.assertTrue(raw.documents[1][2]["disable_notification"])
+
+    async def test_rich_card_and_source_html_are_both_recorded_as_delivery_parts(self):
+        """Every message the projection sends must be deletable later.
+
+        Delivery without a Topic deletes a thread by walking
+        ``telegram_delivery_parts``; a message id that never reaches that table
+        survives the delete and is left orphaned in the chat.
+        """
+
+        class RawTelegram:
+            def __init__(self):
+                self.documents = []
+
+            async def send_rich_message(self, chat, html, **kwargs):
+                return {"message_id": 10}
+
+            async def send_document(self, chat, document, **kwargs):
+                self.documents.append(document)
+                return {"message_id": 20 + len(self.documents)}
+
+        class RecordingRepository:
+            def __init__(self):
+                self.recorded = []
+
+            def record_telegram_delivery_parts(self, email_id, chat_id, message_ids, *, start_index=1):
+                self.recorded.append((email_id, chat_id, list(message_ids), start_index))
+
+        repository = RecordingRepository()
+        projection = MailTelegramProjection(RawTelegram(), 42, repository=repository)
+        await projection.project_mail(
+            IncomingMail(
+                account_id=1, mailbox="INBOX", uid="parts", subject="Report",
+                sender="sender@example.com", text_body="summary", html_body="<p>source</p>",
+                attachments=(Attachment("invoice.pdf", b"pdf", "application/pdf"),),
+                email_id=77,
+            ),
+            TelegramTopic(42, 55, 123),
+        )
+        self.assertEqual(len(repository.recorded), 1)
+        _email_id, chat_id, message_ids, start_index = repository.recorded[0]
+        self.assertEqual(_email_id, 77)
+        self.assertEqual(chat_id, 42)
+        self.assertEqual(start_index, 1)
+        # The source HTML document and the attachment follow the rich card.
+        self.assertEqual(message_ids, [21, 22])
+
+    async def test_html_mail_reaches_the_bot_api_as_a_rich_message(self):
+        import json
+
+        import httpx
+
+        from app.integrations.telegram_http import TelegramBotApiClient
+
+        calls = []
+
+        async def handler(request):
+            is_json = request.headers.get("content-type", "").startswith("application/json")
+            body = json.loads(request.content) if is_json and request.content else {}
+            calls.append((request.url.path.split("/")[-1], body))
+            if request.url.path.endswith("sendRichMessage"):
+                return httpx.Response(200, json={"ok": True, "result": {"message_id": 10}})
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 20}})
+
+        client = TelegramBotApiClient(
+            "token", transport=httpx.MockTransport(handler), retry_backoff=0.0
+        )
+        try:
+            await MailTelegramProjection(client, 42).project_mail(
+                IncomingMail(
+                    account_id=1, mailbox="INBOX", uid="through-http", subject="Subject",
+                    sender="sender@example.com", text_body="body", html_body="<p>source</p>",
+                ),
+                TelegramTopic(42, 55, 123),
+            )
+        finally:
+            await client.aclose()
+
+        methods = [name for name, _ in calls]
+        self.assertEqual(methods[0], "sendRichMessage")
+        self.assertIn("sendDocument", methods)
+        rich_body = calls[0][1]
+        self.assertEqual(rich_body["message_thread_id"], 55)
+        self.assertIn("<h3>", rich_body["rich_message"]["html"])
+        self.assertNotIn("parse_mode", rich_body)
 
     async def test_oversized_html_falls_back_to_visible_text_card(self):
         class RawTelegram:

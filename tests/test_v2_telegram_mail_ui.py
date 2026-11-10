@@ -385,9 +385,9 @@ class TelegramMailUiTests(unittest.IsolatedAsyncioTestCase):
                 )
             detail, _ = TelegramMailBotUi(repo)._render_detail(thread_id, 0)
 
-            self.assertIn("<b>重点</b><i>说明</i>链接", detail)
+            self.assertIn("<b>重点</b><i>说明</i>", detail)
+            self.assertIn('<a href="https://evil.invalid">链接</a>', detail)
             self.assertNotIn("onclick", detail)
-            self.assertNotIn("evil.invalid", detail)
 
     async def test_detail_reports_a_confirmed_topic_delivery(self):
         with tempfile.TemporaryDirectory() as directory:

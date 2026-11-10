@@ -27,6 +27,50 @@ def _escaped(value: Any, *, fallback: str = "—", single_line: bool = False) ->
     return html.escape(_plain_text(value, fallback=fallback, single_line=single_line), quote=True)
 
 
+def build_rich_mail_card(
+    *,
+    subject: Any,
+    sender: Any,
+    received_at: Any = None,
+    body_text: Any = "",
+    summary: Any = None,
+    category: Any = None,
+    priority: Any = None,
+) -> str:
+    """Return one structured rich-message card for a parsed, untrusted email.
+
+    The structure (heading, sender line, divider, summary) is fixed chrome; every
+    dynamic value is escaped first and the LLM summary passes the same restricted
+    sanitizer as the plain card, so no provider HTML reaches Telegram's parser.
+    """
+
+    summary_text = _plain_text(summary, fallback="")
+    rendered_content = (
+        sanitize_telegram_limited_html(summary_text)
+        if summary_text
+        else _escaped(body_text, fallback="(无可用内容)")
+    )
+    # The rich card is one message, so an over-long summary is cut at the
+    # rendered-text boundary instead of spawning further messages. split_html
+    # keeps tags balanced, which is what rich parsing requires, and the fixed
+    # chrome is subtracted first so the whole card stays inside the limit.
+    chrome = (
+        f"📧 {_plain_text(subject, fallback='(无主题)', single_line=True)}",
+        _plain_text(sender, single_line=True),
+        "摘要",
+    )
+    summary_budget = MAX_MESSAGE_LENGTH - sum(len(line) for line in chrome) - 8
+    rendered_content = split_html(rendered_content, limit=max(1, summary_budget))[0]
+    lines = (
+        f"<h3>📧 {_escaped(subject, fallback='(无主题)', single_line=True)}</h3>",
+        f"<p>{_escaped(sender, single_line=True)}</p>",
+        "<hr/>",
+        "<p><b>摘要</b></p>",
+        f"<p>{rendered_content}</p>",
+    )
+    return "\n".join(lines)
+
+
 def has_projectable_mail_content(
     *,
     body_text: Any,

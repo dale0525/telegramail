@@ -21,8 +21,8 @@ class TestEmailContentProcessing(unittest.TestCase):
 
         formatted = format_enhanced_email_summary(summary_data)
 
-        # Only <b>, <i>, <code> should remain in the final HTML output.
-        self.assertNotIn("<a", formatted)
+        # Only whitelisted inline entities survive; structural and script markup does not.
+        self.assertIn('<a href="https://evil.example">click</a>', formatted)
         self.assertNotIn("<div", formatted)
         self.assertNotIn("<script", formatted)
 
