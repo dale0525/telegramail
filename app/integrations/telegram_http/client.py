@@ -63,6 +63,17 @@ def is_missing_forum_topic_error(error: BaseException) -> bool:
     return "topic_id_invalid" in description or "message thread not found" in description
 
 
+def is_missing_message_error(error: BaseException) -> bool:
+    """Return whether Telegram reports the message as already gone.
+
+    Deleting a message that no longer exists is the goal state, not a failure,
+    so saga phases treat this as success instead of retrying forever.
+    """
+
+    description = str(getattr(error, "description", error)).casefold()
+    return "message to delete not found" in description or "message not found" in description
+
+
 def is_permanent_projection_error(error: BaseException) -> bool:
     """Return whether retrying this Bot API failure can never succeed.
 

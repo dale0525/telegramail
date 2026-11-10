@@ -15,11 +15,11 @@ import time
 import uuid
 from dataclasses import replace
 from email.utils import getaddresses
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from app.integrations.mail.compose import MailComposer
 from app.integrations.mail.telegram import ProjectionDeliveryError, ProjectionWaitingBinding, TelegramTopic, format_topic_name
-from app.integrations.telegram_http import is_missing_forum_topic_error, is_permanent_projection_error
+from app.integrations.telegram_http import is_missing_forum_topic_error, is_missing_message_error, is_permanent_projection_error
 from app.integrations.mail.types import DeleteOperation, FetchedMessages, IncomingMail, ProjectionJob, SendOperation, SummaryJob
 from app.services.account_verification import classify_connection_error
 from app.services.telegram_mail_card import has_projectable_mail_content
@@ -868,6 +868,39 @@ class MailDeleteWorker:
         self.worker_id, self.lease_seconds = worker_id or f"delete-{uuid.uuid4().hex}", lease_seconds
         self.after_delete = after_delete
 
+    async def _delete_plain_delivery_parts(self, operation: Any) -> bool:
+        """Delete the Telegram cards of a thread delivered without a Topic."""
+
+        email_id = getattr(operation, "email_id", None)
+        chat_id = getattr(operation, "telegram_chat_id", None)
+        if email_id is None or chat_id is None:
+            return True
+        lister = getattr(self.store, "list_telegram_delivery_parts", None)
+        if not callable(lister):
+            lister = getattr(getattr(self.store, "repository", None), "list_telegram_delivery_parts", None)
+        if not callable(lister):
+            return True
+        try:
+            parts = lister(int(email_id))
+        except Exception:
+            logger.warning("unable to list Telegram delivery parts for deletion", exc_info=True)
+            return False
+        delete_message = getattr(self.telegram, "delete_message", None)
+        if not callable(delete_message):
+            return True
+        for part in parts or []:
+            message_id = part.get("telegram_message_id") if isinstance(part, Mapping) else getattr(part, "telegram_message_id", None)
+            if message_id is None:
+                continue
+            try:
+                await _maybe_await(delete_message(int(chat_id), int(message_id)))
+            except Exception as exc:
+                # Already gone is the goal state; anything else must surface so
+                # the operation retries instead of claiming success.
+                if not is_missing_message_error(exc):
+                    raise
+        return True
+
     async def run_once(self, operation_id: str | None = None) -> DeleteOperation | None:
         if operation_id is not None:
             operation = await _call(self.store, ("claim_delete", "get_delete"), operation_id, self.worker_id, self.lease_seconds)
@@ -892,7 +925,14 @@ class MailDeleteWorker:
             # optimistically, so a worker retry may arrive after the Topic is
             # already gone; the durable flag makes that retry idempotent.
             if not topic_deleted:
-                if operation.telegram_topic_id is not None:
+                if operation.telegram_topic_id is None:
+                    # Degraded deliveries have no Topic, but their cards are
+                    # still visible private-chat messages.  Skipping this phase
+                    # tombstoned the mail locally while leaving every card in
+                    # Telegram, so remove those messages explicitly.
+                    if not await self._delete_plain_delivery_parts(operation):
+                        raise RuntimeError("Telegram message deletion was not confirmed")
+                else:
                     try:
                         result = await _delete_topic(self.telegram, operation.telegram_topic_id)
                     except Exception as exc:

@@ -18,6 +18,7 @@
 - 生产部署必须保留远端 `.env`、整个 `data/` 目录及无关 Compose 状态；已有数据库只运行 `scripts/migrate_v2.py --upgrade`，不得运行 `--init` 或 `docker compose down -v`。
 - 部署完成后必须确认 `telegramail` 为 `running healthy`、重启次数为 0、首页和 `/health/ready` 返回 200，且近期日志无 error/exception/traceback/fatal 标记。
 - 验收应覆盖本次修改的用户流程；涉及删除邮件等破坏性用户数据操作时，用自动化测试或无破坏性检查验证，未经用户明确授权不得在生产数据上制造测试记录。
+- Telegram 侧的删除与投递都有两条互斥路径：有 Topic 走 `delete_forum_topic`，无 Topic 的降级投递（普通私聊消息）必须按 `telegram_delivery_parts` 逐条 `deleteMessage`。只改其中一条会让数据库标记已删除而 Telegram 里消息仍在，界面继续显示可点击按钮，用户点删除会看到“邮件不存在或已删除”。改删除链路时两条路径都要覆盖。
 
 ## 需要停下确认的情况
 

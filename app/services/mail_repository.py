@@ -256,6 +256,15 @@ class InMemoryMailRepository:
             self.tombstones.add((str(op.account_id), op.mailbox.casefold(), "", str(op.uid)))
         return True
 
+    def list_telegram_delivery_parts(self, email_id: int | str, *, delivered_only: bool = True) -> list:
+        """Return recorded Telegram messages so a delete can remove them.
+
+        Stores without projection tracking return an empty list; the delete
+        saga then has no plain-chat card to remove, which is the historical
+        behaviour for topic-only deliveries.
+        """
+        return list(getattr(self, "delivery_parts", {}).get(str(email_id), []))
+
     def mark_delete_topic_deleted(self, operation_id: str) -> bool:
         op = self.deletes.get(operation_id)
         if not op:

@@ -104,7 +104,8 @@ class _FailingIMAP:
 
 
 class _Telegram:
-    def __init__(self): self.created = 0; self.projected = []; self.deletes = 0; self.fail_delete = False
+    def __init__(self): self.created = 0; self.projected = []; self.deletes = 0; self.fail_delete = False; self.deleted_messages = []
+    async def delete_message(self, chat_id, message_id): self.deleted_messages.append((chat_id, message_id))
     async def ensure_private_topic(self, account, subject): self.created += 1; return 9
     async def project_mail(self, mail, topic): self.projected.append((mail.uid, topic))
     async def delete_topic(self, topic):
@@ -526,6 +527,51 @@ class TestV2IngestionAndDelete(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persisted.state, "queued")
         self.assertIsNotNone(persisted.error)
         self.assertNotIn(("1", "inbox", "", "3"), store.tombstones)
+
+    async def test_delete_without_topic_removes_the_plain_chat_messages(self):
+        store, tg = InMemoryMailRepository(), _Telegram()
+        tg.deleted_messages = []
+        store.delivery_parts = {"709": [
+            {"part_index": 0, "telegram_message_id": 11073},
+            {"part_index": 1, "telegram_message_id": 11076},
+        ]}
+        op = DeleteOperation(
+            "del-plain", 1, "INBOX", "9", provider_mapping={"uid": "9"},
+            email_id=709, telegram_chat_id=1077094819, telegram_topic_id=None,
+        )
+        store.enqueue_delete(op)
+
+        class Provider:
+            async def delete(self, _mapping):
+                return True
+
+        result = await MailDeleteWorker(store, Provider(), tg).run_once()
+
+        # A degraded delivery has no Topic but its cards are visible messages:
+        # skipping this phase tombstoned the mail while leaving them behind.
+        self.assertEqual(result.state, "tombstoned")
+        self.assertEqual(tg.deleted_messages, [(1077094819, 11073), (1077094819, 11076)])
+
+    async def test_delete_treats_an_already_removed_message_as_success(self):
+        store = InMemoryMailRepository()
+        store.delivery_parts = {"710": [{"part_index": 0, "telegram_message_id": 11076}]}
+        op = DeleteOperation(
+            "del-plain-gone", 1, "INBOX", "10", provider_mapping={"uid": "10"},
+            email_id=710, telegram_chat_id=1077094819, telegram_topic_id=None,
+        )
+        store.enqueue_delete(op)
+
+        class Provider:
+            async def delete(self, _mapping):
+                return True
+
+        class RawTelegram:
+            async def delete_message(self, _chat, _message):
+                raise TelegramApiError("deleteMessage", "Bad Request: message to delete not found")
+
+        result = await MailDeleteWorker(store, Provider(), RawTelegram()).run_once()
+
+        self.assertEqual(result.state, "tombstoned")
 
     async def test_delete_saga_adapts_raw_forum_topic_client(self):
         store = InMemoryMailRepository()
