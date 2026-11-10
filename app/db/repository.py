@@ -313,6 +313,7 @@ class V2Repository:
                     "last_test_status": "never",
                     "last_tested_at": None,
                     "failed_count": 0,
+                    "disable_thinking": False,
                     "updated_at": None,
                 }
             return {
@@ -325,6 +326,7 @@ class V2Repository:
                 "last_test_status": row["last_test_status"] or "never",
                 "last_tested_at": row["last_tested_at"],
                 "failed_count": int(row["failed_count"] or 0),
+                "disable_thinking": bool(row["disable_thinking"]),
                 "updated_at": row["updated_at"],
             }
         finally:
@@ -370,6 +372,7 @@ class V2Repository:
         settings["llm_base_url"] = settings.get("base_url", "")
         settings["llm_model"] = settings.get("model", "")
         settings["llm_api_key"] = api_key
+        settings["llm_disable_thinking"] = settings.get("disable_thinking", False)
         return settings
 
     load_llm_settings = get_global_llm_settings
@@ -383,7 +386,8 @@ class V2Repository:
         """
         values: Dict[str, Any] = dict(updates or {})
         values.update(kwargs)
-        allowed = {"enabled", "base_url", "model", "default_language", "summary_threshold", "api_key"}
+        allowed = {"enabled", "base_url", "model", "default_language", "summary_threshold",
+                   "disable_thinking", "api_key"}
         values = {key: value for key, value in values.items() if key in allowed}
         if "base_url" in values:
             values["base_url"] = str(values["base_url"] or "").strip()
@@ -391,6 +395,8 @@ class V2Repository:
             values["model"] = str(values["model"] or "").strip()
         if "default_language" in values:
             values["default_language"] = str(values["default_language"] or "en_US").strip() or "en_US"
+        if "disable_thinking" in values:
+            values["disable_thinking"] = int(bool(values["disable_thinking"]))
         if "enabled" in values:
             values["enabled"] = int(bool(values["enabled"]))
         if "summary_threshold" in values:
@@ -405,11 +411,12 @@ class V2Repository:
             if existing is None:
                 conn.execute(
                     """INSERT INTO llm_settings(singleton, enabled, base_url, model,
-                             default_language, summary_threshold, created_at, updated_at)
-                       VALUES (1, ?, ?, ?, ?, ?, ?, ?)""",
+                             default_language, summary_threshold, disable_thinking, created_at, updated_at)
+                       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         values.get("enabled", 0), values.get("base_url", ""), values.get("model", ""),
-                        values.get("default_language", "en_US"), values.get("summary_threshold", 120), now, now,
+                        values.get("default_language", "en_US"), values.get("summary_threshold", 120),
+                        values.get("disable_thinking", 0), now, now,
                     ),
                 )
             elif values:

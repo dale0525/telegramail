@@ -562,6 +562,7 @@ def _apply_schema_migrations(conn: sqlite3.Connection, now: int) -> None:
         "last_test_status": "TEXT NOT NULL DEFAULT 'never'",
         "last_tested_at": "INTEGER",
         "failed_count": "INTEGER NOT NULL DEFAULT 0",
+        "disable_thinking": "INTEGER NOT NULL DEFAULT 0",
         "created_at": "INTEGER NOT NULL DEFAULT 0",
         "updated_at": "INTEGER NOT NULL DEFAULT 0",
     })

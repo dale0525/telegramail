@@ -36,6 +36,9 @@ class OpenAIClient:
         get = settings.get if isinstance(settings, Mapping) else lambda key: getattr(settings, key, None)
         base_url = get("base_url") or get("openai_base_url") or get("llm_base_url")
         api_key = get("api_key") or get("openai_api_key") or get("llm_api_key")
+        disable_thinking = bool(
+            get("disable_thinking") or get("llm_disable_thinking")
+        )
         signature = (base_url, api_key)
         if self._settings_signature != signature or not hasattr(self, "client"):
             self.base_url, self.api_key = base_url, api_key
@@ -44,6 +47,9 @@ class OpenAIClient:
             # still fails clearly instead of consulting process environment.
             self.client = OpenAI(base_url=self.base_url, api_key=self.api_key) if base_url and api_key else None
             self._settings_signature = signature
+        # Not part of the client identity: toggling it must not rebuild the
+        # client, but every request has to see the current value.
+        self.disable_thinking = disable_thinking
 
     def configure(self, settings: Mapping[str, Any] | Any | None = None) -> "OpenAIClient":
         """Apply a repository-provided endpoint/key to this singleton."""
@@ -105,6 +111,11 @@ class OpenAIClient:
             params["temperature"] = 0
         if settings is not None:
             self.configure(settings)
+        if getattr(self, "disable_thinking", False):
+            # Upstream switches thinking off through the OpenAI-standard
+            # reasoning_effort field; vendor-specific fields such as
+            # thinking/enable_thinking are ignored and still spend tokens.
+            params["reasoning_effort"] = "none"
         if self.client is None:
             raise ValueError("LLM settings require base_url and api_key")
         logger.info("using %s for streaming llm", model)
@@ -162,7 +173,8 @@ class OpenAIClient:
         retry_delay=1,
     )
     def generate_completion(
-        self, model: str, messages: list[dict], output_json: bool = False, *, stream: bool = False
+        self, model: str, messages: list[dict], output_json: bool = False, *,
+        stream: bool = False, settings: Mapping[str, Any] | None = None,
     ):
         """
         Generate an OpenAI completion for the given model and messages.
@@ -183,6 +195,10 @@ class OpenAIClient:
         Raises:
             Exception: If the call to the OpenAI API fails.
         """
+        if settings is not None:
+            # The client is a process-wide singleton, so a previous caller's
+            # toggles would otherwise leak into this request.
+            self.configure(settings)
         if stream:
             return self.stream_completion(model, messages, output_json)
         try:
@@ -194,6 +210,9 @@ class OpenAIClient:
                 "model": model,
                 "messages": messages,
             }
+
+            if getattr(self, "disable_thinking", False):
+                params["reasoning_effort"] = "none"
 
             if output_json:
                 params["response_format"] = {"type": "json_object"}
